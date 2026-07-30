@@ -33,13 +33,28 @@ const persistentId = (path: string): Effect.Effect<DeviceId, Error> =>
     catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
   })
 
+const localToken = (path: string): Effect.Effect<string, Error> =>
+  Effect.tryPromise({
+    try: async () => {
+      const file = Bun.file(path)
+      if (!(await file.exists())) {
+        throw new Error(`COHALL_TOKEN is not set and no local relay token exists at ${path}`)
+      }
+      return (await file.text()).trim()
+    },
+    catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+  })
+
 const load = Effect.gen(function* () {
   const relayUrl = yield* Config.string("COHALL_RELAY_URL").pipe(
     Config.withDefault("http://127.0.0.1:8787"),
   )
-  const token = yield* Config.redacted("COHALL_TOKEN").pipe(
-    Config.withDefault(Redacted.make("cohall-local-dev")),
-  )
+  const configuredToken = yield* Config.option(Config.redacted("COHALL_TOKEN"))
+  const dataDirectory = yield* Config.string("COHALL_DATA_DIR").pipe(Config.withDefault(".cohall"))
+  const token =
+    configuredToken._tag === "Some"
+      ? Redacted.value(configuredToken.value)
+      : yield* localToken(`${dataDirectory.replace(/\/+$/, "")}/token`)
   const explicitId = yield* Config.option(Config.string("COHALL_DEVICE_ID"))
   const statePath = yield* Config.string("COHALL_DEVICE_STATE").pipe(
     Config.withDefault(`${homedir()}/.local/state/cohall/device-id`),
@@ -61,7 +76,7 @@ const load = Effect.gen(function* () {
 
   return DeviceConfiguration.make({
     relayUrl: relayUrl.replace(/\/+$/, ""),
-    token: Redacted.value(token),
+    token,
     id,
     name,
     workspaces: workspaceList

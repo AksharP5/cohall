@@ -42,7 +42,7 @@ const initialConnection = (): Connection => {
   }
   return {
     url: window.location.port === "5173" ? "http://127.0.0.1:8787" : window.location.origin,
-    token: "cohall-local-dev",
+    token: "",
   }
 }
 
@@ -103,7 +103,6 @@ const websocketUrl = (connection: Connection): string => {
   url.pathname = "/ws"
   url.search = ""
   url.searchParams.set("role", "client")
-  url.searchParams.set("token", connection.token)
   return url.toString()
 }
 
@@ -135,6 +134,11 @@ export const useCohall = () => {
   }, [client])
 
   useEffect(() => {
+    if (connection.token.trim().length === 0) {
+      setStatus("offline")
+      setError("Enter the relay token to connect")
+      return
+    }
     let disposed = false
     let reconnect: ReturnType<typeof setTimeout> | undefined
 
@@ -146,8 +150,15 @@ export const useCohall = () => {
       const next = new WebSocket(websocketUrl(connection))
       socket.current = next
       next.addEventListener("open", () => {
-        setStatus("online")
-        void refresh()
+        next.send(
+          JSON.stringify(
+            SocketEvent.make({
+              _tag: "Authenticate",
+              token: connection.token,
+              role: "client",
+            }),
+          ),
+        )
       })
       next.addEventListener("message", (message) => {
         if (typeof message.data !== "string") {
@@ -160,6 +171,11 @@ export const useCohall = () => {
           }).pipe(Effect.flatMap(decodeSocketEvent)),
         )
           .then((event) => {
+            if (event._tag === "Connected") {
+              setStatus("online")
+              void refresh()
+              return
+            }
             if (event._tag === "Error") {
               setError(event.message)
               return

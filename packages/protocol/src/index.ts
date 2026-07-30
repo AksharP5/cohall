@@ -54,6 +54,9 @@ export type MessageRole = typeof MessageRole.Type
 export const MessageKind = Schema.Literals(["chat", "reasoning", "tool", "status", "error"])
 export type MessageKind = typeof MessageKind.Type
 
+export const ConnectionRole = Schema.Literals(["client", "device"])
+export type ConnectionRole = typeof ConnectionRole.Type
+
 export const Capability = Schema.Struct({
   id: Schema.NonEmptyString,
   label: Schema.NonEmptyString,
@@ -213,6 +216,10 @@ export const ProviderEvent = Schema.TaggedUnion({
 export type ProviderEvent = typeof ProviderEvent.Type
 
 export const SocketEvent = Schema.TaggedUnion({
+  Authenticate: {
+    token: Schema.NonEmptyString,
+    role: ConnectionRole,
+  },
   Connected: {
     serverVersion: Schema.NonEmptyString,
     connectedAt: Timestamp,

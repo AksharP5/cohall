@@ -23,6 +23,8 @@ export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnect
 interface State {
   socket: WebSocket | undefined
   readonly pending: Array<string>
+  readonly queue: Array<Task>
+  readonly sessions: Map<string, string>
   readonly tasks: Map<TaskId, AbortController>
   readonly completed: Set<TaskId>
 }
@@ -32,7 +34,6 @@ const socketUrl = (configuration: DeviceConfiguration): string => {
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
   url.pathname = "/ws"
   url.searchParams.set("role", "device")
-  url.searchParams.set("token", configuration.token)
   return url.toString()
 }
 
@@ -154,6 +155,8 @@ const remember = (state: State, taskId: TaskId): void => {
   }
 }
 
+const sessionKey = (task: Task): string => `${task.threadId}:${task.provider}`
+
 const execute = (configuration: DeviceConfiguration, state: State, task: Task): void => {
   if (state.tasks.has(task.id) || state.completed.has(task.id)) {
     return
@@ -189,11 +192,13 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
           message: cause instanceof Error ? cause.message : String(cause),
         }),
     })
+    const sessionId = task.providerSessionId ?? state.sessions.get(sessionKey(task))
     return yield* Codex.run({
+      threadId: task.threadId,
       prompt: promptFor(task, configuration.name),
       cwd,
       onEvent,
-      ...(task.providerSessionId === undefined ? {} : { sessionId: task.providerSessionId }),
+      ...(sessionId === undefined ? {} : { sessionId }),
       ...(configuration.model === undefined ? {} : { model: configuration.model }),
       ...(configuration.sandbox === undefined ? {} : { sandbox: configuration.sandbox }),
     })
@@ -201,6 +206,9 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
 
   void Effect.runPromise(workflow, { signal: controller.signal })
     .then((result) => {
+      if (result.sessionId !== undefined) {
+        state.sessions.set(sessionKey(task), result.sessionId)
+      }
       remember(state, task.id)
       send(
         state,
@@ -238,7 +246,51 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
     })
     .finally(() => {
       state.tasks.delete(task.id)
+      const next = state.queue.shift()
+      if (next !== undefined) {
+        execute(configuration, state, next)
+      }
     })
+}
+
+const schedule = (configuration: DeviceConfiguration, state: State, task: Task): void => {
+  if (
+    state.tasks.has(task.id) ||
+    state.completed.has(task.id) ||
+    state.queue.some((queued) => queued.id === task.id)
+  ) {
+    return
+  }
+  if (task.providerSessionId !== undefined) {
+    state.sessions.set(sessionKey(task), task.providerSessionId)
+  }
+  if (state.tasks.size > 0) {
+    state.queue.push(task)
+    return
+  }
+  execute(configuration, state, task)
+}
+
+const cancel = (state: State, taskId: TaskId): void => {
+  const running = state.tasks.get(taskId)
+  if (running !== undefined) {
+    running.abort()
+    return
+  }
+  const index = state.queue.findIndex((task) => task.id === taskId)
+  if (index === -1) {
+    return
+  }
+  state.queue.splice(index, 1)
+  remember(state, taskId)
+  send(
+    state,
+    SocketEvent.make({
+      _tag: "TaskCancelled",
+      taskId,
+      cancelledAt: now(),
+    }),
+  )
 }
 
 const connect = (
@@ -278,19 +330,15 @@ const connect = (
           { once: true },
         )
         socket.addEventListener("open", () => {
-          state.socket = socket
           socket.send(
             JSON.stringify(
               SocketEvent.make({
-                _tag: "DeviceHello",
-                device: device(configuration, state.tasks.size > 0 ? "busy" : "online"),
+                _tag: "Authenticate",
+                token: configuration.token,
+                role: "device",
               }),
             ),
           )
-          for (const payload of state.pending.splice(0)) {
-            socket.send(payload)
-          }
-          console.log(`Connected ${configuration.name} to ${configuration.relayUrl}`)
         })
         socket.addEventListener("message", (message) => {
           if (typeof message.data !== "string") {
@@ -306,12 +354,28 @@ const connect = (
             }).pipe(Effect.flatMap(decodeSocketEvent)),
           )
             .then((event) => {
+              if (event._tag === "Connected") {
+                state.socket = socket
+                socket.send(
+                  JSON.stringify(
+                    SocketEvent.make({
+                      _tag: "DeviceHello",
+                      device: device(configuration, state.tasks.size > 0 ? "busy" : "online"),
+                    }),
+                  ),
+                )
+                for (const payload of state.pending.splice(0)) {
+                  socket.send(payload)
+                }
+                console.log(`Connected ${configuration.name} to ${configuration.relayUrl}`)
+                return
+              }
               if (event._tag === "TaskAssigned") {
-                execute(configuration, state, event.task)
+                schedule(configuration, state, event.task)
                 return
               }
               if (event._tag === "CancelTask") {
-                state.tasks.get(event.taskId)?.abort()
+                cancel(state, event.taskId)
                 return
               }
               if (event._tag === "Error") {
@@ -341,6 +405,8 @@ export const runDaemon = (
   const state: State = {
     socket: undefined,
     pending: [],
+    queue: [],
+    sessions: new Map(),
     tasks: new Map(),
     completed: new Set(),
   }

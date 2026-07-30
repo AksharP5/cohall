@@ -28,16 +28,34 @@ class RequestError extends Schema.TaggedErrorClass<RequestError>()("Relay.Reques
   message: Schema.String,
 }) {}
 
-const corsHeaders = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-headers": "authorization, content-type",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
+const originAllowed = (request: Request): boolean => {
+  const origin = request.headers.get("origin")
+  if (origin === null) {
+    return true
+  }
+  return (
+    origin === new URL(request.url).origin ||
+    configuration.allowedOrigins.includes(origin.replace(/\/+$/, ""))
+  )
 }
 
-const json = (value: unknown, status = 200): Response =>
+const corsHeaders = (request: Request): Headers => {
+  const headers = new Headers({
+    "access-control-allow-headers": "authorization, content-type",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    vary: "Origin",
+  })
+  const origin = request.headers.get("origin")
+  if (origin !== null && originAllowed(request)) {
+    headers.set("access-control-allow-origin", origin)
+  }
+  return headers
+}
+
+const json = (value: unknown, status = 200, request?: Request): Response =>
   Response.json(value, {
     status,
-    headers: corsHeaders,
+    ...(request === undefined ? {} : { headers: corsHeaders(request) }),
   })
 
 const body = <A, E, R>(
@@ -285,6 +303,32 @@ const handleSocketEvent = async (
     return
   }
 
+  if (!hub.isAttached(socket)) {
+    if (
+      event._tag === "Authenticate" &&
+      event.token === configuration.token &&
+      event.role === socket.data.role
+    ) {
+      hub.attach(socket)
+      socket.send(
+        JSON.stringify(
+          SocketEvent.make({
+            _tag: "Connected",
+            serverVersion: version,
+            connectedAt: now(),
+          }),
+        ),
+      )
+      return
+    }
+    socket.close(4003, "Authentication required")
+    return
+  }
+
+  if (event._tag === "Authenticate") {
+    return
+  }
+
   if (event._tag === "DeviceHello") {
     if (socket.data.role !== "device") {
       socket.close(4003, "Client sockets cannot register devices")
@@ -485,40 +529,41 @@ const handleSocketEvent = async (
 
 const authorized = (request: Request): boolean => {
   const header = request.headers.get("authorization")
-  if (header === `Bearer ${configuration.token}`) {
-    return true
-  }
-  return new URL(request.url).searchParams.get("token") === configuration.token
+  return header === `Bearer ${configuration.token}`
 }
 
 const api = async (request: Request, url: URL): Promise<Response | undefined> => {
+  const respond = (value: unknown, status = 200): Response => json(value, status, request)
   if (url.pathname === "/api/health") {
-    return json({ ok: true, version })
+    return respond({ ok: true, version })
   }
   if (!url.pathname.startsWith("/api/")) {
     return undefined
   }
   if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders })
+    if (!originAllowed(request)) {
+      return respond({ error: "Origin not allowed" }, 403)
+    }
+    return new Response(null, { status: 204, headers: corsHeaders(request) })
   }
   if (!authorized(request)) {
-    return json({ error: "Unauthorized" }, 401)
+    return respond({ error: "Unauthorized" }, 401)
   }
 
   const effect = Effect.gen(function* () {
     const store = yield* RelayStore.Service
 
     if (request.method === "GET" && url.pathname === "/api/bootstrap") {
-      return json(yield* store.bootstrap())
+      return respond(yield* store.bootstrap())
     }
     if (request.method === "GET" && url.pathname === "/api/devices") {
-      return json(yield* store.listDevices())
+      return respond(yield* store.listDevices())
     }
     if (request.method === "POST" && url.pathname === "/api/threads") {
       const input = yield* body(request, decodeCreateThreadInput)
       const thread = yield* store.createThread(input)
       hub.broadcast(SocketEvent.make({ _tag: "ThreadChanged", thread }))
-      return json(thread, 201)
+      return respond(thread, 201)
     }
 
     const messageMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/messages$/)
@@ -527,7 +572,7 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
       const input = yield* body(request, decodeCreateMessageInput)
       const message = yield* store.createMessage(threadId, input)
       hub.broadcast(SocketEvent.make({ _tag: "MessageCreated", message }))
-      return json(message, 201)
+      return respond(message, 201)
     }
 
     if (request.method === "POST" && url.pathname === "/api/tasks") {
@@ -541,26 +586,29 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
             message: cause instanceof Error ? cause.message : String(cause),
           }),
       })
-      return json(assigned, 201)
+      return respond(assigned, 201)
     }
 
     const taskMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)$/)
     if (request.method === "GET" && taskMatch?.[1] !== undefined) {
       const taskId = yield* pathId(TaskId, taskMatch[1])
-      return json(yield* store.getTask(taskId))
+      return respond(yield* store.getTask(taskId))
     }
 
     const cancelMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/cancel$/)
     if (request.method === "POST" && cancelMatch?.[1] !== undefined) {
       const taskId = yield* pathId(TaskId, cancelMatch[1])
       const current = yield* store.getTask(taskId)
+      if (isTerminalTask(current)) {
+        return respond(current)
+      }
       hub.sendToDevice(current.targetDeviceId, SocketEvent.make({ _tag: "CancelTask", taskId }))
       const task = yield* store.updateTask(taskId, {
         status: "cancelled",
         completedAt: now(),
       })
       broadcastTask(task)
-      return json(task)
+      return respond(task)
     }
 
     const offlineMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/offline$/)
@@ -568,7 +616,7 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
       const deviceId = yield* pathId(DeviceId, offlineMatch[1])
       const device = yield* store.markDeviceOffline(deviceId)
       hub.broadcast(SocketEvent.make({ _tag: "DeviceChanged", device }))
-      return json(device)
+      return respond(device)
     }
 
     return yield* Effect.fail(new RequestError({ status: 404, message: "Route not found" }))
@@ -591,9 +639,9 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
 
   return run(effect).catch((cause: unknown) => {
     if (cause instanceof RequestError) {
-      return json({ error: cause.message }, cause.status)
+      return respond({ error: cause.message }, cause.status)
     }
-    return json(
+    return respond(
       {
         error: "Relay request failed",
         detail: cause instanceof Error ? cause.message : String(cause),
@@ -618,11 +666,15 @@ const staticResponse = async (request: Request, url: URL): Promise<Response> => 
   if (await index.exists()) {
     return new Response(index)
   }
-  return json({
-    name: "Cohall relay",
-    status: "running",
-    detail: "Build apps/web to serve the Cohall interface from this process.",
-  })
+  return json(
+    {
+      name: "Cohall relay",
+      status: "running",
+      detail: "Build apps/web to serve the Cohall interface from this process.",
+    },
+    200,
+    request,
+  )
 }
 
 const server = Bun.serve<ConnectionData>({
@@ -631,30 +683,23 @@ const server = Bun.serve<ConnectionData>({
   async fetch(request, server) {
     const url = new URL(request.url)
     if (url.pathname === "/ws") {
-      if (!authorized(request)) {
-        return json({ error: "Unauthorized" }, 401)
-      }
       const role = url.searchParams.get("role")
       if (role !== "client" && role !== "device") {
-        return json({ error: "WebSocket role must be client or device" }, 400)
+        return json({ error: "WebSocket role must be client or device" }, 400, request)
+      }
+      if (role === "client" && !originAllowed(request)) {
+        return json({ error: "Origin not allowed" }, 403, request)
       }
       if (server.upgrade(request, { data: { role } })) {
         return undefined
       }
-      return json({ error: "WebSocket upgrade failed" }, 400)
+      return json({ error: "WebSocket upgrade failed" }, 400, request)
     }
     const response = await api(request, url)
     return response ?? staticResponse(request, url)
   },
   websocket: {
-    open(socket) {
-      hub.attach(socket)
-      socket.send(
-        JSON.stringify(
-          SocketEvent.make({ _tag: "Connected", serverVersion: version, connectedAt: now() }),
-        ),
-      )
-    },
+    open() {},
     message(socket, message) {
       void handleSocketEvent(socket, message)
     },

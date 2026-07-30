@@ -19,6 +19,7 @@ export class CodexRunError extends Schema.TaggedErrorClass<CodexRunError>()(
 export type CodexError = CodexUnavailableError | CodexRunError
 
 export interface RunOptions {
+  readonly threadId: string
   readonly prompt: string
   readonly cwd: string
   readonly sessionId?: string
@@ -135,12 +136,17 @@ const args = (options: RunOptions): Array<string> => {
     "-c",
     'approval_policy="never"',
     ...(options.model === undefined ? [] : ["--model", options.model]),
-    ...(options.sandbox === undefined ? [] : ["--sandbox", options.sandbox]),
   ]
   if (options.sessionId !== undefined) {
     return ["codex", "exec", "resume", ...common, options.sessionId, "-"]
   }
-  return ["codex", "exec", ...common, "-"]
+  return [
+    "codex",
+    "exec",
+    ...common,
+    ...(options.sandbox === undefined ? [] : ["--sandbox", options.sandbox]),
+    "-",
+  ]
 }
 
 export const available = (): boolean => Bun.which("codex") !== null
@@ -159,6 +165,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, CodexError> =
         env: {
           ...Bun.env,
           COHALL_PROVIDER: "codex",
+          COHALL_THREAD_ID: options.threadId,
         },
         stdin: "pipe",
         stdout: "pipe",

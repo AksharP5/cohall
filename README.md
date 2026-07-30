@@ -58,6 +58,10 @@ Put a random token in `.env`:
 openssl rand -hex 32
 ```
 
+If `COHALL_TOKEN` is omitted for a local setup, the relay generates one at
+`.cohall/token`. The local device daemon finds it automatically; paste the value
+from that file into the web app's connection settings.
+
 For a single-machine development setup:
 
 ```bash
@@ -151,8 +155,9 @@ connections to the relay; the relay never SSHes into them. See
 | `COHALL_RELAY_HOST`        | Relay bind address                        | `127.0.0.1`                       |
 | `COHALL_RELAY_PORT`        | Relay and web port                        | `8787`                            |
 | `COHALL_RELAY_URL`         | Relay URL used by devices and MCP         | `http://127.0.0.1:8787`           |
-| `COHALL_TOKEN`             | Shared bearer token                       | `cohall-local-dev`                |
+| `COHALL_TOKEN`             | Shared bearer token                       | generated in the data directory   |
 | `COHALL_DATA_DIR`          | Relay SQLite directory                    | `.cohall`                         |
+| `COHALL_ALLOWED_ORIGINS`   | Extra browser origins, comma-separated    | local Vite origins                |
 | `COHALL_DEVICE_NAME`       | Human-readable `@device` name             | hostname                          |
 | `COHALL_DEVICE_ID`         | Stable UUID override                      | persisted automatically           |
 | `COHALL_DEVICE_STATE`      | Stable ID file                            | `~/.local/state/cohall/device-id` |

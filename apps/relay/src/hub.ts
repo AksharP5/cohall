@@ -6,32 +6,40 @@ export interface ConnectionData {
 
 export class Hub {
   readonly #clients = new Set<Bun.ServerWebSocket<ConnectionData>>()
+  readonly #authenticated = new Set<Bun.ServerWebSocket<ConnectionData>>()
   readonly #devices = new Map<DeviceId, Bun.ServerWebSocket<ConnectionData>>()
   readonly #deviceIds = new Map<Bun.ServerWebSocket<ConnectionData>, DeviceId>()
 
   attach(socket: Bun.ServerWebSocket<ConnectionData>): void {
+    this.#authenticated.add(socket)
     this.#clients.add(socket)
+  }
+
+  isAttached(socket: Bun.ServerWebSocket<ConnectionData>): boolean {
+    return this.#authenticated.has(socket)
   }
 
   registerDevice(deviceId: DeviceId, socket: Bun.ServerWebSocket<ConnectionData>): void {
     const previous = this.#devices.get(deviceId)
+    this.#devices.set(deviceId, socket)
+    this.#deviceIds.set(socket, deviceId)
     if (previous !== undefined && previous !== socket) {
       previous.close(4001, "Device reconnected")
     }
-    this.#devices.set(deviceId, socket)
-    this.#deviceIds.set(socket, deviceId)
   }
 
   detach(socket: Bun.ServerWebSocket<ConnectionData>): DeviceId | undefined {
+    this.#authenticated.delete(socket)
     this.#clients.delete(socket)
     const deviceId = this.#deviceIds.get(socket)
     if (deviceId === undefined) {
       return undefined
     }
     this.#deviceIds.delete(socket)
-    if (this.#devices.get(deviceId) === socket) {
-      this.#devices.delete(deviceId)
+    if (this.#devices.get(deviceId) !== socket) {
+      return undefined
     }
+    this.#devices.delete(deviceId)
     return deviceId
   }
 
