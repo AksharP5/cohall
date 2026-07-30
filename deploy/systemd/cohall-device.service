@@ -1,0 +1,15 @@
+[Unit]
+Description=Cohall device agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+EnvironmentFile=%h/.config/cohall/device.env
+ExecStart=/usr/bin/env bun /opt/cohall/apps/device/src/main.ts device
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

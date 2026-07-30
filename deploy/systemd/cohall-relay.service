@@ -1,0 +1,19 @@
+[Unit]
+Description=Cohall relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cohall
+Group=cohall
+WorkingDirectory=/opt/cohall
+EnvironmentFile=/etc/cohall/relay.env
+ExecStart=/usr/bin/env bun /opt/cohall/apps/relay/src/main.ts
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
