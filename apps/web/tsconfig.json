@@ -4,13 +4,9 @@
     "jsx": "react-jsx",
     "outDir": "dist-types",
     "rootDir": "src",
-    "types": [
-      "vite/client"
-    ]
+    "types": ["vite/client"]
   },
-  "include": [
-    "src"
-  ],
+  "include": ["src"],
   "references": [
     {
       "path": "../../packages/protocol"
