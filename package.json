@@ -2,6 +2,9 @@
   "name": "cohall",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "cohall": "./apps/device/src/main.ts"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -15,6 +18,8 @@
     "start:relay": "bun apps/relay/src/main.ts",
     "start:device": "bun apps/device/src/main.ts device",
     "mcp": "bun apps/device/src/main.ts mcp",
+    "cli": "bun apps/device/src/main.ts",
+    "install:cli": "bun scripts/install-cli.ts",
     "doctor": "bun apps/device/src/main.ts doctor",
     "build": "bun run build:packages && bun run --cwd apps/web build",
     "build:packages": "bunx tsc -b packages/protocol packages/client packages/provider-codex apps/relay apps/device",

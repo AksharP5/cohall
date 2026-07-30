@@ -1,17 +1,20 @@
 import { RelayClient } from "../packages/client/src/index.ts"
-import { DeviceId, isTerminalTask } from "../packages/protocol/src/index.ts"
-import { Effect, Schedule } from "effect"
+import { Device, DeviceId, isTerminalTask } from "../packages/protocol/src/index.ts"
+import { TaskResult } from "../apps/device/src/delegation.ts"
+import { Effect, Schedule, Schema } from "effect"
 import { afterEach, describe, expect, it } from "vitest"
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { spawn, type ChildProcess } from "node:child_process"
+import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { promisify } from "node:util"
 
 const children: Array<ChildProcess> = []
 const directories: Array<string> = []
+const executeFile = promisify(execFile)
 
 const port = async (): Promise<number> =>
   new Promise((resolve, reject) => {
@@ -37,6 +40,19 @@ const stop = async (child: ChildProcess): Promise<void> => {
     new Promise<void>((resolve) => child.once("exit", () => resolve())),
     new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
   ])
+}
+
+const runCohall = async (
+  root: string,
+  args: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> => {
+  const result = await executeFile("bun", ["apps/device/src/main.ts", ...args], {
+    cwd: root,
+    env,
+    maxBuffer: 1024 * 1024,
+  })
+  return result.stdout
 }
 
 afterEach(async () => {
@@ -73,6 +89,7 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
     const token = "integration-token"
     const relayUrl = `http://127.0.0.1:${relayPort}`
     const root = process.cwd()
+    expect(await runCohall(root, ["skill"])).toContain("# Cohall CLI Agent Reference")
     const relay = spawn("bun", ["apps/relay/src/main.ts"], {
       cwd: root,
       env: {
@@ -140,6 +157,18 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
       ),
     )
 
+    const cliEnvironment = {
+      ...process.env,
+      COHALL_DEVICE_ID: deviceId,
+      COHALL_DEVICE_NAME: "test-client",
+      COHALL_DEVICE_WORKSPACES: root,
+      COHALL_RELAY_URL: relayUrl,
+      COHALL_TOKEN: token,
+    }
+    const rawDevices: unknown = JSON.parse(await runCohall(root, ["devices"], cliEnvironment))
+    const devices = Schema.decodeUnknownSync(Schema.Array(Device))(rawDevices)
+    expect(devices.some((known) => known.id === deviceId && known.status === "online")).toBe(true)
+
     const mcp = new McpClient({
       name: "cohall-integration-test",
       version: "0.1.0",
@@ -169,16 +198,27 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
     ])
     await mcp.close()
 
-    const first = await Effect.runPromise(
-      client.createTask({
-        prompt: "Inspect the local environment",
-        targetDeviceId: deviceId,
-        workspace: root,
-      }),
+    const rawQueued: unknown = JSON.parse(
+      await runCohall(
+        root,
+        [
+          "delegate",
+          "--target",
+          "test-device",
+          "--workspace",
+          root,
+          "--no-wait",
+          "--prompt",
+          "Inspect the local environment",
+        ],
+        cliEnvironment,
+      ),
     )
+    const queued = Schema.decodeUnknownSync(TaskResult)(rawQueued)
+    expect(["queued", "assigned", "running"]).toContain(queued.status)
     const second = await Effect.runPromise(
       client.createTask({
-        threadId: first.threadId,
+        threadId: queued.thread_id,
         prompt: "Continue in the same remote session",
         targetDeviceId: deviceId,
         workspace: root,
@@ -186,19 +226,18 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
     )
     expect(second.providerSessionId).toBeUndefined()
 
-    const completed = await Effect.runPromise(
-      client.getTask(first.id).pipe(
-        Effect.repeat({
-          until: isTerminalTask,
-          schedule: Schedule.spaced("100 millis"),
-        }),
-        Effect.timeout("10 seconds"),
-      ),
+    const rawCompleted: unknown = JSON.parse(
+      await runCohall(root, ["wait", queued.task_id, "--timeout", "10"], cliEnvironment),
     )
+    const completed = Schema.decodeUnknownSync(TaskResult)(rawCompleted)
     expect(completed.status).toBe("completed")
     expect(completed.result).toBe("Remote device completed the delegated work.")
-    expect(completed.providerSessionId).toBe("22222222-2222-4222-8222-222222222222")
-    expect((await Effect.runPromise(client.cancelTask(first.id))).status).toBe("completed")
+    const first = await Effect.runPromise(client.getTask(queued.task_id))
+    expect(first.providerSessionId).toBe("22222222-2222-4222-8222-222222222222")
+    const rawCancelled: unknown = JSON.parse(
+      await runCohall(root, ["cancel", queued.task_id], cliEnvironment),
+    )
+    expect(Schema.decodeUnknownSync(TaskResult)(rawCancelled).status).toBe("completed")
 
     const continued = await Effect.runPromise(
       client.getTask(second.id).pipe(
@@ -216,17 +255,20 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
     expect(
       snapshot.messages.some(
         (message) =>
-          message.taskId === first.id &&
+          message.taskId === queued.task_id &&
           message.role === "agent" &&
           message.content === "Remote device completed the delegated work.",
       ),
     ).toBe(true)
+    expect(await runCohall(root, ["thread", queued.thread_id], cliEnvironment)).toContain(
+      "Remote device completed the delegated work.",
+    )
     const log = await readFile(fakeLog, "utf8")
     const lines = log.trim().split("\n")
     expect(lines).toHaveLength(2)
-    expect(lines[0]).toContain(`thread=${first.threadId}`)
+    expect(lines[0]).toContain(`thread=${queued.thread_id}`)
     expect(lines[0]).toContain("--sandbox workspace-write")
-    expect(lines[1]).toContain(`thread=${first.threadId}`)
+    expect(lines[1]).toContain(`thread=${queued.thread_id}`)
     expect(lines[1]).toContain("args=exec resume --json")
     expect(lines[1]).not.toContain("--sandbox")
   }, 30_000)

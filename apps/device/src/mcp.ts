@@ -1,17 +1,11 @@
-import {
-  DeviceId,
-  TaskId,
-  ThreadId,
-  isTerminalTask,
-  type Device,
-  type Task,
-} from "@cohall/protocol"
+import { TaskId, ThreadId } from "@cohall/protocol"
 import { RelayClient } from "@cohall/client"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { Effect, Schedule } from "effect"
+import { Effect } from "effect"
 import * as z from "zod/v4"
 import type { DeviceConfiguration } from "./config.ts"
+import { createDelegation, taskResult, threadContext, waitForTask } from "./delegation.ts"
 
 const output = (value: unknown) => ({
   content: [
@@ -20,31 +14,6 @@ const output = (value: unknown) => ({
       text: JSON.stringify(value, null, 2),
     },
   ],
-})
-
-const resolveDevice = (
-  devices: ReadonlyArray<Device>,
-  target: string | undefined,
-): Device | undefined => {
-  if (target === undefined) {
-    return devices.find((device) => device.status !== "offline") ?? devices[0]
-  }
-  const normalized = target.replace(/^@/, "").toLowerCase()
-  return devices.find(
-    (device) =>
-      device.id === target ||
-      device.name.toLowerCase() === normalized ||
-      device.hostname.toLowerCase() === normalized,
-  )
-}
-
-const taskResult = (task: Task) => ({
-  task_id: task.id,
-  thread_id: task.threadId,
-  status: task.status,
-  target_device_id: task.targetDeviceId,
-  result: task.result,
-  error: task.error,
 })
 
 export const runMcp = async (configuration: DeviceConfiguration): Promise<void> => {
@@ -112,30 +81,12 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
       },
     },
     async ({ prompt, target, context, thread_id, workspace, wait, timeout_seconds }) => {
-      const devices = await Effect.runPromise(client.devices())
-      const device = target === undefined ? undefined : resolveDevice(devices, target)
-      if (devices.length === 0 || (target !== undefined && device === undefined)) {
-        return output({
-          error:
-            devices.length === 0
-              ? "No Cohall devices are registered"
-              : `No Cohall device matches ${target}`,
-          devices: devices.map((known) => known.name),
-        })
-      }
       const task = await Effect.runPromise(
-        client.createTask({
+        createDelegation(client, configuration, {
           prompt,
-          ...(devices.some((known) => known.id === configuration.id)
-            ? { sourceDeviceId: configuration.id }
-            : {}),
-          ...(device === undefined ? {} : { targetDeviceId: DeviceId.make(device.id) }),
-          ...(thread_id === undefined
-            ? configuration.mcpThreadId === undefined
-              ? {}
-              : { threadId: ThreadId.make(configuration.mcpThreadId) }
-            : { threadId: ThreadId.make(thread_id) }),
+          ...(target === undefined ? {} : { target }),
           ...(context === undefined ? {} : { context }),
+          ...(thread_id === undefined ? {} : { threadId: ThreadId.make(thread_id) }),
           ...(workspace === undefined ? {} : { workspace }),
         }),
       )
@@ -143,15 +94,7 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
         return output(taskResult(task))
       }
 
-      const completed = await Effect.runPromise(
-        client.getTask(task.id).pipe(
-          Effect.repeat({
-            until: isTerminalTask,
-            schedule: Schedule.spaced("1 second"),
-          }),
-          Effect.timeout(`${timeout_seconds} seconds`),
-        ),
-      )
+      const completed = await Effect.runPromise(waitForTask(client, task, timeout_seconds))
       return output(taskResult(completed))
     },
   )
@@ -194,12 +137,7 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
     },
     async ({ thread_id }) => {
       const id = ThreadId.make(thread_id)
-      const bootstrap = await Effect.runPromise(client.bootstrap())
-      return output({
-        thread: bootstrap.threads.find((thread) => thread.id === id),
-        messages: bootstrap.messages.filter((message) => message.threadId === id),
-        tasks: bootstrap.tasks.filter((task) => task.threadId === id),
-      })
+      return output(await Effect.runPromise(threadContext(client, id)))
     },
   )
 

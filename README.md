@@ -93,7 +93,58 @@ bun run start:device
 `COHALL_DEVICE_WORKSPACES` is a comma-separated allowlist. A remote task cannot
 choose a working directory outside those roots.
 
-## Add Cohall to Codex
+## Use the Cohall CLI and skill
+
+The CLI plus skill is the recommended integration for agents that can run shell
+commands and load skills. It avoids keeping MCP tool schemas in every host
+conversation while preserving the same device discovery, delegation, and
+shared-thread behavior.
+
+Register the command from a Cohall checkout:
+
+```bash
+bun run install:cli
+cohall --help
+cohall doctor
+```
+
+The installer creates `~/.local/bin/cohall` without overwriting an unrelated
+file. Set `COHALL_BIN_DIR` to use a different executable directory.
+
+The installable skill is at [`skills/cohall`](skills/cohall). Add that directory
+to your SkillSync repository or another compatible skills directory. When the
+skill activates, it first runs `cohall skill` to load the full command and
+context-handoff reference.
+
+The basic agent workflow is:
+
+```bash
+cohall devices
+cohall delegate \
+  --target @macbook \
+  --prompt 'Study these videos using the signed-in browser and return the useful findings.' \
+  --context 'We are improving the shared video-editing skill. Focus on pacing and motion.'
+```
+
+The command waits by default and emits JSON containing the task, shared thread,
+status, target, and result. It also supports queued work:
+
+```bash
+cohall delegate --target @linux --no-wait \
+  --prompt 'Run the project test suite and report any failures.'
+cohall status <task-id>
+cohall wait <task-id>
+cohall cancel <task-id>
+cohall thread <thread-id>
+```
+
+Run `cohall skill` for the complete agent-oriented workflow, including context
+rules, thread continuity, multiline input, device selection, and safety.
+
+## Add Cohall MCP to Codex
+
+MCP remains a first-class option for clients that prefer native tool discovery.
+It uses the same relay client and delegation logic as the CLI.
 
 Add this to `~/.codex/config.toml`, using the absolute path to your checkout:
 
@@ -130,7 +181,8 @@ anything yourself.
 
 Claude Code and OpenCode can use the same command as a standard stdio MCP
 server. The remote device provider implemented today is Codex; the wire protocol
-already reserves Claude Code and OpenCode providers for future adapters.
+already reserves Claude Code and OpenCode providers for future adapters. Do not
+submit the same task through both CLI and MCP.
 
 ## Put the relay on a VPS
 
@@ -150,21 +202,21 @@ connections to the relay; the relay never SSHes into them. See
 
 ## Configuration
 
-| Variable                   | Purpose                                   | Default                           |
-| -------------------------- | ----------------------------------------- | --------------------------------- |
-| `COHALL_RELAY_HOST`        | Relay bind address                        | `127.0.0.1`                       |
-| `COHALL_RELAY_PORT`        | Relay and web port                        | `8787`                            |
-| `COHALL_RELAY_URL`         | Relay URL used by devices and MCP         | `http://127.0.0.1:8787`           |
-| `COHALL_TOKEN`             | Shared bearer token                       | generated in the data directory   |
-| `COHALL_DATA_DIR`          | Relay SQLite directory                    | `.cohall`                         |
-| `COHALL_ALLOWED_ORIGINS`   | Extra browser origins, comma-separated    | local Vite origins                |
-| `COHALL_DEVICE_NAME`       | Human-readable `@device` name             | hostname                          |
-| `COHALL_DEVICE_ID`         | Stable UUID override                      | persisted automatically           |
-| `COHALL_DEVICE_STATE`      | Stable ID file                            | `~/.local/state/cohall/device-id` |
-| `COHALL_DEVICE_WORKSPACES` | Comma-separated workspace roots           | current directory                 |
-| `COHALL_CODEX_MODEL`       | Optional model override                   | local Codex default               |
-| `COHALL_CODEX_SANDBOX`     | Optional sandbox override                 | local Codex default               |
-| `COHALL_THREAD_ID`         | Cohall thread inherited by an MCP process | unset                             |
+| Variable                   | Purpose                                | Default                           |
+| -------------------------- | -------------------------------------- | --------------------------------- |
+| `COHALL_RELAY_HOST`        | Relay bind address                     | `127.0.0.1`                       |
+| `COHALL_RELAY_PORT`        | Relay and web port                     | `8787`                            |
+| `COHALL_RELAY_URL`         | Relay URL used by devices and MCP      | `http://127.0.0.1:8787`           |
+| `COHALL_TOKEN`             | Shared bearer token                    | generated in the data directory   |
+| `COHALL_DATA_DIR`          | Relay SQLite directory                 | `.cohall`                         |
+| `COHALL_ALLOWED_ORIGINS`   | Extra browser origins, comma-separated | local Vite origins                |
+| `COHALL_DEVICE_NAME`       | Human-readable `@device` name          | hostname                          |
+| `COHALL_DEVICE_ID`         | Stable UUID override                   | persisted automatically           |
+| `COHALL_DEVICE_STATE`      | Stable ID file                         | `~/.local/state/cohall/device-id` |
+| `COHALL_DEVICE_WORKSPACES` | Comma-separated workspace roots        | current directory                 |
+| `COHALL_CODEX_MODEL`       | Optional model override                | local Codex default               |
+| `COHALL_CODEX_SANDBOX`     | Optional sandbox override              | local Codex default               |
+| `COHALL_THREAD_ID`         | Cohall thread inherited by CLI or MCP  | unset                             |
 
 Run `bun run doctor` on a device to check relay reachability, workspace
 configuration, and the local Codex executable.
