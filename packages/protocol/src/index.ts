@@ -1,42 +1,41 @@
-import { Schema } from "effect"
+import { Schema } from "effect";
 
 const uuid = <Name extends string>(name: Name) =>
-  Schema.String.check(Schema.isUUID(4)).pipe(Schema.brand(name))
+  Schema.String.check(Schema.isUUID(4)).pipe(Schema.brand(name));
 
 const isoTimestamp = <Name extends string>(name: Name) =>
   Schema.String.check(
-    Schema.isPattern(
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/,
-      { expected: "an ISO-8601 UTC timestamp" },
-    ),
-  ).pipe(Schema.brand(name))
+    Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/, {
+      expected: "an ISO-8601 UTC timestamp",
+    }),
+  ).pipe(Schema.brand(name));
 
-export const DeviceId = uuid("DeviceId")
-export type DeviceId = typeof DeviceId.Type
+export const DeviceId = uuid("DeviceId");
+export type DeviceId = typeof DeviceId.Type;
 
-export const ThreadId = uuid("ThreadId")
-export type ThreadId = typeof ThreadId.Type
+export const ThreadId = uuid("ThreadId");
+export type ThreadId = typeof ThreadId.Type;
 
-export const MessageId = uuid("MessageId")
-export type MessageId = typeof MessageId.Type
+export const MessageId = uuid("MessageId");
+export type MessageId = typeof MessageId.Type;
 
-export const TaskId = uuid("TaskId")
-export type TaskId = typeof TaskId.Type
+export const TaskId = uuid("TaskId");
+export type TaskId = typeof TaskId.Type;
 
-export const ArtifactId = uuid("ArtifactId")
-export type ArtifactId = typeof ArtifactId.Type
+export const ArtifactId = uuid("ArtifactId");
+export type ArtifactId = typeof ArtifactId.Type;
 
-export const Timestamp = isoTimestamp("Timestamp")
-export type Timestamp = typeof Timestamp.Type
+export const Timestamp = isoTimestamp("Timestamp");
+export type Timestamp = typeof Timestamp.Type;
 
-export const Platform = Schema.Literals(["darwin", "linux", "windows", "unknown"])
-export type Platform = typeof Platform.Type
+export const Platform = Schema.Literals(["darwin", "linux", "windows", "unknown"]);
+export type Platform = typeof Platform.Type;
 
-export const Provider = Schema.Literals(["codex", "claude-code", "opencode"])
-export type Provider = typeof Provider.Type
+export const Provider = Schema.Literals(["codex", "claude-code", "opencode"]);
+export type Provider = typeof Provider.Type;
 
-export const DeviceStatus = Schema.Literals(["online", "busy", "offline"])
-export type DeviceStatus = typeof DeviceStatus.Type
+export const DeviceStatus = Schema.Literals(["online", "busy", "offline"]);
+export type DeviceStatus = typeof DeviceStatus.Type;
 
 export const TaskStatus = Schema.Literals([
   "queued",
@@ -46,27 +45,27 @@ export const TaskStatus = Schema.Literals([
   "completed",
   "failed",
   "cancelled",
-])
-export type TaskStatus = typeof TaskStatus.Type
+]);
+export type TaskStatus = typeof TaskStatus.Type;
 
-export const MessageRole = Schema.Literals(["human", "agent", "system", "tool"])
-export type MessageRole = typeof MessageRole.Type
+export const MessageRole = Schema.Literals(["human", "agent", "system", "tool"]);
+export type MessageRole = typeof MessageRole.Type;
 
-export const MessageKind = Schema.Literals(["chat", "reasoning", "tool", "status", "error"])
-export type MessageKind = typeof MessageKind.Type
+export const MessageKind = Schema.Literals(["chat", "reasoning", "tool", "status", "error"]);
+export type MessageKind = typeof MessageKind.Type;
 
 export const Capability = Schema.Struct({
   id: Schema.NonEmptyString,
   label: Schema.NonEmptyString,
   detail: Schema.optionalKey(Schema.String),
-})
+});
 export interface Capability extends Schema.Schema.Type<typeof Capability> {}
 
 export const Workspace = Schema.Struct({
   path: Schema.NonEmptyString,
   label: Schema.NonEmptyString,
   repository: Schema.optionalKey(Schema.String),
-})
+});
 export interface Workspace extends Schema.Schema.Type<typeof Workspace> {}
 
 export const Device = Schema.Struct({
@@ -82,7 +81,7 @@ export const Device = Schema.Struct({
   version: Schema.NonEmptyString,
   lastSeenAt: Timestamp,
   connectedAt: Schema.optionalKey(Timestamp),
-})
+});
 export interface Device extends Schema.Schema.Type<typeof Device> {}
 
 export const Thread = Schema.Struct({
@@ -92,7 +91,7 @@ export const Thread = Schema.Struct({
   updatedAt: Timestamp,
   archivedAt: Schema.optionalKey(Timestamp),
   defaultDeviceId: Schema.optionalKey(DeviceId),
-})
+});
 export interface Thread extends Schema.Schema.Type<typeof Thread> {}
 
 export const Message = Schema.Struct({
@@ -107,7 +106,7 @@ export const Message = Schema.Struct({
   taskId: Schema.optionalKey(TaskId),
   replyTo: Schema.optionalKey(MessageId),
   deviceId: Schema.optionalKey(DeviceId),
-})
+});
 export interface Message extends Schema.Schema.Type<typeof Message> {}
 
 export const Task = Schema.Struct({
@@ -128,7 +127,7 @@ export const Task = Schema.Struct({
   updatedAt: Timestamp,
   startedAt: Schema.optionalKey(Timestamp),
   completedAt: Schema.optionalKey(Timestamp),
-})
+});
 export interface Task extends Schema.Schema.Type<typeof Task> {}
 
 export const Artifact = Schema.Struct({
@@ -140,7 +139,7 @@ export const Artifact = Schema.Struct({
   size: Schema.Natural,
   path: Schema.NonEmptyString,
   createdAt: Timestamp,
-})
+});
 export interface Artifact extends Schema.Schema.Type<typeof Artifact> {}
 
 export const Bootstrap = Schema.Struct({
@@ -149,13 +148,13 @@ export const Bootstrap = Schema.Struct({
   messages: Schema.Array(Message),
   tasks: Schema.Array(Task),
   artifacts: Schema.Array(Artifact),
-})
+});
 export interface Bootstrap extends Schema.Schema.Type<typeof Bootstrap> {}
 
 export const CreateThreadInput = Schema.Struct({
   title: Schema.NonEmptyString,
   defaultDeviceId: Schema.optionalKey(DeviceId),
-})
+});
 export interface CreateThreadInput extends Schema.Schema.Type<typeof CreateThreadInput> {}
 
 export const CreateMessageInput = Schema.Struct({
@@ -167,7 +166,7 @@ export const CreateMessageInput = Schema.Struct({
   taskId: Schema.optionalKey(TaskId),
   replyTo: Schema.optionalKey(MessageId),
   deviceId: Schema.optionalKey(DeviceId),
-})
+});
 export interface CreateMessageInput extends Schema.Schema.Type<typeof CreateMessageInput> {}
 
 export const CreateTaskInput = Schema.Struct({
@@ -181,7 +180,7 @@ export const CreateTaskInput = Schema.Struct({
   parentTaskId: Schema.optionalKey(TaskId),
   workspace: Schema.optionalKey(Schema.String),
   wait: Schema.optionalKey(Schema.Boolean),
-})
+});
 export interface CreateTaskInput extends Schema.Schema.Type<typeof CreateTaskInput> {}
 
 export const ProviderEvent = Schema.TaggedUnion({
@@ -210,8 +209,8 @@ export const ProviderEvent = Schema.TaggedUnion({
     inputTokens: Schema.Natural,
     outputTokens: Schema.Natural,
   },
-})
-export type ProviderEvent = typeof ProviderEvent.Type
+});
+export type ProviderEvent = typeof ProviderEvent.Type;
 
 export const SocketEvent = Schema.TaggedUnion({
   Connected: {
@@ -275,35 +274,35 @@ export const SocketEvent = Schema.TaggedUnion({
     code: Schema.NonEmptyString,
     message: Schema.NonEmptyString,
   },
-})
-export type SocketEvent = typeof SocketEvent.Type
+});
+export type SocketEvent = typeof SocketEvent.Type;
 
 export const ErrorResponse = Schema.Struct({
   error: Schema.NonEmptyString,
   detail: Schema.optionalKey(Schema.String),
-})
+});
 export interface ErrorResponse extends Schema.Schema.Type<typeof ErrorResponse> {}
 
 export const terminalTaskStatuses: ReadonlySet<TaskStatus> = new Set([
   "completed",
   "failed",
   "cancelled",
-])
+]);
 
-export const isTerminalTask = (task: Task): boolean => terminalTaskStatuses.has(task.status)
+export const isTerminalTask = (task: Task): boolean => terminalTaskStatuses.has(task.status);
 
-export const now = (): Timestamp => Timestamp.make(new Date().toISOString())
+export const now = (): Timestamp => Timestamp.make(new Date().toISOString());
 
-export const makeDeviceId = (): DeviceId => DeviceId.make(crypto.randomUUID())
-export const makeThreadId = (): ThreadId => ThreadId.make(crypto.randomUUID())
-export const makeMessageId = (): MessageId => MessageId.make(crypto.randomUUID())
-export const makeTaskId = (): TaskId => TaskId.make(crypto.randomUUID())
-export const makeArtifactId = (): ArtifactId => ArtifactId.make(crypto.randomUUID())
+export const makeDeviceId = (): DeviceId => DeviceId.make(crypto.randomUUID());
+export const makeThreadId = (): ThreadId => ThreadId.make(crypto.randomUUID());
+export const makeMessageId = (): MessageId => MessageId.make(crypto.randomUUID());
+export const makeTaskId = (): TaskId => TaskId.make(crypto.randomUUID());
+export const makeArtifactId = (): ArtifactId => ArtifactId.make(crypto.randomUUID());
 
-export const decodeBootstrap = Schema.decodeUnknownEffect(Bootstrap)
-export const decodeCreateThreadInput = Schema.decodeUnknownEffect(CreateThreadInput)
-export const decodeCreateMessageInput = Schema.decodeUnknownEffect(CreateMessageInput)
-export const decodeCreateTaskInput = Schema.decodeUnknownEffect(CreateTaskInput)
-export const decodeDevice = Schema.decodeUnknownEffect(Device)
-export const decodeSocketEvent = Schema.decodeUnknownEffect(SocketEvent)
-export const decodeTask = Schema.decodeUnknownEffect(Task)
+export const decodeBootstrap = Schema.decodeUnknownEffect(Bootstrap);
+export const decodeCreateThreadInput = Schema.decodeUnknownEffect(CreateThreadInput);
+export const decodeCreateMessageInput = Schema.decodeUnknownEffect(CreateMessageInput);
+export const decodeCreateTaskInput = Schema.decodeUnknownEffect(CreateTaskInput);
+export const decodeDevice = Schema.decodeUnknownEffect(Device);
+export const decodeSocketEvent = Schema.decodeUnknownEffect(SocketEvent);
+export const decodeTask = Schema.decodeUnknownEffect(Task);
