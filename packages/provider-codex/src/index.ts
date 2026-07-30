@@ -1,5 +1,5 @@
-import { ProviderEvent } from "@cohall/protocol";
-import { Effect, Schema } from "effect";
+import { ProviderEvent } from "@cohall/protocol"
+import { Effect, Schema } from "effect"
 
 export class CodexUnavailableError extends Schema.TaggedErrorClass<CodexUnavailableError>()(
   "CodexProvider.Unavailable",
@@ -16,51 +16,50 @@ export class CodexRunError extends Schema.TaggedErrorClass<CodexRunError>()(
   },
 ) {}
 
-export type CodexError = CodexUnavailableError | CodexRunError;
+export type CodexError = CodexUnavailableError | CodexRunError
 
 export interface RunOptions {
-  readonly prompt: string;
-  readonly cwd: string;
-  readonly sessionId?: string;
-  readonly model?: string;
-  readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access";
-  readonly onEvent: (event: ProviderEvent) => void | Promise<void>;
+  readonly prompt: string
+  readonly cwd: string
+  readonly sessionId?: string
+  readonly model?: string
+  readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access"
+  readonly onEvent: (event: ProviderEvent) => void | Promise<void>
 }
 
 export interface RunResult {
-  readonly result: string;
-  readonly sessionId?: string;
+  readonly result: string
+  readonly sessionId?: string
 }
 
-type JsonRecord = Readonly<Record<string, unknown>>;
+type JsonRecord = Readonly<Record<string, unknown>>
 
 const record = (value: unknown): JsonRecord | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? Object.fromEntries(Object.entries(value))
-    : undefined;
+    : undefined
 
-const text = (value: unknown): string | undefined =>
-  typeof value === "string" ? value : undefined;
+const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined)
 
 const number = (value: unknown): number | undefined =>
-  typeof value === "number" ? value : undefined;
+  typeof value === "number" ? value : undefined
 
-const eventType = (event: JsonRecord): string | undefined => text(event.type) ?? text(event.method);
+const eventType = (event: JsonRecord): string | undefined => text(event.type) ?? text(event.method)
 
 const itemType = (item: JsonRecord): string | undefined =>
-  text(item.type)?.replaceAll("_", "").toLowerCase();
+  text(item.type)?.replaceAll("_", "").toLowerCase()
 
 const summary = (item: JsonRecord): string => {
-  const command = text(item.command);
+  const command = text(item.command)
   if (command !== undefined) {
-    return command;
+    return command
   }
-  const tool = text(item.tool) ?? text(item.name);
+  const tool = text(item.tool) ?? text(item.name)
   if (tool !== undefined) {
-    return tool;
+    return tool
   }
-  return "Codex tool";
-};
+  return "Codex tool"
+}
 
 const emitItem = async (
   item: JsonRecord,
@@ -68,26 +67,25 @@ const emitItem = async (
 ): Promise<string | undefined> => {
   switch (itemType(item)) {
     case "agentmessage": {
-      const content = text(item.text) ?? text(item.content);
+      const content = text(item.text) ?? text(item.content)
       if (content === undefined) {
-        return undefined;
+        return undefined
       }
-      await onEvent(ProviderEvent.make({ _tag: "AssistantMessage", content }));
-      return content;
+      return content
     }
     case "reasoning": {
       const content =
         text(item.text) ??
         (Array.isArray(item.summary)
           ? item.summary.filter((part): part is string => typeof part === "string").join("\n")
-          : undefined);
+          : undefined)
       if (content !== undefined && content.length > 0) {
-        await onEvent(ProviderEvent.make({ _tag: "Reasoning", content }));
+        await onEvent(ProviderEvent.make({ _tag: "Reasoning", content }))
       }
-      return undefined;
+      return undefined
     }
     case "commandexecution": {
-      const output = text(item.aggregated_output) ?? text(item.aggregatedOutput);
+      const output = text(item.aggregated_output) ?? text(item.aggregatedOutput)
       await onEvent(
         ProviderEvent.make({
           _tag: "ToolCompleted",
@@ -97,11 +95,11 @@ const emitItem = async (
             text(item.status) === "completed" &&
             (number(item.exit_code) ?? number(item.exitCode) ?? 0) === 0,
         }),
-      );
+      )
       if (output !== undefined && output.length > 0) {
-        await onEvent(ProviderEvent.make({ _tag: "CommandOutput", content: output }));
+        await onEvent(ProviderEvent.make({ _tag: "CommandOutput", content: output }))
       }
-      return undefined;
+      return undefined
     }
     case "filechange": {
       await onEvent(
@@ -111,8 +109,8 @@ const emitItem = async (
           summary: "Applied file changes",
           success: text(item.status) !== "failed",
         }),
-      );
-      return undefined;
+      )
+      return undefined
     }
     case "mcptoolcall":
     case "dynamictoolcall": {
@@ -123,13 +121,13 @@ const emitItem = async (
           summary: summary(item),
           success: text(item.status) !== "failed" && item.success !== false,
         }),
-      );
-      return undefined;
+      )
+      return undefined
     }
     default:
-      return undefined;
+      return undefined
   }
-};
+}
 
 const args = (options: RunOptions): Array<string> => {
   const common = [
@@ -138,14 +136,14 @@ const args = (options: RunOptions): Array<string> => {
     'approval_policy="never"',
     ...(options.model === undefined ? [] : ["--model", options.model]),
     ...(options.sandbox === undefined ? [] : ["--sandbox", options.sandbox]),
-  ];
+  ]
   if (options.sessionId !== undefined) {
-    return ["codex", "exec", "resume", ...common, options.sessionId, "-"];
+    return ["codex", "exec", "resume", ...common, options.sessionId, "-"]
   }
-  return ["codex", "exec", ...common, "-"];
-};
+  return ["codex", "exec", ...common, "-"]
+}
 
-export const available = (): boolean => Bun.which("codex") !== null;
+export const available = (): boolean => Bun.which("codex") !== null
 
 export const run = (options: RunOptions): Effect.Effect<RunResult, CodexError> =>
   Effect.tryPromise({
@@ -153,7 +151,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, CodexError> =
       if (!available()) {
         throw new CodexUnavailableError({
           message: "The codex executable is not available on this device",
-        });
+        })
       }
 
       const process = Bun.spawn(args(options), {
@@ -165,42 +163,42 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, CodexError> =
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
-      });
+      })
       const cancel = (): void => {
-        process.kill("SIGTERM");
-      };
-      signal.addEventListener("abort", cancel, { once: true });
-      process.stdin.write(options.prompt);
-      process.stdin.end();
+        process.kill("SIGTERM")
+      }
+      signal.addEventListener("abort", cancel, { once: true })
+      process.stdin.write(options.prompt)
+      process.stdin.end()
 
-      const stderr = new Response(process.stderr).text();
-      const reader = process.stdout.getReader();
-      const decoder = new TextDecoder();
-      let pending = "";
-      let result = "";
-      let sessionId = options.sessionId;
+      const stderr = new Response(process.stderr).text()
+      const reader = process.stdout.getReader()
+      const decoder = new TextDecoder()
+      let pending = ""
+      let result = ""
+      let sessionId = options.sessionId
 
       const consume = async (line: string): Promise<void> => {
         if (line.trim().length === 0) {
-          return;
+          return
         }
-        const parsed: unknown = JSON.parse(line);
-        const event = record(parsed);
+        const parsed: unknown = JSON.parse(line)
+        const event = record(parsed)
         if (event === undefined) {
-          return;
+          return
         }
-        const kind = eventType(event);
+        const kind = eventType(event)
         if (kind === "thread.started" || kind === "thread/started") {
-          sessionId = text(event.thread_id) ?? text(record(event.params)?.threadId) ?? sessionId;
+          sessionId = text(event.thread_id) ?? text(record(event.params)?.threadId) ?? sessionId
           if (sessionId !== undefined) {
-            await options.onEvent(ProviderEvent.make({ _tag: "SessionStarted", sessionId }));
+            await options.onEvent(ProviderEvent.make({ _tag: "SessionStarted", sessionId }))
           }
-          return;
+          return
         }
         if (kind === "item.started" || kind === "item/started") {
-          const item = record(event.item) ?? record(record(event.params)?.item);
+          const item = record(event.item) ?? record(record(event.params)?.item)
           if (item !== undefined) {
-            const type = itemType(item);
+            const type = itemType(item)
             if (
               type === "commandexecution" ||
               type === "filechange" ||
@@ -213,71 +211,71 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, CodexError> =
                   tool: type === "commandexecution" ? "shell" : (text(item.tool) ?? type ?? "tool"),
                   summary: summary(item),
                 }),
-              );
+              )
             }
           }
-          return;
+          return
         }
         if (kind === "item.completed" || kind === "item/completed") {
-          const item = record(event.item) ?? record(record(event.params)?.item);
+          const item = record(event.item) ?? record(record(event.params)?.item)
           if (item !== undefined) {
-            result = (await emitItem(item, options.onEvent)) ?? result;
+            result = (await emitItem(item, options.onEvent)) ?? result
           }
-          return;
+          return
         }
         if (kind === "turn.completed" || kind === "turn/completed") {
-          const usage = record(event.usage) ?? record(record(event.params)?.usage);
+          const usage = record(event.usage) ?? record(record(event.params)?.usage)
           if (usage !== undefined) {
-            const inputTokens = number(usage.input_tokens) ?? number(usage.inputTokens) ?? 0;
-            const outputTokens = number(usage.output_tokens) ?? number(usage.outputTokens) ?? 0;
+            const inputTokens = number(usage.input_tokens) ?? number(usage.inputTokens) ?? 0
+            const outputTokens = number(usage.output_tokens) ?? number(usage.outputTokens) ?? 0
             await options.onEvent(
               ProviderEvent.make({
                 _tag: "Usage",
                 inputTokens,
                 outputTokens,
               }),
-            );
+            )
           }
         }
-      };
+      }
 
       while (true) {
-        const chunk = await reader.read();
+        const chunk = await reader.read()
         if (chunk.done) {
-          break;
+          break
         }
-        pending += decoder.decode(chunk.value, { stream: true });
-        const lines = pending.split("\n");
-        pending = lines.pop() ?? "";
+        pending += decoder.decode(chunk.value, { stream: true })
+        const lines = pending.split("\n")
+        pending = lines.pop() ?? ""
         for (const line of lines) {
-          await consume(line);
+          await consume(line)
         }
       }
-      pending += decoder.decode();
+      pending += decoder.decode()
       if (pending.trim().length > 0) {
-        await consume(pending);
+        await consume(pending)
       }
 
-      const exitCode = await process.exited;
-      signal.removeEventListener("abort", cancel);
-      const errorOutput = await stderr;
+      const exitCode = await process.exited
+      signal.removeEventListener("abort", cancel)
+      const errorOutput = await stderr
       if (exitCode !== 0) {
         throw new CodexRunError({
           message: errorOutput.trim() || `Codex exited with status ${exitCode}`,
           exitCode,
-        });
+        })
       }
       return {
         result: result || "Codex completed the task without a text response.",
         ...(sessionId === undefined ? {} : { sessionId }),
-      };
+      }
     },
     catch: (cause) => {
       if (cause instanceof CodexUnavailableError || cause instanceof CodexRunError) {
-        return cause;
+        return cause
       }
       return new CodexRunError({
         message: cause instanceof Error ? cause.message : String(cause),
-      });
+      })
     },
-  });
+  })

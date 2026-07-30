@@ -41,9 +41,7 @@ export type RelayClientError = RelayRequestError | RelayDecodeError
 export interface Interface {
   readonly bootstrap: () => Effect.Effect<Bootstrap, RelayClientError>
   readonly devices: () => Effect.Effect<ReadonlyArray<Device>, RelayClientError>
-  readonly createThread: (
-    input: CreateThreadInput,
-  ) => Effect.Effect<Thread, RelayClientError>
+  readonly createThread: (input: CreateThreadInput) => Effect.Effect<Thread, RelayClientError>
   readonly createMessage: (
     threadId: ThreadId,
     input: CreateMessageInput,
@@ -131,16 +129,10 @@ export const make = (options: RelayClientOptions): Interface => {
   })
 
   const devices = Effect.fn("RelayClient.devices")(function* () {
-    return yield* request(
-      "RelayClient.devices",
-      "/api/devices",
-      Schema.Array(Device),
-    )
+    return yield* request("RelayClient.devices", "/api/devices", Schema.Array(Device))
   })
 
-  const createThread = Effect.fn("RelayClient.createThread")(function* (
-    input: CreateThreadInput,
-  ) {
+  const createThread = Effect.fn("RelayClient.createThread")(function* (input: CreateThreadInput) {
     return yield* request("RelayClient.createThread", "/api/threads", Thread, {
       method: "POST",
       body: JSON.stringify(input),
@@ -170,11 +162,7 @@ export const make = (options: RelayClientOptions): Interface => {
   })
 
   const getTask = Effect.fn("RelayClient.getTask")(function* (taskId: TaskId) {
-    return yield* request(
-      "RelayClient.getTask",
-      `/api/tasks/${encodeURIComponent(taskId)}`,
-      Task,
-    )
+    return yield* request("RelayClient.getTask", `/api/tasks/${encodeURIComponent(taskId)}`, Task)
   })
 
   const cancelTask = Effect.fn("RelayClient.cancelTask")(function* (taskId: TaskId) {

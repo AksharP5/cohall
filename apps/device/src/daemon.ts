@@ -6,12 +6,12 @@ import {
   type ProviderEvent,
   type Task,
   type TaskId,
-} from "@cohall/protocol";
-import * as Codex from "@cohall/provider-codex";
-import { Effect, Schedule, Schema } from "effect";
-import { arch, hostname, platform } from "node:os";
-import { isAbsolute, relative, resolve } from "node:path";
-import type { DeviceConfiguration } from "./config.ts";
+} from "@cohall/protocol"
+import * as Codex from "@cohall/provider-codex"
+import { Effect, Schedule, Schema } from "effect"
+import { arch, hostname, platform } from "node:os"
+import { isAbsolute, relative, resolve } from "node:path"
+import type { DeviceConfiguration } from "./config.ts"
 
 export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnectionError>()(
   "Device.ConnectionError",
@@ -21,28 +21,29 @@ export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnect
 ) {}
 
 interface State {
-  socket: WebSocket | undefined;
-  readonly pending: Array<string>;
-  readonly tasks: Map<TaskId, AbortController>;
+  socket: WebSocket | undefined
+  readonly pending: Array<string>
+  readonly tasks: Map<TaskId, AbortController>
+  readonly completed: Set<TaskId>
 }
 
 const socketUrl = (configuration: DeviceConfiguration): string => {
-  const url = new URL(configuration.relayUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/ws";
-  url.searchParams.set("role", "device");
-  url.searchParams.set("token", configuration.token);
-  return url.toString();
-};
+  const url = new URL(configuration.relayUrl)
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+  url.pathname = "/ws"
+  url.searchParams.set("role", "device")
+  url.searchParams.set("token", configuration.token)
+  return url.toString()
+}
 
 const capabilities = (): Device["capabilities"] => {
-  const values: Array<Device["capabilities"][number]> = [];
+  const values: Array<Device["capabilities"][number]> = []
   if (Codex.available()) {
     values.push({
       id: "codex",
       label: "Codex",
       detail: "Uses the device's local Codex login and tools",
-    });
+    })
   }
   if (
     Bun.which("google-chrome") !== null ||
@@ -53,32 +54,32 @@ const capabilities = (): Device["capabilities"] => {
       id: "browser-session",
       label: "Signed-in browser",
       detail: "Local browser state can be used by configured Codex tools",
-    });
+    })
   }
   if (Bun.which("xcodebuild") !== null) {
     values.push({
       id: "xcode",
       label: "Xcode",
       detail: "Build and test Apple platform projects",
-    });
+    })
   }
   if (Bun.which("docker") !== null) {
-    values.push({ id: "docker", label: "Docker" });
+    values.push({ id: "docker", label: "Docker" })
   }
-  return values;
-};
+  return values
+}
 
 const device = (
   configuration: DeviceConfiguration,
   status: "online" | "busy" = "online",
 ): Device => {
-  const operatingSystem = platform();
+  const operatingSystem = platform()
   const platformName =
     operatingSystem === "darwin" || operatingSystem === "linux"
       ? operatingSystem
       : operatingSystem === "win32"
         ? "windows"
-        : "unknown";
+        : "unknown"
 
   return Device.make({
     id: configuration.id,
@@ -95,59 +96,70 @@ const device = (
     })),
     version: "0.1.0",
     lastSeenAt: now(),
-  });
-};
+  })
+}
 
 const allowedWorkspace = (
   configuration: DeviceConfiguration,
   requested: string | undefined,
 ): string => {
   if (requested === undefined) {
-    const first = configuration.workspaces[0];
+    const first = configuration.workspaces[0]
     if (first === undefined) {
-      throw new Error("No workspace is configured on this device");
+      throw new Error("No workspace is configured on this device")
     }
-    return first;
+    return first
   }
-  const candidate = resolve(requested);
+  const candidate = resolve(requested)
   const allowed = configuration.workspaces.some((root) => {
-    const child = relative(root, candidate);
-    return child === "" || (!child.startsWith("..") && !isAbsolute(child));
-  });
+    const child = relative(root, candidate)
+    return child === "" || (!child.startsWith("..") && !isAbsolute(child))
+  })
   if (!allowed) {
-    throw new Error(`Workspace ${candidate} is outside this device's configured workspace roots`);
+    throw new Error(`Workspace ${candidate} is outside this device's configured workspace roots`)
   }
-  return candidate;
-};
+  return candidate
+}
 
 const promptFor = (task: Task, deviceName: string): string => {
   const context =
     task.context === undefined
       ? ""
-      : `\n\nRelevant context supplied by the sending agent:\n${task.context}`;
+      : `\n\nRelevant context supplied by the sending agent:\n${task.context}`
   return [
     `You are the Cohall agent running on ${deviceName}.`,
     "Complete the delegated task using this device's local workspace, tools, credentials, and signed-in services.",
     "Do not ask the human to copy information between devices. Return a concise but complete result that the sending agent can act on.",
     `\nTask:\n${task.prompt}${context}`,
-  ].join("\n");
-};
+  ].join("\n")
+}
 
 const send = (state: State, event: SocketEvent): void => {
-  const payload = JSON.stringify(event);
+  const payload = JSON.stringify(event)
   if (state.socket?.readyState === WebSocket.OPEN) {
-    state.socket.send(payload);
-    return;
+    state.socket.send(payload)
+    return
   }
-  state.pending.push(payload);
-};
+  state.pending.push(payload)
+}
+
+const remember = (state: State, taskId: TaskId): void => {
+  state.completed.add(taskId)
+  if (state.completed.size <= 1_000) {
+    return
+  }
+  const oldest = state.completed.values().next()
+  if (!oldest.done) {
+    state.completed.delete(oldest.value)
+  }
+}
 
 const execute = (configuration: DeviceConfiguration, state: State, task: Task): void => {
-  if (state.tasks.has(task.id)) {
-    return;
+  if (state.tasks.has(task.id) || state.completed.has(task.id)) {
+    return
   }
-  const controller = new AbortController();
-  state.tasks.set(task.id, controller);
+  const controller = new AbortController()
+  state.tasks.set(task.id, controller)
   send(
     state,
     SocketEvent.make({
@@ -155,7 +167,7 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
       taskId: task.id,
       acceptedAt: now(),
     }),
-  );
+  )
 
   const onEvent = (event: ProviderEvent): void => {
     send(
@@ -166,8 +178,8 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
         event,
         sentAt: now(),
       }),
-    );
-  };
+    )
+  }
 
   const workflow = Effect.gen(function* () {
     const cwd = yield* Effect.try({
@@ -176,7 +188,7 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
         new Codex.CodexRunError({
           message: cause instanceof Error ? cause.message : String(cause),
         }),
-    });
+    })
     return yield* Codex.run({
       prompt: promptFor(task, configuration.name),
       cwd,
@@ -184,11 +196,12 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
       ...(task.providerSessionId === undefined ? {} : { sessionId: task.providerSessionId }),
       ...(configuration.model === undefined ? {} : { model: configuration.model }),
       ...(configuration.sandbox === undefined ? {} : { sandbox: configuration.sandbox }),
-    });
-  });
+    })
+  })
 
   void Effect.runPromise(workflow, { signal: controller.signal })
     .then((result) => {
+      remember(state, task.id)
       send(
         state,
         SocketEvent.make({
@@ -198,9 +211,10 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
           finishedAt: now(),
           ...(result.sessionId === undefined ? {} : { providerSessionId: result.sessionId }),
         }),
-      );
+      )
     })
     .catch((cause: unknown) => {
+      remember(state, task.id)
       if (controller.signal.aborted) {
         send(
           state,
@@ -209,8 +223,8 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
             taskId: task.id,
             cancelledAt: now(),
           }),
-        );
-        return;
+        )
+        return
       }
       send(
         state,
@@ -220,12 +234,12 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
           error: cause instanceof Error ? cause.message : String(cause),
           finishedAt: now(),
         }),
-      );
+      )
     })
     .finally(() => {
-      state.tasks.delete(task.id);
-    });
-};
+      state.tasks.delete(task.id)
+    })
+}
 
 const connect = (
   configuration: DeviceConfiguration,
@@ -234,7 +248,7 @@ const connect = (
   Effect.tryPromise({
     try: (signal) =>
       new Promise<void>((complete) => {
-        const socket = new WebSocket(socketUrl(configuration));
+        const socket = new WebSocket(socketUrl(configuration))
         const heartbeat = setInterval(() => {
           send(
             state,
@@ -244,27 +258,27 @@ const connect = (
               status: state.tasks.size > 0 ? "busy" : "online",
               sentAt: now(),
             }),
-          );
-        }, 15_000);
+          )
+        }, 15_000)
 
         const close = (): void => {
-          clearInterval(heartbeat);
+          clearInterval(heartbeat)
           if (state.socket === socket) {
-            state.socket = undefined;
+            state.socket = undefined
           }
-          complete();
-        };
+          complete()
+        }
 
         signal.addEventListener(
           "abort",
           () => {
-            socket.close();
-            close();
+            socket.close()
+            close()
           },
           { once: true },
-        );
+        )
         socket.addEventListener("open", () => {
-          state.socket = socket;
+          state.socket = socket
           socket.send(
             JSON.stringify(
               SocketEvent.make({
@@ -272,15 +286,15 @@ const connect = (
                 device: device(configuration, state.tasks.size > 0 ? "busy" : "online"),
               }),
             ),
-          );
+          )
           for (const payload of state.pending.splice(0)) {
-            socket.send(payload);
+            socket.send(payload)
           }
-          console.log(`Connected ${configuration.name} to ${configuration.relayUrl}`);
-        });
+          console.log(`Connected ${configuration.name} to ${configuration.relayUrl}`)
+        })
         socket.addEventListener("message", (message) => {
           if (typeof message.data !== "string") {
-            return;
+            return
           }
           void Effect.runPromise(
             Effect.try({
@@ -293,33 +307,33 @@ const connect = (
           )
             .then((event) => {
               if (event._tag === "TaskAssigned") {
-                execute(configuration, state, event.task);
-                return;
+                execute(configuration, state, event.task)
+                return
               }
               if (event._tag === "CancelTask") {
-                state.tasks.get(event.taskId)?.abort();
-                return;
+                state.tasks.get(event.taskId)?.abort()
+                return
               }
               if (event._tag === "Error") {
-                console.error(`Relay error: ${event.message}`);
+                console.error(`Relay error: ${event.message}`)
               }
             })
             .catch((cause: unknown) => {
               console.error(
                 `Ignored invalid relay event: ${cause instanceof Error ? cause.message : String(cause)}`,
-              );
-            });
-        });
-        socket.addEventListener("close", close, { once: true });
+              )
+            })
+        })
+        socket.addEventListener("close", close, { once: true })
         socket.addEventListener("error", () => {
-          socket.close();
-        });
+          socket.close()
+        })
       }),
     catch: (cause) =>
       new DeviceConnectionError({
         message: cause instanceof Error ? cause.message : String(cause),
       }),
-  });
+  })
 
 export const runDaemon = (
   configuration: DeviceConfiguration,
@@ -328,10 +342,11 @@ export const runDaemon = (
     socket: undefined,
     pending: [],
     tasks: new Map(),
-  };
+    completed: new Set(),
+  }
   return connect(configuration, state).pipe(
     Effect.repeat({
       schedule: Schedule.spaced("2 seconds"),
     }),
-  );
-};
+  )
+}

@@ -5,13 +5,13 @@ import {
   isTerminalTask,
   type Device,
   type Task,
-} from "@cohall/protocol";
-import { RelayClient } from "@cohall/client";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { Effect, Schedule } from "effect";
-import * as z from "zod/v4";
-import type { DeviceConfiguration } from "./config.ts";
+} from "@cohall/protocol"
+import { RelayClient } from "@cohall/client"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import { Effect, Schedule } from "effect"
+import * as z from "zod/v4"
+import type { DeviceConfiguration } from "./config.ts"
 
 const output = (value: unknown) => ({
   content: [
@@ -20,23 +20,23 @@ const output = (value: unknown) => ({
       text: JSON.stringify(value, null, 2),
     },
   ],
-});
+})
 
 const resolveDevice = (
   devices: ReadonlyArray<Device>,
   target: string | undefined,
 ): Device | undefined => {
   if (target === undefined) {
-    return devices.find((device) => device.status !== "offline") ?? devices[0];
+    return devices.find((device) => device.status !== "offline") ?? devices[0]
   }
-  const normalized = target.replace(/^@/, "").toLowerCase();
+  const normalized = target.replace(/^@/, "").toLowerCase()
   return devices.find(
     (device) =>
       device.id === target ||
       device.name.toLowerCase() === normalized ||
       device.hostname.toLowerCase() === normalized,
-  );
-};
+  )
+}
 
 const taskResult = (task: Task) => ({
   task_id: task.id,
@@ -45,17 +45,17 @@ const taskResult = (task: Task) => ({
   target_device_id: task.targetDeviceId,
   result: task.result,
   error: task.error,
-});
+})
 
 export const runMcp = async (configuration: DeviceConfiguration): Promise<void> => {
   const client = RelayClient.make({
     baseUrl: configuration.relayUrl,
     token: configuration.token,
-  });
+  })
   const server = new McpServer({
     name: "cohall",
     version: "0.1.0",
-  });
+  })
 
   server.registerTool(
     "list_devices",
@@ -78,7 +78,7 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
           workspaces: device.workspaces,
         })),
       ),
-  );
+  )
 
   server.registerTool(
     "delegate",
@@ -112,22 +112,24 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
       },
     },
     async ({ prompt, target, context, thread_id, workspace, wait, timeout_seconds }) => {
-      const devices = await Effect.runPromise(client.devices());
-      const device = resolveDevice(devices, target);
-      if (device === undefined) {
+      const devices = await Effect.runPromise(client.devices())
+      const device = target === undefined ? undefined : resolveDevice(devices, target)
+      if (devices.length === 0 || (target !== undefined && device === undefined)) {
         return output({
           error:
-            target === undefined
+            devices.length === 0
               ? "No Cohall devices are registered"
               : `No Cohall device matches ${target}`,
           devices: devices.map((known) => known.name),
-        });
+        })
       }
       const task = await Effect.runPromise(
         client.createTask({
           prompt,
-          targetDeviceId: DeviceId.make(device.id),
-          sourceDeviceId: configuration.id,
+          ...(devices.some((known) => known.id === configuration.id)
+            ? { sourceDeviceId: configuration.id }
+            : {}),
+          ...(device === undefined ? {} : { targetDeviceId: DeviceId.make(device.id) }),
           ...(thread_id === undefined
             ? configuration.mcpThreadId === undefined
               ? {}
@@ -136,9 +138,9 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
           ...(context === undefined ? {} : { context }),
           ...(workspace === undefined ? {} : { workspace }),
         }),
-      );
+      )
       if (!wait) {
-        return output(taskResult(task));
+        return output(taskResult(task))
       }
 
       const completed = await Effect.runPromise(
@@ -149,10 +151,10 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
           }),
           Effect.timeout(`${timeout_seconds} seconds`),
         ),
-      );
-      return output(taskResult(completed));
+      )
+      return output(taskResult(completed))
     },
-  );
+  )
 
   server.registerTool(
     "task_status",
@@ -165,7 +167,7 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
     },
     async ({ task_id }) =>
       output(taskResult(await Effect.runPromise(client.getTask(TaskId.make(task_id))))),
-  );
+  )
 
   server.registerTool(
     "cancel_task",
@@ -178,7 +180,7 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
     },
     async ({ task_id }) =>
       output(taskResult(await Effect.runPromise(client.cancelTask(TaskId.make(task_id))))),
-  );
+  )
 
   server.registerTool(
     "thread_context",
@@ -191,15 +193,15 @@ export const runMcp = async (configuration: DeviceConfiguration): Promise<void> 
       },
     },
     async ({ thread_id }) => {
-      const id = ThreadId.make(thread_id);
-      const bootstrap = await Effect.runPromise(client.bootstrap());
+      const id = ThreadId.make(thread_id)
+      const bootstrap = await Effect.runPromise(client.bootstrap())
       return output({
         thread: bootstrap.threads.find((thread) => thread.id === id),
         messages: bootstrap.messages.filter((message) => message.threadId === id),
         tasks: bootstrap.tasks.filter((task) => task.threadId === id),
-      });
+      })
     },
-  );
+  )
 
-  await server.connect(new StdioServerTransport());
-};
+  await server.connect(new StdioServerTransport())
+}
