@@ -1,0 +1,13 @@
+{
+  "name": "@cohall/device",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cohall/client": "workspace:*",
+    "@cohall/protocol": "workspace:*",
+    "@cohall/provider-codex": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "effect": "4.0.0-beta.102"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "cohall",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.13",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "bun run scripts/dev.ts",
+    "dev:relay": "bun --watch apps/relay/src/main.ts",
+    "dev:device": "bun --watch apps/device/src/main.ts",
+    "dev:web": "bun --cwd apps/web dev",
+    "build": "bun run build:packages && bun run --cwd apps/web build",
+    "build:packages": "bunx tsc -b packages/protocol packages/client packages/provider-codex apps/relay apps/device",
+    "typecheck": "bunx tsc -b",
+    "test": "bunx vitest run",
+    "lint": "bunx oxlint . --deny-warnings",
+    "format": "bunx oxfmt .",
+    "format:check": "bunx oxfmt --check .",
+    "check": "bun run typecheck && bun run lint && bun run test && bun run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "effect": "4.0.0-beta.102"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0-beta.102",
+    "@types/bun": "^1.3.1",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^6.0.0",
+    "oxfmt": "^0.44.0",
+    "oxlint": "^1.56.0",
+    "typescript": "^6.0.0",
+    "vite": "^8.0.0",
+    "vitest": "^4.1.5"
+  }
+}
