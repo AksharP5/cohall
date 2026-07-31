@@ -11,7 +11,7 @@ The CLI reads the same environment as the Cohall device daemon and MCP server:
 
 ```bash
 export COHALL_RELAY_URL=http://relay:8787
-export COHALL_TOKEN=replace-with-the-shared-token
+export COHALL_TOKEN=replace-with-a-device-or-automation-session-token
 export COHALL_DEVICE_NAME=linux
 export COHALL_DEVICE_WORKSPACES=/home/user/dev,/home/user/.skillsync/repo
 ```
@@ -185,6 +185,24 @@ cohall --help
 cohall doctor
 cohall skill
 ```
+
+### Access management
+
+These commands require the relay owner token and are for human setup or
+administration, not routine agent delegation:
+
+```bash
+cohall pair --label "Work laptop"
+cohall pair --client-only --label "Browser"
+cohall sessions
+cohall revoke <session-id>
+```
+
+`pair` returns a one-time credential that expires after ten minutes. Desktop
+exchanges the default client-and-device credential and binds the resulting
+session to its device ID. The browser accepts a `--client-only` credential in
+its connection dialog. `sessions` lists metadata only; plaintext session tokens
+are never listed again.
 
 ## CLI and MCP
 

@@ -1,5 +1,5 @@
 import { RelayClient } from "@cohall/client"
-import { TaskId, ThreadId } from "@cohall/protocol"
+import { AuthSessionId, TaskId, ThreadId } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import type { DeviceConfiguration } from "./config.ts"
 import { createDelegation, taskResult, threadContext, waitForTask } from "./delegation.ts"
@@ -12,6 +12,7 @@ interface Arguments {
 const valueOptions = new Set([
   "context",
   "context-file",
+  "label",
   "prompt",
   "prompt-file",
   "target",
@@ -20,7 +21,7 @@ const valueOptions = new Set([
   "workspace",
 ])
 
-const flagOptions = new Set(["no-wait"])
+const flagOptions = new Set(["client-only", "no-wait"])
 
 const aliases = new Map([
   ["-c", "context"],
@@ -41,6 +42,9 @@ Usage:
   cohall wait <task-id> [--timeout seconds]
   cohall cancel <task-id>
   cohall thread <thread-id>
+  cohall pair [--label name] [--client-only]
+  cohall sessions
+  cohall revoke <session-id>
   cohall doctor
   cohall device
   cohall mcp
@@ -203,6 +207,42 @@ export const runCli = async (
     }
     const devices = await Effect.runPromise(client.devices())
     print(devices)
+    return
+  }
+
+  if (command === "pair") {
+    allowOptions(arguments_, ["client-only", "label"])
+    if (arguments_.positionals.length > 0) {
+      throw new Error("pair does not accept positional arguments")
+    }
+    const credential = await Effect.runPromise(
+      client.createPairing({
+        label: option(arguments_, "label") ?? "Cohall desktop",
+        roles: arguments_.options.has("client-only") ? ["client"] : ["client", "device"],
+      }),
+    )
+    print({
+      relay_url: configuration.relayUrl,
+      pairing_token: credential.token,
+      expires_at: credential.expiresAt,
+      roles: arguments_.options.has("client-only") ? ["client"] : ["client", "device"],
+    })
+    return
+  }
+
+  if (command === "sessions") {
+    allowOptions(arguments_, [])
+    if (arguments_.positionals.length > 0) {
+      throw new Error("sessions does not accept positional arguments")
+    }
+    print(await Effect.runPromise(client.authSessions()))
+    return
+  }
+
+  if (command === "revoke") {
+    allowOptions(arguments_, [])
+    const sessionId = Schema.decodeUnknownSync(AuthSessionId)(identifier(arguments_, "session id"))
+    print(await Effect.runPromise(client.revokeAuthSession(sessionId)))
     return
   }
 
