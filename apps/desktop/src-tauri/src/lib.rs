@@ -33,7 +33,7 @@ fn desktop_snapshot(
 ) -> Result<DesktopSnapshot, String> {
     let settings = Some(
         config::load(&app)?
-            .unwrap_or_else(|| config::default_config(&app, "http://127.0.0.1:8787".into())),
+            .unwrap_or_else(|| config::default_config("http://127.0.0.1:8787".into())),
     );
     let mut runtime = daemon::status(&supervisor)?;
     let token = match config::load_token() {
@@ -65,8 +65,7 @@ fn save_desktop_connection(
     relay_url: String,
     token: String,
 ) -> Result<DesktopSnapshot, String> {
-    let settings =
-        config::load(&app)?.unwrap_or_else(|| config::default_config(&app, relay_url.clone()));
+    let settings = config::load(&app)?.unwrap_or_else(|| config::default_config(relay_url.clone()));
     let next = DesktopConfig {
         relay_url: relay_url.trim_end_matches('/').into(),
         ..settings

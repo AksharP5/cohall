@@ -3,15 +3,14 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
     env,
+    io::{BufRead, BufReader, Read},
     path::PathBuf,
+    process::Child,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
-    ShellExt,
-};
+use tauri_plugin_shell::ShellExt;
 
 const LOG_LIMIT: usize = 400;
 
@@ -25,7 +24,7 @@ pub struct RuntimeSnapshot {
 }
 
 struct RuntimeState {
-    child: Option<CommandChild>,
+    child: Option<Child>,
     desired: bool,
     status: String,
     last_error: Option<String>,
@@ -62,7 +61,7 @@ fn snapshot(supervisor: &Supervisor) -> Result<RuntimeSnapshot, String> {
     let state = lock(supervisor)?;
     Ok(RuntimeSnapshot {
         status: state.status.clone(),
-        pid: state.child.as_ref().map(CommandChild::pid),
+        pid: state.child.as_ref().map(Child::id),
         last_error: state.last_error.clone(),
         logs: state.logs.iter().cloned().collect(),
     })
@@ -81,6 +80,39 @@ fn append(supervisor: &Supervisor, line: String) {
             state.logs.pop_front();
         }
     }
+}
+
+fn capture<R: Runtime, T: Read + Send + 'static>(
+    app: AppHandle<R>,
+    supervisor: Supervisor,
+    stream: T,
+    stderr: bool,
+) {
+    std::thread::spawn(move || {
+        for result in BufReader::new(stream).lines() {
+            let line = match result {
+                Ok(line) => line.trim().to_string(),
+                Err(error) => {
+                    let message = format!("Could not read device output: {error}");
+                    append(&supervisor, message.clone());
+                    if let Ok(mut state) = lock(&supervisor) {
+                        state.last_error = Some(message);
+                    }
+                    emit(&app, &supervisor);
+                    break;
+                }
+            };
+            if line.is_empty() {
+                continue;
+            }
+            if stderr {
+                log::warn!(target: "cohall::device", "{line}");
+            } else {
+                log::info!(target: "cohall::device", "{line}");
+            }
+            append(&supervisor, line);
+        }
+    });
 }
 
 fn gui_path<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
@@ -111,15 +143,14 @@ fn environment<R: Runtime>(
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
+    let workspaces =
+        serde_json::to_string(&settings.workspaces).map_err(|error| error.to_string())?;
     let mut values = HashMap::from([
         ("COHALL_RELAY_URL".into(), settings.relay_url.clone()),
         ("COHALL_TOKEN".into(), token),
         ("COHALL_DEVICE_ID".into(), settings.device_id.clone()),
         ("COHALL_DEVICE_NAME".into(), settings.device_name.clone()),
-        (
-            "COHALL_DEVICE_WORKSPACES".into(),
-            settings.workspaces.join(","),
-        ),
+        ("COHALL_DEVICE_WORKSPACES_JSON".into(), workspaces),
         (
             "COHALL_DATA_DIR".into(),
             data_dir.to_string_lossy().into_owned(),
@@ -158,18 +189,27 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, supervisor: &Supervisor) -> Result<
         .map_err(|error| error.to_string())?
         .arg("device")
         .envs(environment(app, &settings, token)?);
-    let (mut events, child) = command.spawn().map_err(|error| {
+    let mut command: std::process::Command = command.into();
+    let mut child = command.spawn().map_err(|error| {
         if let Ok(mut state) = lock(supervisor) {
             state.status = "failed".into();
             state.last_error = Some(error.to_string());
         }
         error.to_string()
     })?;
-    let pid = child.pid();
+    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
     {
         let mut state = lock(supervisor)?;
         state.child = Some(child);
         state.status = "running".into();
+    }
+    if let Some(stdout) = stdout {
+        capture(app.clone(), supervisor.clone(), stdout, false);
+    }
+    if let Some(stderr) = stderr {
+        capture(app.clone(), supervisor.clone(), stderr, true);
     }
     append(supervisor, format!("Device process started with pid {pid}"));
     emit(app, supervisor);
@@ -177,33 +217,29 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, supervisor: &Supervisor) -> Result<
     let handle = app.clone();
     let managed = supervisor.clone();
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes).trim().to_string();
-                    if !line.is_empty() {
-                        log::info!(target: "cohall::device", "{line}");
-                        append(&managed, line);
-                    }
+        loop {
+            let status = match lock(&managed) {
+                Ok(mut state) if state.child.as_ref().map(Child::id) == Some(pid) => {
+                    state.child.as_mut().map(Child::try_wait)
                 }
-                CommandEvent::Stderr(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes).trim().to_string();
-                    if !line.is_empty() {
-                        log::warn!(target: "cohall::device", "{line}");
-                        append(&managed, line);
-                    }
-                }
-                CommandEvent::Error(error) => {
-                    log::error!(target: "cohall::device", "{error}");
-                    append(&managed, format!("Device process error: {error}"));
+                _ => return,
+            };
+            match status {
+                Some(Ok(None)) => tokio::time::sleep(Duration::from_millis(100)).await,
+                Some(Err(error)) => {
+                    let message = format!("Could not monitor device process: {error}");
+                    log::error!(target: "cohall::device", "{message}");
+                    append(&managed, message.clone());
                     if let Ok(mut state) = lock(&managed) {
-                        state.last_error = Some(error);
+                        state.status = "failed".into();
+                        state.last_error = Some(message);
                     }
                     emit(&handle, &managed);
+                    return;
                 }
-                CommandEvent::Terminated(payload) => {
+                Some(Ok(Some(status))) => {
                     let restart = if let Ok(mut state) = lock(&managed) {
-                        if state.child.as_ref().map(CommandChild::pid) != Some(pid) {
+                        if state.child.as_ref().map(Child::id) != Some(pid) {
                             false
                         } else {
                             state.child.take();
@@ -219,7 +255,7 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, supervisor: &Supervisor) -> Result<
                     };
                     append(
                         &managed,
-                        format!("Device process exited with code {:?}", payload.code),
+                        format!("Device process exited with code {:?}", status.code()),
                     );
                     emit(&handle, &managed);
                     if restart {
@@ -232,9 +268,9 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, supervisor: &Supervisor) -> Result<
                             emit(&handle, &managed);
                         }
                     }
-                    break;
+                    return;
                 }
-                _ => {}
+                None => return,
             }
         }
     });
@@ -242,25 +278,56 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, supervisor: &Supervisor) -> Result<
 }
 
 pub fn stop<R: Runtime>(app: &AppHandle<R>, supervisor: &Supervisor) -> Result<(), String> {
-    let child = {
+    let result = {
         let mut state = lock(supervisor)?;
         state.desired = false;
+        if state.child.is_none() {
+            state.status = "stopped".into();
+            return Ok(());
+        }
         state.status = "stopping".into();
-        state.child.take()
+        state.child.as_mut().map(Child::kill)
     };
-    if let Some(child) = child {
-        child.kill().map_err(|error| error.to_string())?;
+    if let Some(Err(error)) = result {
+        let message = format!("Could not stop device process: {error}");
+        if let Ok(mut state) = lock(supervisor) {
+            state.status = "failed".into();
+            state.last_error = Some(message.clone());
+        }
+        emit(app, supervisor);
+        return Err(message);
     }
-    {
-        let mut state = lock(supervisor)?;
-        state.status = "stopped".into();
-    }
-    append(supervisor, "Device process stopped".into());
+    append(supervisor, "Device process stop requested".into());
     emit(app, supervisor);
     Ok(())
 }
 
 pub fn restart<R: Runtime>(app: &AppHandle<R>, supervisor: &Supervisor) -> Result<(), String> {
-    stop(app, supervisor)?;
-    start(app, supervisor)
+    let result = {
+        let mut state = lock(supervisor)?;
+        state.desired = true;
+        if state.child.is_none() {
+            None
+        } else {
+            state.status = "restarting".into();
+            state.child.as_mut().map(Child::kill)
+        }
+    };
+    match result {
+        None => start(app, supervisor),
+        Some(Ok(())) => {
+            append(supervisor, "Device process restart requested".into());
+            emit(app, supervisor);
+            Ok(())
+        }
+        Some(Err(error)) => {
+            let message = format!("Could not restart device process: {error}");
+            if let Ok(mut state) = lock(supervisor) {
+                state.status = "failed".into();
+                state.last_error = Some(message.clone());
+            }
+            emit(app, supervisor);
+            Err(message)
+        }
+    }
 }

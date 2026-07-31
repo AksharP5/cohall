@@ -46,23 +46,17 @@ fn config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
-pub fn default_config<R: Runtime>(app: &AppHandle<R>, relay_url: String) -> DesktopConfig {
+pub fn default_config(relay_url: String) -> DesktopConfig {
     let device_name = hostname::get()
         .ok()
         .and_then(|name| name.into_string().ok())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "Cohall desktop".into());
-    let workspaces = app
-        .path()
-        .home_dir()
-        .ok()
-        .map(|path| vec![path.to_string_lossy().into_owned()])
-        .unwrap_or_default();
     DesktopConfig {
         relay_url: relay_url.trim_end_matches('/').into(),
         device_id: uuid::Uuid::new_v4().to_string(),
         device_name,
-        workspaces,
+        workspaces: Vec::new(),
     }
 }
 
@@ -147,6 +141,14 @@ mod tests {
         assert_eq!(
             config(vec!["projects/cohall".into()]).validate(),
             Err("Workspace paths must be absolute".into())
+        );
+    }
+
+    #[test]
+    fn requires_an_explicit_workspace_root() {
+        assert_eq!(
+            config(Vec::new()).validate(),
+            Err("Add at least one workspace".into())
         );
     }
 }

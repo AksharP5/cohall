@@ -70,9 +70,10 @@ COHALL_TOKEN=your-relay-owner-token \
 cohall pair --label "Akshar's laptop"
 ```
 
-Paste the returned `pairing_token` into Desktop. It is valid for ten minutes,
-can be used once, and becomes a 90-day revocable session stored in the operating
-system keychain. The paired session is bound to Desktop's generated device ID.
+Paste the returned `pairing_token` into Desktop and explicitly add the workspace
+roots this device may access. The token is valid for ten minutes, can be used
+once, and becomes a 90-day revocable session stored in the operating system
+keychain. The paired session is bound to Desktop's generated device ID.
 
 Desktop starts and supervises the local device agent, keeps it available from
 the tray when the window closes, and exposes workspace roots, launch-at-login,
@@ -257,21 +258,22 @@ connections to the relay; the relay never SSHes into them. See
 
 ## Configuration
 
-| Variable                   | Purpose                                | Default                           |
-| -------------------------- | -------------------------------------- | --------------------------------- |
-| `COHALL_RELAY_HOST`        | Relay bind address                     | `127.0.0.1`                       |
-| `COHALL_RELAY_PORT`        | Relay and web port                     | `8787`                            |
-| `COHALL_RELAY_URL`         | Relay URL used by devices and MCP      | `http://127.0.0.1:8787`           |
-| `COHALL_TOKEN`             | Relay owner or issued session token    | generated for the relay owner     |
-| `COHALL_DATA_DIR`          | Relay SQLite directory                 | `.cohall`                         |
-| `COHALL_ALLOWED_ORIGINS`   | Extra browser origins, comma-separated | local Vite origins                |
-| `COHALL_DEVICE_NAME`       | Human-readable `@device` name          | hostname                          |
-| `COHALL_DEVICE_ID`         | Stable UUID override                   | persisted automatically           |
-| `COHALL_DEVICE_STATE`      | Stable ID file                         | `~/.local/state/cohall/device-id` |
-| `COHALL_DEVICE_WORKSPACES` | Comma-separated workspace roots        | current directory                 |
-| `COHALL_CODEX_MODEL`       | Optional model override                | local Codex default               |
-| `COHALL_CODEX_SANDBOX`     | Optional sandbox override              | local Codex default               |
-| `COHALL_THREAD_ID`         | Cohall thread inherited by CLI or MCP  | unset                             |
+| Variable                        | Purpose                                 | Default                           |
+| ------------------------------- | --------------------------------------- | --------------------------------- |
+| `COHALL_RELAY_HOST`             | Relay bind address                      | `127.0.0.1`                       |
+| `COHALL_RELAY_PORT`             | Relay and web port                      | `8787`                            |
+| `COHALL_RELAY_URL`              | Relay URL used by devices and MCP       | `http://127.0.0.1:8787`           |
+| `COHALL_TOKEN`                  | Relay owner or issued session token     | generated for the relay owner     |
+| `COHALL_DATA_DIR`               | Relay SQLite directory                  | `.cohall`                         |
+| `COHALL_ALLOWED_ORIGINS`        | Extra browser origins, comma-separated  | local Vite origins                |
+| `COHALL_DEVICE_NAME`            | Human-readable `@device` name           | hostname                          |
+| `COHALL_DEVICE_ID`              | Stable UUID override                    | persisted automatically           |
+| `COHALL_DEVICE_STATE`           | Stable ID file                          | `~/.local/state/cohall/device-id` |
+| `COHALL_DEVICE_WORKSPACES`      | Comma-separated workspace roots         | current directory                 |
+| `COHALL_DEVICE_WORKSPACES_JSON` | JSON workspace roots (takes precedence) | unset                             |
+| `COHALL_CODEX_MODEL`            | Optional model override                 | local Codex default               |
+| `COHALL_CODEX_SANDBOX`          | Optional sandbox override               | local Codex default               |
+| `COHALL_THREAD_ID`              | Cohall thread inherited by CLI or MCP   | unset                             |
 
 Run `bun run doctor` on a device to check relay reachability, workspace
 configuration, and the local Codex executable.

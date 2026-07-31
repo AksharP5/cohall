@@ -392,6 +392,10 @@ function ConnectionDialog({
   const native = desktop !== undefined
   const paired = desktop?.connection !== undefined
   const running = desktop?.runtime.pid !== undefined
+  const workspaceRoots = workspaces
+    .split("\n")
+    .map((workspace) => workspace.trim())
+    .filter((workspace) => workspace.length > 0)
 
   useEffect(() => {
     if (!native) {
@@ -599,23 +603,26 @@ function ConnectionDialog({
           <button
             type="button"
             className="primary-button"
-            disabled={busy || (native && !paired && nextToken.trim().length === 0)}
+            disabled={
+              busy ||
+              (native &&
+                (deviceName.trim().length === 0 ||
+                  workspaceRoots.length === 0 ||
+                  (!paired && nextToken.trim().length === 0)))
+            }
             onClick={() =>
               perform(async () => {
                 if (native) {
-                  if (nextToken.trim().length > 0) {
-                    await onPair(nextUrl.trim(), nextToken.trim())
-                  }
                   if (desktop.config !== undefined) {
                     await onConfig({
                       ...desktop.config,
                       relayUrl: nextUrl.trim(),
                       deviceName: deviceName.trim(),
-                      workspaces: workspaces
-                        .split("\n")
-                        .map((workspace) => workspace.trim())
-                        .filter((workspace) => workspace.length > 0),
+                      workspaces: workspaceRoots,
                     })
+                  }
+                  if (nextToken.trim().length > 0) {
+                    await onPair(nextUrl.trim(), nextToken.trim())
                   }
                   return
                 }

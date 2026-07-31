@@ -264,7 +264,11 @@ export const useCohall = () => {
   const configureDesktop = async (
     config: NonNullable<DesktopSnapshot["config"]>,
   ): Promise<void> => {
-    setDesktopState(await saveDesktopConfig(config))
+    const snapshot = await saveDesktopConfig(config)
+    setDesktopState(snapshot)
+    if (snapshot.connection !== undefined) {
+      setConnectionState(snapshot.connection)
+    }
   }
 
   const disconnect = async (): Promise<void> => {
