@@ -11,16 +11,16 @@ you already use.
 ## How it fits together
 
 ```text
-Codex / Claude Code / OpenCode           Cohall web app
-           │ MCP                               │
-           └──────────────┬────────────────────┘
+Codex / Claude Code / OpenCode       Cohall Desktop + Web
+        CLI or MCP                         │
+             └────────────┬────────────────┘
                           │ HTTPS / WebSocket
                     Cohall relay (VPS)
                      SQLite + routing
                      ╱              ╲
-             Mac device agent    Linux device agent
-             local Codex         local Codex
-             Chrome / Xcode      repos / Docker
+            managed Mac agent    managed Linux agent
+             local Codex           local Codex
+             Chrome / Xcode        repos / Docker
 ```
 
 The relay is not a lead agent. It is a small durable mailbox and live event
@@ -35,12 +35,55 @@ every task and response belongs to a visible Cohall conversation.
 - Codex execution under the target device's local user, login, config, skills,
   MCP servers, browser state, and workspace
 - Per-thread, per-device Codex session continuity
+- Standalone Tauri desktop shell sharing the same React interface as the web app
+- Desktop-managed device sidecar, tray lifecycle, launch at login, notifications,
+  rotating logs, and update support
+- One-time pairing credentials and expiring, revocable, device-bound sessions
 - Standard stdio MCP tools for Codex, Claude Code, OpenCode, and other clients
 - Responsive Buzz-inspired web interface served directly by the relay
 - Workspace allowlists, bearer authentication, cancellation, live progress, and
   offline task queues
 
-## Quick start
+## Cohall Desktop
+
+Cohall Desktop is the primary end-user application. The web app remains a
+companion for reaching the same relay from a browser, while CLI and MCP remain
+the headless integration surfaces for coding agents.
+
+During development, launch the native app with:
+
+```bash
+bun install
+bun run dev:desktop
+```
+
+That command compiles the device daemon into a standalone Bun sidecar, starts
+the shared Vite renderer, and launches Tauri. The packaged app does not require
+users to install Bun.
+
+Start the relay separately, then create a one-time desktop credential from an
+owner-authenticated Cohall CLI:
+
+```bash
+COHALL_RELAY_URL=https://cohall.example.com \
+COHALL_TOKEN=your-relay-owner-token \
+cohall pair --label "Akshar's laptop"
+```
+
+Paste the returned `pairing_token` into Desktop. It is valid for ten minutes,
+can be used once, and becomes a 90-day revocable session stored in the operating
+system keychain. The paired session is bound to Desktop's generated device ID.
+
+Desktop starts and supervises the local device agent, keeps it available from
+the tray when the window closes, and exposes workspace roots, launch-at-login,
+recent activity, logs, and update checks in Settings.
+
+Cross-platform installers are built by
+[`desktop-release.yml`](.github/workflows/desktop-release.yml). See
+[`docs/desktop-release.md`](docs/desktop-release.md) for signing and release
+requirements.
+
+## Source quick start
 
 Requirements: [Bun](https://bun.sh/) 1.3+ and the Codex CLI on devices that
 should execute work.
@@ -59,17 +102,25 @@ openssl rand -hex 32
 ```
 
 If `COHALL_TOKEN` is omitted for a local setup, the relay generates one at
-`.cohall/token`. The local device daemon finds it automatically; paste the value
-from that file into the web app's connection settings.
+`.cohall/token`. The local device daemon finds it automatically. Use it only to
+create a client pairing credential:
 
-For a single-machine development setup:
+```bash
+cohall pair --client-only --label "Local browser"
+```
+
+Paste that one-time credential into the web app. The browser exchanges it for a
+revocable client session.
+
+For a browser-based single-machine development setup:
 
 ```bash
 bun run dev
 ```
 
 Open `http://127.0.0.1:5173`. The development command starts the relay, one
-device daemon for the current machine, and Vite.
+device daemon for the current machine, and Vite. Use `bun run dev:desktop` for
+the standalone application.
 
 For the production-shaped setup:
 
@@ -84,7 +135,7 @@ On every Mac, Linux machine, or VPS that should accept work:
 
 ```bash
 COHALL_RELAY_URL=http://your-relay:8787 \
-COHALL_TOKEN=the-same-token \
+COHALL_TOKEN=your-relay-owner-token \
 COHALL_DEVICE_NAME=macbook \
 COHALL_DEVICE_WORKSPACES="$HOME/dev,$HOME/.skillsync/repo" \
 bun run start:device
@@ -92,6 +143,10 @@ bun run start:device
 
 `COHALL_DEVICE_WORKSPACES` is a comma-separated allowlist. A remote task cannot
 choose a working directory outside those roots.
+
+The source daemon and existing CLI/MCP setups still accept the owner token for
+backward compatibility. Desktop uses a bound session and is the preferred way
+to run an end-user device.
 
 ## Use the Cohall CLI and skill
 
@@ -155,7 +210,7 @@ args = ["/absolute/path/to/cohall/apps/device/src/main.ts", "mcp"]
 
 [mcp_servers.cohall.env]
 COHALL_RELAY_URL = "http://your-relay:8787"
-COHALL_TOKEN = "the-same-token"
+COHALL_TOKEN = "your-relay-owner-token"
 COHALL_DEVICE_NAME = "linux"
 COHALL_DEVICE_WORKSPACES = "/home/you/dev,/home/you/.skillsync/repo"
 ```
@@ -207,7 +262,7 @@ connections to the relay; the relay never SSHes into them. See
 | `COHALL_RELAY_HOST`        | Relay bind address                     | `127.0.0.1`                       |
 | `COHALL_RELAY_PORT`        | Relay and web port                     | `8787`                            |
 | `COHALL_RELAY_URL`         | Relay URL used by devices and MCP      | `http://127.0.0.1:8787`           |
-| `COHALL_TOKEN`             | Shared bearer token                    | generated in the data directory   |
+| `COHALL_TOKEN`             | Relay owner or issued session token    | generated for the relay owner     |
 | `COHALL_DATA_DIR`          | Relay SQLite directory                 | `.cohall`                         |
 | `COHALL_ALLOWED_ORIGINS`   | Extra browser origins, comma-separated | local Vite origins                |
 | `COHALL_DEVICE_NAME`       | Human-readable `@device` name          | hostname                          |
@@ -223,7 +278,13 @@ configuration, and the local Codex executable.
 
 ## Security model
 
-- Treat the Cohall token like an SSH key and rotate it if exposed.
+- Treat the relay owner token like an SSH key and use it only to create or
+  revoke sessions.
+- Pairing credentials are hash-only, short-lived, and single-use. Session
+  credentials are hash-only on the relay, expire after 90 days, and can be
+  revoked by the owner.
+- Desktop persists its session in the operating system keychain. The browser
+  persists only a client-scoped session, not the relay owner token.
 - Prefer Tailscale, a private network, or TLS in front of a public relay.
 - Device agents run with the permissions of the local account that started them.
 - The daemon refuses workspaces outside its configured roots.

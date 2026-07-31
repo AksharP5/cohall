@@ -61,6 +61,10 @@ Delegate input:
   --timeout <seconds>        Wait for at most 5-3600 seconds (default: 900).
   --no-wait                  Return as soon as the task is queued.
 
+Pairing:
+  --label <name>             Human-readable label shown in session management.
+  --client-only              Create a browser credential without device access.
+
 All operational commands emit JSON. Run "cohall skill" for the complete
 agent-oriented workflow and context rules.`
 
