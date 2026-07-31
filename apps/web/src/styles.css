@@ -1050,7 +1050,9 @@ summary:focus-visible {
 }
 
 .dialog {
-  width: min(calc(100vw - 32px), 430px);
+  width: min(calc(100vw - 32px), 520px);
+  max-height: min(760px, calc(100vh - 32px));
+  overflow: auto;
   padding: 18px;
   border: 1px solid rgba(28, 34, 27, 0.1);
   border-radius: 13px;
@@ -1094,7 +1096,8 @@ summary:focus-visible {
   font-weight: 620;
 }
 
-.dialog input {
+.dialog input,
+.dialog textarea {
   height: 36px;
   padding: 0 10px;
   border: 1px solid rgba(28, 34, 27, 0.11);
@@ -1104,9 +1107,153 @@ summary:focus-visible {
   font-size: 10px;
 }
 
-.dialog input:focus {
+.dialog textarea {
+  height: auto;
+  min-height: 76px;
+  padding-block: 9px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.45;
+}
+
+.dialog input:focus,
+.dialog textarea:focus {
   border-color: rgba(84, 112, 24, 0.35);
   box-shadow: 0 0 0 3px rgba(164, 202, 74, 0.1);
+}
+
+.settings-section {
+  padding: 13px 0 15px;
+  border-top: 1px solid var(--soft-line);
+}
+
+.dialog-head + .settings-section {
+  border-top: 0;
+}
+
+.settings-section-title {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  justify-content: space-between;
+  color: #333a31;
+  font-size: 10px;
+}
+
+.settings-section-title strong {
+  font-weight: 680;
+}
+
+.settings-section-title > span {
+  color: #8a9088;
+  font-size: 8px;
+  text-transform: capitalize;
+}
+
+.settings-badge,
+.runtime-state {
+  padding: 3px 7px;
+  border-radius: 99px;
+  background: #edf6d7;
+  color: #607a25 !important;
+  font-weight: 650;
+}
+
+.runtime-state.failed {
+  background: #fff0ec;
+  color: #a04e3c !important;
+}
+
+.runtime-state.stopped {
+  background: #f0f2ef;
+  color: #777e75 !important;
+}
+
+.dialog .settings-help {
+  margin-top: 7px;
+  line-height: 1.5;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.settings-row .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-row .update-copy {
+  margin-left: auto;
+  color: #868c84;
+  font-size: 8px;
+}
+
+.dialog .toggle-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toggle-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.toggle-row small {
+  color: #929790;
+  font-size: 8px;
+  font-weight: 450;
+}
+
+.dialog .toggle-row input {
+  width: 32px;
+  height: 18px;
+  accent-color: #6d8c22;
+}
+
+.desktop-logs {
+  margin-top: 11px;
+  border: 1px solid var(--soft-line);
+  border-radius: 8px;
+}
+
+.desktop-logs summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  color: #697067;
+  cursor: pointer;
+  font-size: 8px;
+  list-style: none;
+}
+
+.desktop-logs pre {
+  max-height: 150px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-top: 1px solid var(--soft-line);
+  background: #f7f8f6;
+  color: #5e655b;
+  font-size: 7px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.dialog .settings-error {
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: #fff0ec;
+  color: #984735;
+  line-height: 1.45;
 }
 
 .dialog-actions {
@@ -1117,7 +1264,8 @@ summary:focus-visible {
 }
 
 .primary-button,
-.secondary-button {
+.secondary-button,
+.danger-button {
   height: 32px;
   padding: 0 12px;
   border-radius: 8px;
@@ -1136,6 +1284,19 @@ summary:focus-visible {
 .secondary-button {
   background: #f0f2ef;
   color: #596057;
+}
+
+.danger-button {
+  margin-right: auto;
+  background: #fff0ec;
+  color: #9a4837;
+}
+
+.primary-button:disabled,
+.secondary-button:disabled,
+.danger-button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .mobile-scrim {

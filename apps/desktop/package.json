@@ -1,0 +1,15 @@
+{
+  "name": "@cohall/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run build:sidecar && tauri dev",
+    "build": "bun run build:sidecar && tauri build",
+    "build:sidecar": "bun ../../scripts/build-device-sidecar.ts",
+    "check": "cargo fmt --check --manifest-path src-tauri/Cargo.toml && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}

@@ -10,7 +10,7 @@ import {
 import * as Codex from "@cohall/provider-codex"
 import { Effect, Schedule, Schema } from "effect"
 import { arch, hostname, platform } from "node:os"
-import { isAbsolute, relative, resolve } from "node:path"
+import { basename, isAbsolute, relative, resolve } from "node:path"
 import type { DeviceConfiguration } from "./config.ts"
 
 export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnectionError>()(
@@ -93,7 +93,7 @@ const device = (
     capabilities: capabilities(),
     workspaces: configuration.workspaces.map((path) => ({
       path,
-      label: path.split("/").at(-1) ?? path,
+      label: basename(path) || path,
     })),
     version: "0.1.0",
     lastSeenAt: now(),

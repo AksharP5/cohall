@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cohall",
+  "version": "0.1.0",
+  "identifier": "com.cohall.desktop",
+  "build": {
+    "beforeDevCommand": {
+      "script": "bun run dev -- --host 127.0.0.1",
+      "cwd": "../../web",
+      "wait": false
+    },
+    "beforeBuildCommand": {
+      "script": "bun run build",
+      "cwd": "../../web"
+    },
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost http: https: ws: wss:; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Cohall",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 780,
+        "minHeight": 580,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "One shared room for agents on your devices",
+    "longDescription": "Cohall connects local coding agents across your own devices through a durable shared workspace.",
+    "externalBin": ["binaries/cohall-device"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

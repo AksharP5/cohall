@@ -6,45 +6,22 @@ import {
   type Task,
   type ThreadId,
 } from "@cohall/protocol"
-import { RelayClient } from "@cohall/client"
+import { RelayClient, exchangePairing } from "@cohall/client"
 import { Effect } from "effect"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-
-const storageKey = "cohall.connection"
-
-interface Connection {
-  readonly url: string
-  readonly token: string
-}
-
-const parseJson = (value: string): unknown | undefined => {
-  try {
-    return JSON.parse(value)
-  } catch {
-    return undefined
-  }
-}
-
-const initialConnection = (): Connection => {
-  const stored = localStorage.getItem(storageKey)
-  if (stored !== null) {
-    const parsed = parseJson(stored)
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "url" in parsed &&
-      "token" in parsed &&
-      typeof parsed.url === "string" &&
-      typeof parsed.token === "string"
-    ) {
-      return { url: parsed.url, token: parsed.token }
-    }
-  }
-  return {
-    url: window.location.port === "5173" ? "http://127.0.0.1:8787" : window.location.origin,
-    token: "",
-  }
-}
+import {
+  desktop,
+  disconnectDesktop,
+  initialConnection,
+  loadDesktop,
+  notify,
+  saveConnection,
+  saveDesktopConfig,
+  setDeviceRunning,
+  type Connection,
+  type DesktopSnapshot,
+  type DeviceRuntime,
+} from "./runtime.ts"
 
 const empty = Bootstrap.make({
   devices: [],
@@ -108,6 +85,8 @@ const websocketUrl = (connection: Connection): string => {
 
 export const useCohall = () => {
   const [connection, setConnectionState] = useState(initialConnection)
+  const [desktopState, setDesktopState] = useState<DesktopSnapshot>()
+  const [ready, setReady] = useState(!desktop)
   const [data, setData] = useState<Bootstrap>(empty)
   const [status, setStatus] = useState<"connecting" | "online" | "offline">("connecting")
   const [error, setError] = useState<string>()
@@ -122,6 +101,52 @@ export const useCohall = () => {
     [connection],
   )
 
+  useEffect(() => {
+    if (!desktop) {
+      return
+    }
+    void loadDesktop()
+      .then((snapshot) => {
+        if (snapshot !== undefined) {
+          setDesktopState(snapshot)
+          if (snapshot.connection !== undefined) {
+            setConnectionState(snapshot.connection)
+          }
+        }
+      })
+      .catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      })
+      .finally(() => setReady(true))
+  }, [])
+
+  useEffect(() => {
+    if (!desktop) {
+      return
+    }
+    let unlisten: (() => void) | undefined
+    let disposed = false
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<DeviceRuntime>("cohall://device-status", (event) => {
+          setDesktopState((current) =>
+            current === undefined ? current : { ...current, runtime: event.payload },
+          )
+        }),
+      )
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup()
+          return
+        }
+        unlisten = cleanup
+      })
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
   const refresh = useCallback(async () => {
     setError(undefined)
     const snapshot = await Effect.runPromise(client.bootstrap()).catch((cause: unknown) => {
@@ -134,9 +159,12 @@ export const useCohall = () => {
   }, [client])
 
   useEffect(() => {
+    if (!ready) {
+      return
+    }
     if (connection.token.trim().length === 0) {
       setStatus("offline")
-      setError("Enter the relay token to connect")
+      setError(desktop ? "Pair this desktop with your Cohall relay" : "Enter the relay token")
       return
     }
     let disposed = false
@@ -180,6 +208,15 @@ export const useCohall = () => {
               setError(event.message)
               return
             }
+            if (
+              event._tag === "TaskChanged" &&
+              (event.task.status === "completed" || event.task.status === "failed")
+            ) {
+              void notify(
+                event.task.status === "completed" ? "Cohall task completed" : "Cohall task failed",
+                event.task.prompt.slice(0, 120),
+              )
+            }
             setData((current) => applyEvent(current, event))
           })
           .catch(() => undefined)
@@ -202,11 +239,47 @@ export const useCohall = () => {
       }
       socket.current?.close()
     }
-  }, [connection, refresh])
+  }, [connection, ready, refresh])
 
-  const setConnection = (next: Connection): void => {
-    localStorage.setItem(storageKey, JSON.stringify(next))
+  const setConnection = async (next: Connection): Promise<void> => {
+    const snapshot = await saveConnection(next)
+    if (snapshot !== undefined) {
+      setDesktopState(snapshot)
+    }
     setConnectionState(next)
+  }
+
+  const pair = async (url: string, token: string): Promise<void> => {
+    const result = await Effect.runPromise(
+      exchangePairing(url, {
+        token,
+        ...(desktopState?.config?.deviceId === undefined
+          ? {}
+          : { deviceId: desktopState.config.deviceId }),
+      }),
+    )
+    await setConnection({ url, token: result.token })
+  }
+
+  const configureDesktop = async (
+    config: NonNullable<DesktopSnapshot["config"]>,
+  ): Promise<void> => {
+    setDesktopState(await saveDesktopConfig(config))
+  }
+
+  const disconnect = async (): Promise<void> => {
+    if (!desktop) {
+      await setConnection({ url: connection.url, token: "" })
+      return
+    }
+    const snapshot = await disconnectDesktop()
+    setDesktopState(snapshot)
+    setConnectionState({ url: snapshot.config?.relayUrl ?? connection.url, token: "" })
+  }
+
+  const setDevice = async (running: boolean): Promise<void> => {
+    const runtime = await setDeviceRunning(running)
+    setDesktopState((current) => (current === undefined ? current : { ...current, runtime }))
   }
 
   const createTask = async (input: {
@@ -237,11 +310,17 @@ export const useCohall = () => {
   return {
     client,
     connection,
+    configureDesktop,
     createTask,
     data,
+    desktop: desktopState,
+    disconnect,
     error,
+    pair,
+    ready,
     refresh,
     setConnection,
+    setDevice,
     status,
   }
 }

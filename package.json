@@ -15,6 +15,7 @@
     "dev:relay": "bun --watch apps/relay/src/main.ts",
     "dev:device": "bun --watch apps/device/src/main.ts",
     "dev:web": "bun --cwd apps/web dev",
+    "dev:desktop": "bun --cwd apps/desktop dev",
     "start:relay": "bun apps/relay/src/main.ts",
     "start:device": "bun apps/device/src/main.ts device",
     "mcp": "bun apps/device/src/main.ts mcp",
@@ -22,13 +23,16 @@
     "install:cli": "bun scripts/install-cli.ts",
     "doctor": "bun apps/device/src/main.ts doctor",
     "build": "bun run build:packages && bun run --cwd apps/web build",
+    "build:desktop": "bun --cwd apps/desktop build",
+    "build:desktop:sidecar": "bun scripts/build-device-sidecar.ts",
     "build:packages": "bunx tsc -b packages/protocol packages/client packages/provider-codex apps/relay apps/device",
     "typecheck": "bunx tsc -b",
     "test": "bunx vitest run",
     "lint": "bunx oxlint . --deny-warnings",
     "format": "bunx oxfmt .",
     "format:check": "bunx oxfmt --check .",
-    "check": "bun run typecheck && bun run lint && bun run test && bun run build"
+    "check": "bun run typecheck && bun run lint && bun run test && bun run build",
+    "check:desktop": "bun --cwd apps/desktop check"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

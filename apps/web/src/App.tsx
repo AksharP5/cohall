@@ -8,8 +8,11 @@ import {
   CircleHelp,
   Command,
   Cpu,
+  Download,
+  FolderOpen,
   Hash,
   Laptop,
+  Logs,
   Menu,
   MessageSquareText,
   Monitor,
@@ -35,6 +38,15 @@ import {
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
+import {
+  checkForUpdate,
+  installUpdate,
+  launchAtLogin,
+  openDesktopLogs,
+  setLaunchAtLogin,
+  type DesktopConfig,
+  type DesktopSnapshot,
+} from "./runtime.ts"
 import { useCohall } from "./useCohall.ts"
 
 const relativeTime = (timestamp: string): string => {
@@ -349,18 +361,62 @@ function Composer({
 }
 
 function ConnectionDialog({
+  desktop,
   url,
   token,
   onClose,
+  onConfig,
+  onDevice,
+  onDisconnect,
+  onPair,
   onSave,
 }: {
+  readonly desktop?: DesktopSnapshot | undefined
   readonly url: string
   readonly token: string
   readonly onClose: () => void
-  readonly onSave: (url: string, token: string) => void
+  readonly onConfig: (config: DesktopConfig) => Promise<void>
+  readonly onDevice: (running: boolean) => Promise<void>
+  readonly onDisconnect: () => Promise<void>
+  readonly onPair: (url: string, pairingToken: string) => Promise<void>
+  readonly onSave: (url: string, token: string) => Promise<void>
 }) {
   const [nextUrl, setUrl] = useState(url)
   const [nextToken, setToken] = useState(token)
+  const [deviceName, setDeviceName] = useState(desktop?.config?.deviceName ?? "")
+  const [workspaces, setWorkspaces] = useState(desktop?.config?.workspaces.join("\n") ?? "")
+  const [autostart, setAutostart] = useState(false)
+  const [update, setUpdate] = useState<string>()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  const native = desktop !== undefined
+  const paired = desktop?.connection !== undefined
+  const running = desktop?.runtime.pid !== undefined
+
+  useEffect(() => {
+    if (!native) {
+      return
+    }
+    void launchAtLogin()
+      .then(setAutostart)
+      .catch(() => undefined)
+  }, [native])
+
+  const perform = (action: () => Promise<void>, close = false): void => {
+    setBusy(true)
+    setError(undefined)
+    void action()
+      .then(() => {
+        if (close) {
+          onClose()
+        }
+      })
+      .catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      })
+      .finally(() => setBusy(false))
+  }
+
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <div
@@ -372,35 +428,206 @@ function ConnectionDialog({
       >
         <div className="dialog-head">
           <div>
-            <h2 id="connection-title">Relay connection</h2>
-            <p>Point Cohall at the relay on your VPS or local machine.</p>
+            <h2 id="connection-title">{native ? "Cohall desktop" : "Relay connection"}</h2>
+            <p>
+              {native
+                ? "Pair this computer, manage its local agent, and choose desktop preferences."
+                : "Point Cohall at the relay on your VPS or local machine."}
+            </p>
           </div>
           <button type="button" className="icon-button" onClick={onClose}>
             <X size={16} />
           </button>
         </div>
-        <label>
-          Relay URL
-          <input value={nextUrl} onChange={(event) => setUrl(event.target.value)} />
-        </label>
-        <label>
-          Access token
-          <input
-            type="password"
-            value={nextToken}
-            onChange={(event) => setToken(event.target.value)}
-          />
-        </label>
+        <section className="settings-section">
+          <div className="settings-section-title">
+            <strong>Relay</strong>
+            {paired ? <span className="settings-badge">Paired</span> : null}
+          </div>
+          <label>
+            Relay URL
+            <input value={nextUrl} onChange={(event) => setUrl(event.target.value)} />
+          </label>
+          <label>
+            {native ? "One-time pairing credential" : "Access or pairing token"}
+            <input
+              type="password"
+              placeholder={native && paired ? "Paste a new credential to re-pair" : undefined}
+              value={nextToken}
+              onChange={(event) => setToken(event.target.value)}
+            />
+          </label>
+          <p className="settings-help">
+            {native
+              ? "Create a desktop pairing credential from an owner-authenticated Cohall client. It expires after ten minutes and can be used once."
+              : "Paste a client-only pairing credential to exchange it for a revocable browser session. Existing access tokens remain supported."}
+          </p>
+        </section>
+
+        {native && desktop.config !== undefined ? (
+          <section className="settings-section">
+            <div className="settings-section-title">
+              <strong>This device</strong>
+              <span className={`runtime-state ${desktop.runtime.status}`}>
+                {desktop.runtime.status}
+              </span>
+            </div>
+            <label>
+              Device name
+              <input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} />
+            </label>
+            <label>
+              Workspace roots
+              <textarea
+                rows={3}
+                value={workspaces}
+                onChange={(event) => setWorkspaces(event.target.value)}
+                placeholder="/Users/you/dev"
+              />
+            </label>
+            <p className="settings-help">
+              One absolute path per line. Remote work stays inside these roots.
+            </p>
+            <div className="settings-row">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy || !paired}
+                onClick={() => perform(() => onDevice(!running))}
+              >
+                {running ? "Stop local agent" : "Start local agent"}
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => perform(openDesktopLogs)}
+              >
+                <FolderOpen size={13} />
+                Open logs
+              </button>
+            </div>
+            {desktop.runtime.lastError !== undefined ? (
+              <p className="settings-error">{desktop.runtime.lastError}</p>
+            ) : null}
+            {desktop.runtime.logs.length > 0 ? (
+              <details className="desktop-logs">
+                <summary>
+                  <Logs size={13} />
+                  Recent device activity
+                </summary>
+                <pre>{desktop.runtime.logs.slice(-12).join("\n")}</pre>
+              </details>
+            ) : null}
+          </section>
+        ) : null}
+
+        {native ? (
+          <section className="settings-section">
+            <div className="settings-section-title">
+              <strong>Desktop</strong>
+              <span>v{desktop.version}</span>
+            </div>
+            <label className="toggle-row">
+              <span>
+                Launch at login
+                <small>Start Cohall in the tray and keep this device available.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={autostart}
+                onChange={(event) => {
+                  const enabled = event.target.checked
+                  setAutostart(enabled)
+                  perform(() => setLaunchAtLogin(enabled))
+                }}
+              />
+            </label>
+            <div className="settings-row">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                onClick={() =>
+                  perform(async () => {
+                    const available = await checkForUpdate()
+                    setUpdate(
+                      available === undefined
+                        ? "Cohall is up to date."
+                        : `Cohall ${available.version} is ready.`,
+                    )
+                  })
+                }
+              >
+                Check for updates
+              </button>
+              {update?.includes("is ready") ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() =>
+                    perform(async () => {
+                      await onDevice(false)
+                      await installUpdate()
+                    })
+                  }
+                >
+                  <Download size={13} />
+                  Install and restart
+                </button>
+              ) : null}
+              {update !== undefined ? <span className="update-copy">{update}</span> : null}
+            </div>
+          </section>
+        ) : null}
+
+        {error !== undefined ? <p className="settings-error">{error}</p> : null}
         <div className="dialog-actions">
+          {native && paired ? (
+            <button
+              type="button"
+              className="danger-button"
+              disabled={busy}
+              onClick={() => perform(onDisconnect)}
+            >
+              Disconnect
+            </button>
+          ) : null}
           <button type="button" className="secondary-button" onClick={onClose}>
             Cancel
           </button>
           <button
             type="button"
             className="primary-button"
-            onClick={() => onSave(nextUrl.trim(), nextToken)}
+            disabled={busy || (native && !paired && nextToken.trim().length === 0)}
+            onClick={() =>
+              perform(async () => {
+                if (native) {
+                  if (nextToken.trim().length > 0) {
+                    await onPair(nextUrl.trim(), nextToken.trim())
+                  }
+                  if (desktop.config !== undefined) {
+                    await onConfig({
+                      ...desktop.config,
+                      relayUrl: nextUrl.trim(),
+                      deviceName: deviceName.trim(),
+                      workspaces: workspaces
+                        .split("\n")
+                        .map((workspace) => workspace.trim())
+                        .filter((workspace) => workspace.length > 0),
+                    })
+                  }
+                  return
+                }
+                if (nextToken.startsWith("cohall_pair_")) {
+                  await onPair(nextUrl.trim(), nextToken.trim())
+                  return
+                }
+                await onSave(nextUrl.trim(), nextToken)
+              }, true)
+            }
           >
-            Connect
+            {native ? (paired ? "Save" : "Pair desktop") : "Connect"}
           </button>
         </div>
       </div>
@@ -440,6 +667,12 @@ export function App() {
   useEffect(() => {
     scroll.current?.scrollTo({ top: scroll.current.scrollHeight })
   }, [messages.length, tasks.length])
+
+  useEffect(() => {
+    if (cohall.ready && cohall.desktop !== undefined && cohall.connection.token.length === 0) {
+      setSettings(true)
+    }
+  }, [cohall.connection.token.length, cohall.desktop, cohall.ready])
 
   const submit = async (prompt: string): Promise<void> => {
     setSending(true)
@@ -685,13 +918,15 @@ export function App() {
 
       {settings ? (
         <ConnectionDialog
+          desktop={cohall.desktop}
           url={cohall.connection.url}
-          token={cohall.connection.token}
+          token={cohall.desktop === undefined ? cohall.connection.token : ""}
           onClose={() => setSettings(false)}
-          onSave={(url, token) => {
-            cohall.setConnection({ url, token })
-            setSettings(false)
-          }}
+          onConfig={cohall.configureDesktop}
+          onDevice={cohall.setDevice}
+          onDisconnect={cohall.disconnect}
+          onPair={cohall.pair}
+          onSave={(url, token) => cohall.setConnection({ url, token })}
         />
       ) : null}
     </div>

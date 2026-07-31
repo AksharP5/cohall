@@ -46,7 +46,9 @@ export const loadConfiguration = Effect.gen(function* () {
     Config.withDefault("apps/web/dist"),
   )
   const allowedOrigins = yield* Config.string("COHALL_ALLOWED_ORIGINS").pipe(
-    Config.withDefault("http://127.0.0.1:5173,http://localhost:5173"),
+    Config.withDefault(
+      "http://127.0.0.1:5173,http://localhost:5173,tauri://localhost,http://tauri.localhost,https://tauri.localhost",
+    ),
   )
 
   return RelayConfiguration.make({
