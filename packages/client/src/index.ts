@@ -1,13 +1,19 @@
 import {
+  AuthSession,
   Bootstrap,
+  CreatePairingInput,
   CreateMessageInput,
   CreateTaskInput,
   CreateThreadInput,
   Device,
   ErrorResponse,
+  ExchangePairingInput,
   Message,
+  PairingCredential,
+  PairingResult,
   Task,
   Thread,
+  type AuthSessionId,
   type DeviceId,
   type TaskId,
   type ThreadId,
@@ -50,6 +56,13 @@ export interface Interface {
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
   readonly cancelTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
   readonly markDeviceOffline: (deviceId: DeviceId) => Effect.Effect<Device, RelayClientError>
+  readonly createPairing: (
+    input: CreatePairingInput,
+  ) => Effect.Effect<PairingCredential, RelayClientError>
+  readonly authSessions: () => Effect.Effect<ReadonlyArray<AuthSession>, RelayClientError>
+  readonly revokeAuthSession: (
+    sessionId: AuthSessionId,
+  ) => Effect.Effect<AuthSession, RelayClientError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@cohall/RelayClient") {}
@@ -185,6 +198,34 @@ export const make = (options: RelayClientOptions): Interface => {
     )
   })
 
+  const createPairing = Effect.fn("RelayClient.createPairing")(function* (
+    input: CreatePairingInput,
+  ) {
+    return yield* request("RelayClient.createPairing", "/api/auth/pairings", PairingCredential, {
+      method: "POST",
+      body: JSON.stringify(input),
+    })
+  })
+
+  const authSessions = Effect.fn("RelayClient.authSessions")(function* () {
+    return yield* request(
+      "RelayClient.authSessions",
+      "/api/auth/sessions",
+      Schema.Array(AuthSession),
+    )
+  })
+
+  const revokeAuthSession = Effect.fn("RelayClient.revokeAuthSession")(function* (
+    sessionId: AuthSessionId,
+  ) {
+    return yield* request(
+      "RelayClient.revokeAuthSession",
+      `/api/auth/sessions/${encodeURIComponent(sessionId)}/revoke`,
+      AuthSession,
+      { method: "POST" },
+    )
+  })
+
   return Service.of({
     bootstrap,
     devices,
@@ -194,8 +235,59 @@ export const make = (options: RelayClientOptions): Interface => {
     getTask,
     cancelTask,
     markDeviceOffline,
+    createPairing,
+    authSessions,
+    revokeAuthSession,
   })
 }
+
+export const exchangePairing = (
+  baseUrl: string,
+  input: ExchangePairingInput,
+): Effect.Effect<PairingResult, RelayClientError> =>
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: (signal) =>
+        fetch(`${normalizeBaseUrl(baseUrl)}/api/auth/pair`, {
+          method: "POST",
+          signal,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input),
+        }),
+      catch: (cause) =>
+        new RelayRequestError({
+          operation: "RelayClient.exchangePairing",
+          message: cause instanceof Error ? cause.message : String(cause),
+        }),
+    })
+    if (!response.ok) {
+      const message = yield* Effect.promise(() => responseMessage(response))
+      return yield* Effect.fail(
+        new RelayRequestError({
+          operation: "RelayClient.exchangePairing",
+          message,
+          status: response.status,
+        }),
+      )
+    }
+    const json = yield* Effect.tryPromise({
+      try: () => response.json(),
+      catch: (cause) =>
+        new RelayDecodeError({
+          operation: "RelayClient.exchangePairing",
+          message: cause instanceof Error ? cause.message : String(cause),
+        }),
+    })
+    return yield* Schema.decodeUnknownEffect(PairingResult)(json).pipe(
+      Effect.mapError(
+        (cause) =>
+          new RelayDecodeError({
+            operation: "RelayClient.exchangePairing",
+            message: String(cause),
+          }),
+      ),
+    )
+  })
 
 export const layer = (options: RelayClientOptions) => Layer.succeed(Service, make(options))
 

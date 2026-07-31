@@ -1,14 +1,21 @@
 import {
   Artifact,
+  AuthSession,
   Bootstrap,
   Device,
   Message,
+  PairingCredential,
+  PairingResult,
   Task,
   Thread,
+  makeAuthSessionId,
   makeMessageId,
   makeTaskId,
   makeThreadId,
   now,
+  type AuthSessionId,
+  type ConnectionRole,
+  type CreatePairingInput,
   type CreateMessageInput,
   type CreateTaskInput,
   type CreateThreadInput,
@@ -98,6 +105,24 @@ interface ArtifactRow {
   readonly created_at: string
 }
 
+interface PairingRow {
+  readonly token_hash: string
+  readonly label: string
+  readonly roles_json: string
+  readonly expires_at: string
+  readonly used_at: string | null
+}
+
+interface AuthSessionRow {
+  readonly id: string
+  readonly token_hash: string
+  readonly label: string
+  readonly roles_json: string
+  readonly created_at: string
+  readonly last_seen_at: string
+  readonly revoked_at: string | null
+}
+
 export interface TaskUpdate {
   readonly status?: TaskStatus
   readonly providerSessionId?: string
@@ -142,6 +167,18 @@ export interface Interface {
     provider: string,
     sessionId: string,
   ) => Effect.Effect<void, PersistenceError>
+  readonly createPairing: (
+    input: CreatePairingInput,
+  ) => Effect.Effect<PairingCredential, PersistenceError>
+  readonly exchangePairing: (token: string) => Effect.Effect<PairingResult, PersistenceError>
+  readonly authenticateSession: (
+    token: string,
+    role: ConnectionRole,
+  ) => Effect.Effect<AuthSession | undefined, PersistenceError>
+  readonly listAuthSessions: () => Effect.Effect<ReadonlyArray<AuthSession>, PersistenceError>
+  readonly revokeAuthSession: (
+    sessionId: AuthSessionId,
+  ) => Effect.Effect<AuthSession, PersistenceError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@cohall/RelayStore") {}
@@ -155,6 +192,16 @@ const operationError =
     })
 
 const parseJson = (value: string): unknown => JSON.parse(value)
+
+const secret = (prefix: "pair" | "session"): string => {
+  const value = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("")
+  return `cohall_${prefix}_${value}`
+}
+
+const tokenHash = (token: string): string =>
+  new Bun.CryptoHasher("sha256").update(token).digest("hex")
 
 const decode = <S extends Schema.Top & { readonly DecodingServices: never }>(
   operation: string,
@@ -250,6 +297,22 @@ const artifactFromRow = (row: ArtifactRow): Effect.Effect<Artifact, PersistenceE
     path: row.path,
     createdAt: row.created_at,
     ...(row.task_id === null ? {} : { taskId: row.task_id }),
+  })
+
+const authSessionFromRow = (row: AuthSessionRow): Effect.Effect<AuthSession, PersistenceError> =>
+  Effect.gen(function* () {
+    const roles = yield* Effect.try({
+      try: () => parseJson(row.roles_json),
+      catch: operationError("RelayStore.decodeAuthSession.roles"),
+    })
+    return yield* decode("RelayStore.decodeAuthSession", AuthSession, {
+      id: row.id,
+      label: row.label,
+      roles,
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
+    })
   })
 
 const queryAll = <Row>(
@@ -643,6 +706,172 @@ const makeService = (db: Database): Interface => {
     })
   })
 
+  const createPairing = Effect.fn("RelayStore.createPairing")(function* (
+    input: CreatePairingInput,
+  ) {
+    if (input.roles.length === 0) {
+      return yield* Effect.fail(
+        new PersistenceError({
+          operation: "RelayStore.createPairing",
+          message: "A pairing must allow at least one role",
+        }),
+      )
+    }
+    const token = secret("pair")
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1_000).toISOString()
+    yield* Effect.try({
+      try: () =>
+        db
+          .query(
+            `INSERT INTO auth_pairings (
+              token_hash, label, roles_json, expires_at, created_at
+            ) VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(
+            tokenHash(token),
+            input.label,
+            JSON.stringify([...new Set(input.roles)]),
+            expiresAt,
+            now(),
+          ),
+      catch: operationError("RelayStore.createPairing"),
+    })
+    return yield* decode("RelayStore.createPairing.result", PairingCredential, {
+      token,
+      expiresAt,
+    })
+  })
+
+  const exchangePairing = Effect.fn("RelayStore.exchangePairing")(function* (token: string) {
+    const timestamp = now()
+    const sessionToken = secret("session")
+    const sessionId = makeAuthSessionId()
+    const row = yield* Effect.try({
+      try: () =>
+        db.transaction(() => {
+          const pairing = db
+            .query<PairingRow, [string, string]>(
+              `SELECT * FROM auth_pairings
+               WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
+            )
+            .get(tokenHash(token), timestamp)
+          if (pairing === null) {
+            throw new Error("Pairing credential is invalid, expired, or already used")
+          }
+          const result = db
+            .query(
+              `UPDATE auth_pairings SET used_at = ?
+               WHERE token_hash = ? AND used_at IS NULL`,
+            )
+            .run(timestamp, pairing.token_hash)
+          if (result.changes !== 1) {
+            throw new Error("Pairing credential was already used")
+          }
+          db.query(
+            `INSERT INTO auth_sessions (
+              id, token_hash, label, roles_json, created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?)`,
+          ).run(
+            sessionId,
+            tokenHash(sessionToken),
+            pairing.label,
+            pairing.roles_json,
+            timestamp,
+            timestamp,
+          )
+          return {
+            id: sessionId,
+            token_hash: tokenHash(sessionToken),
+            label: pairing.label,
+            roles_json: pairing.roles_json,
+            created_at: timestamp,
+            last_seen_at: timestamp,
+            revoked_at: null,
+          } satisfies AuthSessionRow
+        })(),
+      catch: operationError("RelayStore.exchangePairing"),
+    })
+    const session = yield* authSessionFromRow(row)
+    return PairingResult.make({ token: sessionToken, session })
+  })
+
+  const authenticateSession = Effect.fn("RelayStore.authenticateSession")(function* (
+    token: string,
+    role: ConnectionRole,
+  ) {
+    const row = yield* Effect.try({
+      try: () =>
+        db
+          .query<AuthSessionRow, [string]>(
+            "SELECT * FROM auth_sessions WHERE token_hash = ? AND revoked_at IS NULL",
+          )
+          .get(tokenHash(token)),
+      catch: operationError("RelayStore.authenticateSession"),
+    })
+    if (row === null) {
+      return undefined
+    }
+    const session = yield* authSessionFromRow(row)
+    if (!session.roles.includes(role)) {
+      return undefined
+    }
+    const lastSeenAt = now()
+    yield* Effect.try({
+      try: () =>
+        db
+          .query("UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?")
+          .run(lastSeenAt, session.id),
+      catch: operationError("RelayStore.authenticateSession.touch"),
+    })
+    return AuthSession.make({ ...session, lastSeenAt })
+  })
+
+  const listAuthSessions = Effect.fn("RelayStore.listAuthSessions")(function* () {
+    const rows = yield* queryAll<AuthSessionRow>(
+      db,
+      "RelayStore.listAuthSessions",
+      "SELECT * FROM auth_sessions ORDER BY created_at DESC",
+    )
+    return yield* Effect.forEach(rows, authSessionFromRow)
+  })
+
+  const revokeAuthSession = Effect.fn("RelayStore.revokeAuthSession")(function* (
+    sessionId: AuthSessionId,
+  ) {
+    const revokedAt = now()
+    const result = yield* Effect.try({
+      try: () =>
+        db
+          .query("UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+          .run(revokedAt, sessionId),
+      catch: operationError("RelayStore.revokeAuthSession"),
+    })
+    if (result.changes !== 1) {
+      return yield* Effect.fail(
+        new PersistenceError({
+          operation: "RelayStore.revokeAuthSession",
+          message: `Unknown or already revoked session ${sessionId}`,
+        }),
+      )
+    }
+    const row = yield* Effect.try({
+      try: () =>
+        db
+          .query<AuthSessionRow, [string]>("SELECT * FROM auth_sessions WHERE id = ?")
+          .get(sessionId),
+      catch: operationError("RelayStore.revokeAuthSession.read"),
+    })
+    if (row === null) {
+      return yield* Effect.fail(
+        new PersistenceError({
+          operation: "RelayStore.revokeAuthSession",
+          message: `Unknown session ${sessionId}`,
+        }),
+      )
+    }
+    return yield* authSessionFromRow(row)
+  })
+
   return Service.of({
     bootstrap,
     listDevices,
@@ -658,6 +887,11 @@ const makeService = (db: Database): Interface => {
     updateTask,
     sessionFor,
     saveSession,
+    createPairing,
+    exchangePairing,
+    authenticateSession,
+    listAuthSessions,
+    revokeAuthSession,
   })
 }
 
@@ -750,6 +984,29 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           path TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS auth_pairings (
+          token_hash TEXT PRIMARY KEY,
+          label TEXT NOT NULL,
+          roles_json TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          used_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS auth_pairings_expires
+          ON auth_pairings(expires_at);
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+          id TEXT PRIMARY KEY,
+          token_hash TEXT NOT NULL UNIQUE,
+          label TEXT NOT NULL,
+          roles_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          revoked_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS auth_sessions_token
+          ON auth_sessions(token_hash);
       `)
     },
     catch: operationError("RelayStore.migrate"),

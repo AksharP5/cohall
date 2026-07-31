@@ -1,4 +1,4 @@
-import { RelayClient } from "../packages/client/src/index.ts"
+import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
 import { Device, DeviceId, isTerminalTask } from "../packages/protocol/src/index.ts"
 import { TaskResult } from "../apps/device/src/delegation.ts"
 import { Effect, Schedule, Schema } from "effect"
@@ -128,6 +128,19 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
     })
     expect(rejectedPreflight.status).toBe(403)
 
+    const pairing = await Effect.runPromise(
+      client.createPairing({
+        label: "Cohall desktop test",
+        roles: ["client", "device"],
+      }),
+    )
+    const paired = await Effect.runPromise(exchangePairing(relayUrl, { token: pairing.token }))
+    const pairedClient = RelayClient.make({ baseUrl: relayUrl, token: paired.token })
+    expect((await Effect.runPromise(pairedClient.bootstrap())).devices).toEqual([])
+    await expect(
+      Effect.runPromise(exchangePairing(relayUrl, { token: pairing.token })),
+    ).rejects.toMatchObject({ status: 401 })
+
     const deviceId = DeviceId.make("11111111-1111-4111-8111-111111111111")
     const device = spawn("bun", ["apps/device/src/main.ts", "device"], {
       cwd: root,
@@ -139,7 +152,7 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
         COHALL_DEVICE_NAME: "test-device",
         COHALL_DEVICE_WORKSPACES: root,
         COHALL_RELAY_URL: relayUrl,
-        COHALL_TOKEN: token,
+        COHALL_TOKEN: paired.token,
         COHALL_CODEX_SANDBOX: "workspace-write",
       },
       stdio: "ignore",
@@ -163,7 +176,7 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
       COHALL_DEVICE_NAME: "test-client",
       COHALL_DEVICE_WORKSPACES: root,
       COHALL_RELAY_URL: relayUrl,
-      COHALL_TOKEN: token,
+      COHALL_TOKEN: paired.token,
     }
     const rawDevices: unknown = JSON.parse(await runCohall(root, ["devices"], cliEnvironment))
     const devices = Schema.decodeUnknownSync(Schema.Array(Device))(rawDevices)
@@ -183,7 +196,7 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
         COHALL_DEVICE_NAME: "test-client",
         COHALL_DEVICE_WORKSPACES: root,
         COHALL_RELAY_URL: relayUrl,
-        COHALL_TOKEN: token,
+        COHALL_TOKEN: paired.token,
       },
       stderr: "ignore",
     })
@@ -224,7 +237,7 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
         workspace: root,
       }),
     )
-    expect(second.providerSessionId).toBeUndefined()
+    expect([undefined, "22222222-2222-4222-8222-222222222222"]).toContain(second.providerSessionId)
 
     const rawCompleted: unknown = JSON.parse(
       await runCohall(root, ["wait", queued.task_id, "--timeout", "10"], cliEnvironment),
@@ -271,5 +284,7 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
     expect(lines[1]).toContain(`thread=${queued.thread_id}`)
     expect(lines[1]).toContain("args=exec resume --json")
     expect(lines[1]).not.toContain("--sandbox")
+    await Effect.runPromise(client.revokeAuthSession(paired.session.id))
+    await expect(Effect.runPromise(pairedClient.bootstrap())).rejects.toMatchObject({ status: 401 })
   }, 30_000)
 })

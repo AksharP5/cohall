@@ -25,6 +25,9 @@ export type TaskId = typeof TaskId.Type
 export const ArtifactId = uuid("ArtifactId")
 export type ArtifactId = typeof ArtifactId.Type
 
+export const AuthSessionId = uuid("AuthSessionId")
+export type AuthSessionId = typeof AuthSessionId.Type
+
 export const Timestamp = isoTimestamp("Timestamp")
 export type Timestamp = typeof Timestamp.Type
 
@@ -56,6 +59,39 @@ export type MessageKind = typeof MessageKind.Type
 
 export const ConnectionRole = Schema.Literals(["client", "device"])
 export type ConnectionRole = typeof ConnectionRole.Type
+
+export const AuthSession = Schema.Struct({
+  id: AuthSessionId,
+  label: Schema.NonEmptyString,
+  roles: Schema.Array(ConnectionRole),
+  createdAt: Timestamp,
+  lastSeenAt: Timestamp,
+  revokedAt: Schema.optionalKey(Timestamp),
+})
+export interface AuthSession extends Schema.Schema.Type<typeof AuthSession> {}
+
+export const CreatePairingInput = Schema.Struct({
+  label: Schema.NonEmptyString,
+  roles: Schema.Array(ConnectionRole),
+})
+export interface CreatePairingInput extends Schema.Schema.Type<typeof CreatePairingInput> {}
+
+export const PairingCredential = Schema.Struct({
+  token: Schema.NonEmptyString,
+  expiresAt: Timestamp,
+})
+export interface PairingCredential extends Schema.Schema.Type<typeof PairingCredential> {}
+
+export const ExchangePairingInput = Schema.Struct({
+  token: Schema.NonEmptyString,
+})
+export interface ExchangePairingInput extends Schema.Schema.Type<typeof ExchangePairingInput> {}
+
+export const PairingResult = Schema.Struct({
+  token: Schema.NonEmptyString,
+  session: AuthSession,
+})
+export interface PairingResult extends Schema.Schema.Type<typeof PairingResult> {}
 
 export const Capability = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -305,9 +341,12 @@ export const makeThreadId = (): ThreadId => ThreadId.make(crypto.randomUUID())
 export const makeMessageId = (): MessageId => MessageId.make(crypto.randomUUID())
 export const makeTaskId = (): TaskId => TaskId.make(crypto.randomUUID())
 export const makeArtifactId = (): ArtifactId => ArtifactId.make(crypto.randomUUID())
+export const makeAuthSessionId = (): AuthSessionId => AuthSessionId.make(crypto.randomUUID())
 
 export const decodeBootstrap = Schema.decodeUnknownEffect(Bootstrap)
+export const decodeCreatePairingInput = Schema.decodeUnknownEffect(CreatePairingInput)
 export const decodeCreateThreadInput = Schema.decodeUnknownEffect(CreateThreadInput)
+export const decodeExchangePairingInput = Schema.decodeUnknownEffect(ExchangePairingInput)
 export const decodeCreateMessageInput = Schema.decodeUnknownEffect(CreateMessageInput)
 export const decodeCreateTaskInput = Schema.decodeUnknownEffect(CreateTaskInput)
 export const decodeDevice = Schema.decodeUnknownEffect(Device)

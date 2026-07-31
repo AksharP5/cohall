@@ -1,15 +1,19 @@
 import {
+  AuthSessionId,
   Device,
   DeviceId,
   SocketEvent,
   TaskId,
   ThreadId,
+  decodeCreatePairingInput,
   decodeCreateMessageInput,
   decodeCreateTaskInput,
   decodeCreateThreadInput,
+  decodeExchangePairingInput,
   decodeSocketEvent,
   isTerminalTask,
   now,
+  type ConnectionRole,
   type CreateTaskInput,
   type ProviderEvent,
   type Task,
@@ -306,7 +310,7 @@ const handleSocketEvent = async (
   if (!hub.isAttached(socket)) {
     if (
       event._tag === "Authenticate" &&
-      event.token === configuration.token &&
+      (await authorizedToken(event.token, event.role)) &&
       event.role === socket.data.role
     ) {
       hub.attach(socket)
@@ -527,9 +531,31 @@ const handleSocketEvent = async (
   })
 }
 
-const authorized = (request: Request): boolean => {
+const bearerToken = (request: Request): string | undefined => {
   const header = request.headers.get("authorization")
-  return header === `Bearer ${configuration.token}`
+  if (header?.startsWith("Bearer ") !== true) {
+    return undefined
+  }
+  return header.slice("Bearer ".length)
+}
+
+const ownerAuthorized = (request: Request): boolean => bearerToken(request) === configuration.token
+
+const authorizedToken = async (token: string, role: ConnectionRole): Promise<boolean> => {
+  if (token === configuration.token) {
+    return true
+  }
+  return run(
+    Effect.gen(function* () {
+      const store = yield* RelayStore.Service
+      return (yield* store.authenticateSession(token, role)) !== undefined
+    }),
+  ).catch(() => false)
+}
+
+const authorized = async (request: Request): Promise<boolean> => {
+  const token = bearerToken(request)
+  return token === undefined ? false : authorizedToken(token, "client")
 }
 
 const api = async (request: Request, url: URL): Promise<Response | undefined> => {
@@ -546,12 +572,51 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
     }
     return new Response(null, { status: 204, headers: corsHeaders(request) })
   }
-  if (!authorized(request)) {
+
+  if (request.method === "POST" && url.pathname === "/api/auth/pair") {
+    return run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        const input = yield* body(request, decodeExchangePairingInput)
+        return yield* store.exchangePairing(input.token)
+      }),
+    )
+      .then((result) => respond(result, 201))
+      .catch((cause: unknown) =>
+        respond(
+          {
+            error:
+              cause instanceof RequestError
+                ? cause.message
+                : "Pairing credential is invalid, expired, or already used",
+          },
+          cause instanceof RequestError ? cause.status : 401,
+        ),
+      )
+  }
+
+  if (url.pathname.startsWith("/api/auth/") && !ownerAuthorized(request)) {
+    return respond({ error: "Owner token required" }, 403)
+  }
+  if (!url.pathname.startsWith("/api/auth/") && !(await authorized(request))) {
     return respond({ error: "Unauthorized" }, 401)
   }
 
   const effect = Effect.gen(function* () {
     const store = yield* RelayStore.Service
+
+    if (request.method === "POST" && url.pathname === "/api/auth/pairings") {
+      const input = yield* body(request, decodeCreatePairingInput)
+      return respond(yield* store.createPairing(input), 201)
+    }
+    if (request.method === "GET" && url.pathname === "/api/auth/sessions") {
+      return respond(yield* store.listAuthSessions())
+    }
+    const revokeSessionMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/revoke$/)
+    if (request.method === "POST" && revokeSessionMatch?.[1] !== undefined) {
+      const sessionId = yield* pathId(AuthSessionId, revokeSessionMatch[1])
+      return respond(yield* store.revokeAuthSession(sessionId))
+    }
 
     if (request.method === "GET" && url.pathname === "/api/bootstrap") {
       return respond(yield* store.bootstrap())
