@@ -128,20 +128,24 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
     })
     expect(rejectedPreflight.status).toBe(403)
 
+    const deviceId = DeviceId.make("11111111-1111-4111-8111-111111111111")
     const pairing = await Effect.runPromise(
       client.createPairing({
         label: "Cohall desktop test",
         roles: ["client", "device"],
       }),
     )
-    const paired = await Effect.runPromise(exchangePairing(relayUrl, { token: pairing.token }))
+    const paired = await Effect.runPromise(
+      exchangePairing(relayUrl, { token: pairing.token, deviceId }),
+    )
+    expect(paired.session.deviceId).toBe(deviceId)
+    expect(new Date(paired.session.expiresAt).getTime()).toBeGreaterThan(Date.now())
     const pairedClient = RelayClient.make({ baseUrl: relayUrl, token: paired.token })
     expect((await Effect.runPromise(pairedClient.bootstrap())).devices).toEqual([])
     await expect(
       Effect.runPromise(exchangePairing(relayUrl, { token: pairing.token })),
     ).rejects.toMatchObject({ status: 401 })
 
-    const deviceId = DeviceId.make("11111111-1111-4111-8111-111111111111")
     const device = spawn("bun", ["apps/device/src/main.ts", "device"], {
       cwd: root,
       env: {
@@ -286,5 +290,16 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":12,"output_toke
     expect(lines[1]).not.toContain("--sandbox")
     await Effect.runPromise(client.revokeAuthSession(paired.session.id))
     await expect(Effect.runPromise(pairedClient.bootstrap())).rejects.toMatchObject({ status: 401 })
+    const revokedDevice = await Effect.runPromise(
+      client.devices().pipe(
+        Effect.repeat({
+          until: (known) =>
+            known.some((candidate) => candidate.id === deviceId && candidate.status === "offline"),
+          schedule: Schedule.spaced("100 millis"),
+        }),
+        Effect.timeout("5 seconds"),
+      ),
+    )
+    expect(revokedDevice.find((candidate) => candidate.id === deviceId)?.status).toBe("offline")
   }, 30_000)
 })

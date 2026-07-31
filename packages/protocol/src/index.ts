@@ -65,7 +65,9 @@ export const AuthSession = Schema.Struct({
   label: Schema.NonEmptyString,
   roles: Schema.Array(ConnectionRole),
   createdAt: Timestamp,
+  expiresAt: Timestamp,
   lastSeenAt: Timestamp,
+  deviceId: Schema.optionalKey(DeviceId),
   revokedAt: Schema.optionalKey(Timestamp),
 })
 export interface AuthSession extends Schema.Schema.Type<typeof AuthSession> {}
@@ -84,6 +86,7 @@ export interface PairingCredential extends Schema.Schema.Type<typeof PairingCred
 
 export const ExchangePairingInput = Schema.Struct({
   token: Schema.NonEmptyString,
+  deviceId: Schema.optionalKey(DeviceId),
 })
 export interface ExchangePairingInput extends Schema.Schema.Type<typeof ExchangePairingInput> {}
 

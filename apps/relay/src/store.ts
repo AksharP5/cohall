@@ -119,7 +119,9 @@ interface AuthSessionRow {
   readonly label: string
   readonly roles_json: string
   readonly created_at: string
+  readonly expires_at: string
   readonly last_seen_at: string
+  readonly bound_device_id: string | null
   readonly revoked_at: string | null
 }
 
@@ -170,7 +172,10 @@ export interface Interface {
   readonly createPairing: (
     input: CreatePairingInput,
   ) => Effect.Effect<PairingCredential, PersistenceError>
-  readonly exchangePairing: (token: string) => Effect.Effect<PairingResult, PersistenceError>
+  readonly exchangePairing: (
+    token: string,
+    deviceId?: DeviceId,
+  ) => Effect.Effect<PairingResult, PersistenceError>
   readonly authenticateSession: (
     token: string,
     role: ConnectionRole,
@@ -310,7 +315,9 @@ const authSessionFromRow = (row: AuthSessionRow): Effect.Effect<AuthSession, Per
       label: row.label,
       roles,
       createdAt: row.created_at,
+      expiresAt: row.expires_at,
       lastSeenAt: row.last_seen_at,
+      ...(row.bound_device_id === null ? {} : { deviceId: row.bound_device_id }),
       ...(row.revoked_at === null ? {} : { revokedAt: row.revoked_at }),
     })
   })
@@ -742,8 +749,12 @@ const makeService = (db: Database): Interface => {
     })
   })
 
-  const exchangePairing = Effect.fn("RelayStore.exchangePairing")(function* (token: string) {
+  const exchangePairing = Effect.fn("RelayStore.exchangePairing")(function* (
+    token: string,
+    deviceId?: DeviceId,
+  ) {
     const timestamp = now()
+    const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1_000).toISOString()
     const sessionToken = secret("session")
     const sessionId = makeAuthSessionId()
     const row = yield* Effect.try({
@@ -758,6 +769,13 @@ const makeService = (db: Database): Interface => {
           if (pairing === null) {
             throw new Error("Pairing credential is invalid, expired, or already used")
           }
+          const roles: unknown = JSON.parse(pairing.roles_json)
+          if (!Array.isArray(roles)) {
+            throw new Error("Pairing credential has invalid roles")
+          }
+          if (roles.some((role) => role === "device") && deviceId === undefined) {
+            throw new Error("A device ID is required for device pairing")
+          }
           const result = db
             .query(
               `UPDATE auth_pairings SET used_at = ?
@@ -769,15 +787,18 @@ const makeService = (db: Database): Interface => {
           }
           db.query(
             `INSERT INTO auth_sessions (
-              id, token_hash, label, roles_json, created_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?)`,
+              id, token_hash, label, roles_json, created_at, expires_at, last_seen_at,
+              bound_device_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             sessionId,
             tokenHash(sessionToken),
             pairing.label,
             pairing.roles_json,
             timestamp,
+            expiresAt,
             timestamp,
+            deviceId ?? null,
           )
           return {
             id: sessionId,
@@ -785,7 +806,9 @@ const makeService = (db: Database): Interface => {
             label: pairing.label,
             roles_json: pairing.roles_json,
             created_at: timestamp,
+            expires_at: expiresAt,
             last_seen_at: timestamp,
+            bound_device_id: deviceId ?? null,
             revoked_at: null,
           } satisfies AuthSessionRow
         })(),
@@ -802,10 +825,11 @@ const makeService = (db: Database): Interface => {
     const row = yield* Effect.try({
       try: () =>
         db
-          .query<AuthSessionRow, [string]>(
-            "SELECT * FROM auth_sessions WHERE token_hash = ? AND revoked_at IS NULL",
+          .query<AuthSessionRow, [string, string]>(
+            `SELECT * FROM auth_sessions
+             WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?`,
           )
-          .get(tokenHash(token)),
+          .get(tokenHash(token), now()),
       catch: operationError("RelayStore.authenticateSession"),
     })
     if (row === null) {
@@ -1002,12 +1026,26 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           label TEXT NOT NULL,
           roles_json TEXT NOT NULL,
           created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL,
           last_seen_at TEXT NOT NULL,
+          bound_device_id TEXT,
           revoked_at TEXT
         );
         CREATE INDEX IF NOT EXISTS auth_sessions_token
           ON auth_sessions(token_hash);
       `)
+      const authSessionColumns = db
+        .query<{ readonly name: string }, []>("PRAGMA table_info(auth_sessions)")
+        .all()
+      if (!authSessionColumns.some((column) => column.name === "bound_device_id")) {
+        db.exec("ALTER TABLE auth_sessions ADD COLUMN bound_device_id TEXT")
+      }
+      if (!authSessionColumns.some((column) => column.name === "expires_at")) {
+        db.exec("ALTER TABLE auth_sessions ADD COLUMN expires_at TEXT")
+        db.query("UPDATE auth_sessions SET expires_at = ? WHERE expires_at IS NULL").run(
+          new Date(Date.now() + 90 * 24 * 60 * 60 * 1_000).toISOString(),
+        )
+      }
     },
     catch: operationError("RelayStore.migrate"),
   })

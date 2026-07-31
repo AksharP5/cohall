@@ -13,6 +13,7 @@ import {
   decodeSocketEvent,
   isTerminalTask,
   now,
+  type AuthSession,
   type ConnectionRole,
   type CreateTaskInput,
   type ProviderEvent,
@@ -308,22 +309,25 @@ const handleSocketEvent = async (
   }
 
   if (!hub.isAttached(socket)) {
-    if (
-      event._tag === "Authenticate" &&
-      (await authorizedToken(event.token, event.role)) &&
-      event.role === socket.data.role
-    ) {
-      hub.attach(socket)
-      socket.send(
-        JSON.stringify(
-          SocketEvent.make({
-            _tag: "Connected",
-            serverVersion: version,
-            connectedAt: now(),
-          }),
-        ),
-      )
-      return
+    if (event._tag === "Authenticate") {
+      const principal = await authenticateToken(event.token, event.role)
+      if (principal !== undefined && event.role === socket.data.role) {
+        hub.attach(
+          socket,
+          principal === "owner" ? undefined : principal.id,
+          principal === "owner" ? undefined : principal.deviceId,
+        )
+        socket.send(
+          JSON.stringify(
+            SocketEvent.make({
+              _tag: "Connected",
+              serverVersion: version,
+              connectedAt: now(),
+            }),
+          ),
+        )
+        return
+      }
     }
     socket.close(4003, "Authentication required")
     return
@@ -336,6 +340,11 @@ const handleSocketEvent = async (
   if (event._tag === "DeviceHello") {
     if (socket.data.role !== "device") {
       socket.close(4003, "Client sockets cannot register devices")
+      return
+    }
+    const boundDeviceId = hub.boundDeviceId(socket)
+    if (boundDeviceId !== undefined && boundDeviceId !== event.device.id) {
+      socket.close(4003, "Device identity does not match the paired session")
       return
     }
     const device = Device.make({
@@ -395,6 +404,10 @@ const handleSocketEvent = async (
         }
         case "TaskAccepted": {
           const current = yield* store.getTask(event.taskId)
+          if (current.targetDeviceId !== deviceId) {
+            socket.close(4003, "Task is assigned to another device")
+            return
+          }
           if (isTerminalTask(current)) {
             return
           }
@@ -407,6 +420,10 @@ const handleSocketEvent = async (
         }
         case "TaskProgress": {
           const task = yield* store.getTask(event.taskId)
+          if (task.targetDeviceId !== deviceId) {
+            socket.close(4003, "Task is assigned to another device")
+            return
+          }
           if (isTerminalTask(task)) {
             return
           }
@@ -440,6 +457,10 @@ const handleSocketEvent = async (
         }
         case "TaskFinished": {
           const current = yield* store.getTask(event.taskId)
+          if (current.targetDeviceId !== deviceId) {
+            socket.close(4003, "Task is assigned to another device")
+            return
+          }
           if (isTerminalTask(current)) {
             return
           }
@@ -474,6 +495,10 @@ const handleSocketEvent = async (
         }
         case "TaskFailed": {
           const current = yield* store.getTask(event.taskId)
+          if (current.targetDeviceId !== deviceId) {
+            socket.close(4003, "Task is assigned to another device")
+            return
+          }
           if (isTerminalTask(current)) {
             return
           }
@@ -497,6 +522,10 @@ const handleSocketEvent = async (
         }
         case "TaskCancelled": {
           const current = yield* store.getTask(event.taskId)
+          if (current.targetDeviceId !== deviceId) {
+            socket.close(4003, "Task is assigned to another device")
+            return
+          }
           if (isTerminalTask(current)) {
             return
           }
@@ -541,16 +570,23 @@ const bearerToken = (request: Request): string | undefined => {
 
 const ownerAuthorized = (request: Request): boolean => bearerToken(request) === configuration.token
 
-const authorizedToken = async (token: string, role: ConnectionRole): Promise<boolean> => {
+const authenticateToken = async (
+  token: string,
+  role: ConnectionRole,
+): Promise<"owner" | AuthSession | undefined> => {
   if (token === configuration.token) {
-    return true
+    return "owner"
   }
   return run(
     Effect.gen(function* () {
       const store = yield* RelayStore.Service
-      return (yield* store.authenticateSession(token, role)) !== undefined
+      return yield* store.authenticateSession(token, role)
     }),
-  ).catch(() => false)
+  ).catch(() => undefined)
+}
+
+const authorizedToken = async (token: string, role: ConnectionRole): Promise<boolean> => {
+  return (await authenticateToken(token, role)) !== undefined
 }
 
 const authorized = async (request: Request): Promise<boolean> => {
@@ -578,7 +614,7 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
       Effect.gen(function* () {
         const store = yield* RelayStore.Service
         const input = yield* body(request, decodeExchangePairingInput)
-        return yield* store.exchangePairing(input.token)
+        return yield* store.exchangePairing(input.token, input.deviceId)
       }),
     )
       .then((result) => respond(result, 201))
@@ -615,7 +651,9 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
     const revokeSessionMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)\/revoke$/)
     if (request.method === "POST" && revokeSessionMatch?.[1] !== undefined) {
       const sessionId = yield* pathId(AuthSessionId, revokeSessionMatch[1])
-      return respond(yield* store.revokeAuthSession(sessionId))
+      const session = yield* store.revokeAuthSession(sessionId)
+      hub.closeSession(session.id)
+      return respond(session)
     }
 
     if (request.method === "GET" && url.pathname === "/api/bootstrap") {

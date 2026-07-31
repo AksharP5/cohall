@@ -1,4 +1,4 @@
-import type { DeviceId, SocketEvent } from "@cohall/protocol"
+import type { AuthSessionId, DeviceId, SocketEvent } from "@cohall/protocol"
 
 export interface ConnectionData {
   readonly role: "client" | "device"
@@ -9,10 +9,24 @@ export class Hub {
   readonly #authenticated = new Set<Bun.ServerWebSocket<ConnectionData>>()
   readonly #devices = new Map<DeviceId, Bun.ServerWebSocket<ConnectionData>>()
   readonly #deviceIds = new Map<Bun.ServerWebSocket<ConnectionData>, DeviceId>()
+  readonly #sessionIds = new Map<Bun.ServerWebSocket<ConnectionData>, AuthSessionId>()
+  readonly #boundDeviceIds = new Map<Bun.ServerWebSocket<ConnectionData>, DeviceId>()
 
-  attach(socket: Bun.ServerWebSocket<ConnectionData>): void {
+  attach(
+    socket: Bun.ServerWebSocket<ConnectionData>,
+    sessionId?: AuthSessionId,
+    boundDeviceId?: DeviceId,
+  ): void {
     this.#authenticated.add(socket)
-    this.#clients.add(socket)
+    if (socket.data.role === "client") {
+      this.#clients.add(socket)
+    }
+    if (sessionId !== undefined) {
+      this.#sessionIds.set(socket, sessionId)
+    }
+    if (boundDeviceId !== undefined) {
+      this.#boundDeviceIds.set(socket, boundDeviceId)
+    }
   }
 
   isAttached(socket: Bun.ServerWebSocket<ConnectionData>): boolean {
@@ -31,6 +45,8 @@ export class Hub {
   detach(socket: Bun.ServerWebSocket<ConnectionData>): DeviceId | undefined {
     this.#authenticated.delete(socket)
     this.#clients.delete(socket)
+    this.#sessionIds.delete(socket)
+    this.#boundDeviceIds.delete(socket)
     const deviceId = this.#deviceIds.get(socket)
     if (deviceId === undefined) {
       return undefined
@@ -45,6 +61,18 @@ export class Hub {
 
   deviceId(socket: Bun.ServerWebSocket<ConnectionData>): DeviceId | undefined {
     return this.#deviceIds.get(socket)
+  }
+
+  boundDeviceId(socket: Bun.ServerWebSocket<ConnectionData>): DeviceId | undefined {
+    return this.#boundDeviceIds.get(socket)
+  }
+
+  closeSession(sessionId: AuthSessionId): void {
+    for (const [socket, current] of this.#sessionIds) {
+      if (current === sessionId) {
+        socket.close(4003, "Session revoked")
+      }
+    }
   }
 
   hasDevice(deviceId: DeviceId): boolean {
