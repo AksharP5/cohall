@@ -596,6 +596,11 @@ const authorized = async (request: Request): Promise<boolean> => {
 
 const api = async (request: Request, url: URL): Promise<Response | undefined> => {
   const respond = (value: unknown, status = 200): Response => json(value, status, request)
+  const sensitive = (value: unknown, status = 200): Response => {
+    const response = respond(value, status)
+    response.headers.set("cache-control", "no-store")
+    return response
+  }
   if (url.pathname === "/api/health") {
     return respond({ ok: true, version })
   }
@@ -617,7 +622,7 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
         return yield* store.exchangePairing(input.token, input.deviceId)
       }),
     )
-      .then((result) => respond(result, 201))
+      .then((result) => sensitive(result, 201))
       .catch((cause: unknown) =>
         respond(
           {
@@ -643,7 +648,7 @@ const api = async (request: Request, url: URL): Promise<Response | undefined> =>
 
     if (request.method === "POST" && url.pathname === "/api/auth/pairings") {
       const input = yield* body(request, decodeCreatePairingInput)
-      return respond(yield* store.createPairing(input), 201)
+      return sensitive(yield* store.createPairing(input), 201)
     }
     if (request.method === "GET" && url.pathname === "/api/auth/sessions") {
       return respond(yield* store.listAuthSessions())
