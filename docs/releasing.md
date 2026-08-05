@@ -21,12 +21,13 @@ updates one release pull request. Merging it creates the version tag and GitHub
 release; the same workflow then publishes that exact version to npm through
 GitHub Actions OIDC.
 
-For the first release only, publish locally after the implementation is merged,
-create the matching GitHub tag/release, then enable the trusted publisher for:
+The initial `0.2.0` release was published manually and tagged as the automation
+baseline. npm trusted publishing is configured for:
 
 - npm package: `@akshar5/cohall`
 - repository: `AksharP5/cohall`
 - workflow: `release.yml`
 - environment: none
 
-If npm requires two-factor authentication, provide the OTP only at the prompt.
+Publishing uses GitHub Actions OIDC. Do not add `NPM_TOKEN` or `NODE_AUTH_TOKEN`
+to the workflow.
