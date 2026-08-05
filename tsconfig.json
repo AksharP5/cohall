@@ -8,16 +8,13 @@
       "path": "./packages/client"
     },
     {
-      "path": "./packages/provider-codex"
+      "path": "./packages/providers"
     },
     {
       "path": "./apps/relay"
     },
     {
       "path": "./apps/device"
-    },
-    {
-      "path": "./apps/web"
     }
   ]
 }

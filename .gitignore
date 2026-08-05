@@ -1,5 +1,7 @@
 node_modules/
+/bin/
 dist/
+dist-types/
 .cohall/
 *.db
 *.db-shm
@@ -9,4 +11,8 @@ dist/
 coverage/
 playwright-report/
 test-results/
+*.tsbuildinfo
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/cohall-device-*
 .DS_Store
