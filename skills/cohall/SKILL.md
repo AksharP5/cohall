@@ -15,7 +15,7 @@ a lead agent.
 1. List devices unless the target is already explicit:
 
    ```bash
-   npx -y cohall devices
+   npx -y @akshar5/cohall devices
    ```
 
 2. Choose a target whose provider, workspaces, platform, and capabilities fit
@@ -24,7 +24,7 @@ a lead agent.
 3. Delegate one concrete outcome. Send only the context the target needs:
 
    ```bash
-   npx -y cohall delegate \
+   npx -y @akshar5/cohall delegate \
      --target @macbook \
      --provider codex \
      --workspace /Users/me/dev/project \
@@ -43,7 +43,7 @@ a lead agent.
    its local session:
 
    ```bash
-   npx -y cohall delegate \
+   npx -y @akshar5/cohall delegate \
      --thread 11111111-1111-4111-8111-111111111111 \
      --target @macbook \
      --prompt 'Check whether yesterday’s deployment failed for the same reason.'
@@ -68,17 +68,17 @@ ordinary shell or a separate agent turn.
 Queue work when the current agent can make independent progress:
 
 ```bash
-npx -y cohall delegate --target @linux --no-wait \
+npx -y @akshar5/cohall delegate --target @linux --no-wait \
   --prompt 'Run the project test suite and report failures.'
-npx -y cohall status <task-id>
-npx -y cohall wait <task-id> --timeout 1800
+npx -y @akshar5/cohall status <task-id>
+npx -y @akshar5/cohall wait <task-id> --timeout 1800
 ```
 
 The timeout error includes the task ID and last known status. The task continues
 unless cancelled:
 
 ```bash
-npx -y cohall cancel <task-id>
+npx -y @akshar5/cohall cancel <task-id>
 ```
 
 Active cancellation is acknowledged by the target device; `cancelling` means
@@ -87,7 +87,7 @@ the provider process has not confirmed termination yet.
 ## Read shared context
 
 ```bash
-npx -y cohall thread <thread-id>
+npx -y @akshar5/cohall thread <thread-id>
 ```
 
 This returns a byte-bounded recent window of prompts, final responses, and task
@@ -98,7 +98,7 @@ states. Check `truncated`; older history remains on the relay when it is true.
 Use `--prompt-file` or stdin for multiline work without shell interpolation:
 
 ```bash
-npx -y cohall delegate --target @macbook --prompt - <<'COHALL_PROMPT'
+npx -y @akshar5/cohall delegate --target @macbook --prompt - <<'COHALL_PROMPT'
 Analyze the authenticated pages in the attached task context.
 Return the shared conclusions, disagreements, and source URLs.
 COHALL_PROMPT
@@ -111,8 +111,8 @@ Only one input may read stdin. Use `--context-file` when the prompt uses stdin.
 If a command cannot connect or no target is available, run:
 
 ```bash
-npx -y cohall doctor
-npx -y cohall devices
+npx -y @akshar5/cohall doctor
+npx -y @akshar5/cohall devices
 ```
 
 Return the diagnostic failure to the user rather than claiming remote work ran.

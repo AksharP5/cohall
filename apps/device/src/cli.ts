@@ -399,10 +399,10 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     allowOptions(arguments_, [])
     noPositionals(arguments_, command)
     print({
-      cli_skill: "npx -y cohall skill install all",
-      codex_mcp: "codex mcp add cohall -- npx -y cohall mcp",
-      claude_mcp: "claude mcp add --scope user cohall -- npx -y cohall mcp",
-      opencode_mcp: "Run opencode mcp add and use: npx -y cohall mcp",
+      cli_skill: "npx -y @akshar5/cohall skill install all",
+      codex_mcp: "codex mcp add cohall -- npx -y @akshar5/cohall mcp",
+      claude_mcp: "claude mcp add --scope user cohall -- npx -y @akshar5/cohall mcp",
+      opencode_mcp: "Run opencode mcp add and use: npx -y @akshar5/cohall mcp",
     })
     return
   }

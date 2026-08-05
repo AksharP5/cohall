@@ -42,10 +42,10 @@ Run Cohall anywhere Node.js 24 or newer is installed. Use whichever JavaScript
 package manager is already available:
 
 ```bash
-npx -y cohall --version
-bunx cohall --version
-pnpm dlx cohall --version
-yarn dlx cohall --version
+npx -y @akshar5/cohall --version
+bunx @akshar5/cohall --version
+pnpm dlx @akshar5/cohall --version
+yarn dlx @akshar5/cohall --version
 ```
 
 The examples below use `npx`; the other runners are interchangeable.
@@ -54,7 +54,7 @@ Start a local relay with an explicit owner token:
 
 ```bash
 export COHALL_TOKEN="$(openssl rand -hex 32)"
-npx -y cohall relay
+npx -y @akshar5/cohall relay
 ```
 
 The relay binds only to `127.0.0.1` by default. To expose it through a private
@@ -67,7 +67,7 @@ Create a one-time pairing credential on an owner-authenticated machine:
 ```bash
 COHALL_RELAY_URL=https://cohall.example.com \
 COHALL_TOKEN="$COHALL_TOKEN" \
-npx -y cohall pair --label "MacBook"
+npx -y @akshar5/cohall pair --label "MacBook"
 ```
 
 Transfer the token to the machine being added through a private channel, then
@@ -75,15 +75,15 @@ provide it on stdin so it never appears in process arguments or shell history:
 
 ```bash
 read -rsp 'Pairing token: ' pairing_token; printf '\n'
-printf '%s' "$pairing_token" | npx -y cohall join \
+printf '%s' "$pairing_token" | npx -y @akshar5/cohall join \
   --relay https://cohall.example.com \
   --name macbook \
   --workspace "$HOME/dev" \
   --workspace "$HOME/.skillsync/repo"
 unset pairing_token
 
-npx -y cohall doctor
-npx -y cohall device
+npx -y @akshar5/cohall doctor
+npx -y @akshar5/cohall device
 ```
 
 `join` exchanges the one-time token for separate client and device credentials,
@@ -95,14 +95,14 @@ must already exist and are resolved to canonical paths.
 Install the same embedded skill for Codex, Claude Code, and OpenCode:
 
 ```bash
-npx -y cohall skill install all
+npx -y @akshar5/cohall skill install all
 ```
 
 Then delegate from any harness with shell access:
 
 ```bash
-npx -y cohall devices
-npx -y cohall delegate \
+npx -y @akshar5/cohall devices
+npx -y @akshar5/cohall delegate \
   --target @macbook \
   --provider codex \
   --workspace /Users/me/dev/project \
@@ -113,11 +113,11 @@ npx -y cohall delegate \
 The command waits by default and returns JSON. For asynchronous work:
 
 ```bash
-npx -y cohall delegate --target @linux --no-wait \
+npx -y @akshar5/cohall delegate --target @linux --no-wait \
   --prompt 'Run the test suite and report failures.'
-npx -y cohall wait <task-id> --timeout 1800
-npx -y cohall cancel <task-id>
-npx -y cohall thread <thread-id>
+npx -y @akshar5/cohall wait <task-id> --timeout 1800
+npx -y @akshar5/cohall cancel <task-id>
+npx -y @akshar5/cohall thread <thread-id>
 ```
 
 Follow-ups using the same `thread_id` resume the provider session on the target
@@ -126,8 +126,8 @@ that its local process stopped.
 
 ## Optional MCP
 
-Run `npx -y cohall integrations` for current setup commands. The MCP server
-exposes:
+Run `npx -y @akshar5/cohall integrations` for current setup commands. The MCP
+server exposes:
 
 - `list_devices`
 - `delegate`
@@ -160,9 +160,9 @@ enforced after resolving symlinks.
 
 ## Configuration
 
-`npx -y cohall config` shows the active stored configuration without printing
-tokens. `npx -y cohall configure` changes relay, name, workspaces, model, or
-Codex sandbox.
+`npx -y @akshar5/cohall config` shows the active stored configuration without
+printing tokens. `npx -y @akshar5/cohall configure` changes relay, name,
+workspaces, model, or Codex sandbox.
 Environment variables override stored values:
 
 | Variable                                  | Purpose                                        |
