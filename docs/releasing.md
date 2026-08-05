@@ -1,8 +1,7 @@
 # Release operations
 
-Cohall publishes publicly to npm under the package name `cohall`. Releases use
-Release Please and npm trusted publishing; no long-lived npm token is stored in
-GitHub.
+Cohall publishes publicly to npm as `@akshar5/cohall`. Releases use Release
+Please and npm trusted publishing; no long-lived npm token is stored in GitHub.
 
 Before merging a release:
 
@@ -25,7 +24,7 @@ GitHub Actions OIDC.
 For the first release only, publish locally after the implementation is merged,
 create the matching GitHub tag/release, then enable the trusted publisher for:
 
-- npm package: `cohall`
+- npm package: `@akshar5/cohall`
 - repository: `AksharP5/cohall`
 - workflow: `release.yml`
 - environment: none

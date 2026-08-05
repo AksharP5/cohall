@@ -1,15 +1,16 @@
 # Run Cohall as a service
 
-Interactive use should use `npx -y cohall`. Unattended services install the
-same npm package so the operating system has a stable executable path.
+Interactive use should use `npx -y @akshar5/cohall`. Unattended services
+install the same npm package so the operating system has a stable executable
+path.
 
 ## Linux device daemon
 
 Install and pair as the user that will run the daemon:
 
 ```bash
-npm install --global --prefix "$HOME/.local" cohall
-npx -y cohall doctor
+npm install --global --prefix "$HOME/.local" @akshar5/cohall
+npx -y @akshar5/cohall doctor
 ```
 
 Copy `deploy/systemd/cohall-device.service` to
@@ -51,7 +52,7 @@ reverse proxy. Device connections are outbound WebSockets.
 
 ## macOS
 
-Run `npm install --global cohall`, then update the executable path in
+Run `npm install --global @akshar5/cohall`, then update the executable path in
 `deploy/launchd/com.cohall.device.plist` to match `command -v cohall`. Copy the
 plist to `~/Library/LaunchAgents/`, then load it:
 
@@ -62,8 +63,8 @@ launchctl kickstart -k gui/"$(id -u)"/com.cohall.device
 
 ## Windows
 
-Run `npm install --global cohall`, pair and verify the machine from PowerShell,
-then run:
+Run `npm install --global @akshar5/cohall`, pair and verify the machine from
+PowerShell, then run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File deploy\windows\install-device.ps1

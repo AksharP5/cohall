@@ -6,8 +6,8 @@ prefer native tool discovery. Both use the same relay and device protocol.
 ## CLI plus skill
 
 ```bash
-npx -y cohall skill install all
-npx -y cohall doctor
+npx -y @akshar5/cohall skill install all
+npx -y @akshar5/cohall doctor
 ```
 
 This installs the same embedded `SKILL.md` into:
@@ -16,14 +16,15 @@ This installs the same embedded `SKILL.md` into:
 - `~/.claude/skills/cohall` for Claude Code;
 - `~/.config/opencode/skills/cohall` for OpenCode.
 
-T3Code, Buzz, and other harnesses can run `npx -y cohall` from their normal
-shell/tool environment. `bunx cohall`, `pnpm dlx cohall`, and `yarn dlx cohall`
-are equivalent. No Cohall-specific UI extension is required.
+T3Code, Buzz, and other harnesses can run `npx -y @akshar5/cohall` from their
+normal shell/tool environment. `bunx @akshar5/cohall`, `pnpm dlx
+@akshar5/cohall`, and `yarn dlx @akshar5/cohall` are equivalent. No
+Cohall-specific UI extension is required.
 
 ## Codex MCP
 
 ```bash
-codex mcp add cohall -- npx -y cohall mcp
+codex mcp add cohall -- npx -y @akshar5/cohall mcp
 ```
 
 Or configure `~/.codex/config.toml`:
@@ -31,19 +32,19 @@ Or configure `~/.codex/config.toml`:
 ```toml
 [mcp_servers.cohall]
 command = "npx"
-args = ["-y", "cohall", "mcp"]
+args = ["-y", "@akshar5/cohall", "mcp"]
 ```
 
 ## Claude Code MCP
 
 ```bash
-claude mcp add --scope user cohall -- npx -y cohall mcp
+claude mcp add --scope user cohall -- npx -y @akshar5/cohall mcp
 ```
 
 ## OpenCode MCP
 
 Add a local stdio MCP server with command array
-`["npx", "-y", "cohall", "mcp"]`.
+`["npx", "-y", "@akshar5/cohall", "mcp"]`.
 
 ## Environment
 
@@ -58,5 +59,6 @@ Or pass `COHALL_RELAY_URL` and `COHALL_CLIENT_TOKEN` directly. Never place an
 owner or device token in an MCP client configuration.
 
 CLI and MCP are equivalent entry points. Use one per delegated task.
-Replace the `npx`, `-y`, `cohall` command prefix with `bunx`, `cohall` or
-`pnpm`, `dlx`, `cohall` when that better matches the host.
+Replace the `npx`, `-y`, `@akshar5/cohall` command prefix with `bunx`,
+`@akshar5/cohall` or `pnpm`, `dlx`, `@akshar5/cohall` when that better matches
+the host.
