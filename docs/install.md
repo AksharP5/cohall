@@ -42,6 +42,7 @@ read -rsp 'Pairing token: ' pairing_token; printf '\n'
 printf '%s' "$pairing_token" | npx -y @akshar5/cohall join \
   --relay https://cohall.example.com \
   --name linux \
+  --providers codex \
   --workspace "$HOME/dev"
 unset pairing_token
 ```
@@ -73,6 +74,10 @@ mode `0700` and file mode `0600`.
 The relay must stay online so devices and clients can reach it. A target device
 must be online only while it is accepting or running work; queued tasks remain
 durable on the relay while it is offline.
+
+`--providers` is an optional comma-separated allowlist. It prevents an installed
+but unauthenticated provider executable from being advertised. Run `cohall
+configure --providers auto` to return to executable auto-detection.
 
 ## Upgrade
 

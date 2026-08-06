@@ -38,13 +38,39 @@ args = ["-y", "@akshar5/cohall", "mcp"]
 ## Claude Code MCP
 
 ```bash
-claude mcp add --scope user cohall -- npx -y @akshar5/cohall mcp
+claude mcp add --transport stdio --scope user cohall -- \
+  npx -y @akshar5/cohall mcp
+```
+
+Or use the standard JSON form in a project `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "cohall": {
+      "command": "npx",
+      "args": ["-y", "@akshar5/cohall", "mcp"]
+    }
+  }
+}
 ```
 
 ## OpenCode MCP
 
-Add a local stdio MCP server with command array
-`["npx", "-y", "@akshar5/cohall", "mcp"]`.
+Add this to `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cohall": {
+      "type": "local",
+      "command": ["npx", "-y", "@akshar5/cohall", "mcp"],
+      "enabled": true
+    }
+  }
+}
+```
 
 ## Environment
 

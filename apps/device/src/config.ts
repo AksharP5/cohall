@@ -1,10 +1,13 @@
-import { DeviceId, Provider, makeDeviceId } from "@cohall/protocol"
+import { DeviceId, Provider, makeDeviceId, type Provider as ProviderName } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { access, chmod, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises"
 import { homedir, hostname, platform } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
 const WorkspaceList = Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(64))
+const ProviderList = Schema.Array(Provider)
+  .check(Schema.isMinLength(1))
+  .check(Schema.isMaxLength(3))
 const Sandbox = Schema.Literals(["read-only", "workspace-write", "danger-full-access"])
 
 export const StoredConfiguration = Schema.Struct({
@@ -15,6 +18,7 @@ export const StoredConfiguration = Schema.Struct({
   workspaces: WorkspaceList,
   clientToken: Schema.optionalKey(Schema.NonEmptyString),
   deviceToken: Schema.optionalKey(Schema.NonEmptyString),
+  providers: Schema.optionalKey(ProviderList),
   model: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: Schema.optionalKey(Sandbox),
 })
@@ -33,6 +37,7 @@ export const DeviceConfiguration = Schema.Struct({
   id: DeviceId,
   name: Schema.NonEmptyString,
   workspaces: WorkspaceList,
+  providers: Schema.optionalKey(ProviderList),
   model: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: Schema.optionalKey(Sandbox),
 })
@@ -93,6 +98,16 @@ export const parseWorkspaces = (
       ),
   })
 
+export const parseProviders = (input: string): ReadonlyArray<ProviderName> =>
+  Schema.decodeUnknownSync(ProviderList)([
+    ...new Set(
+      input
+        .split(",")
+        .map((provider) => provider.trim())
+        .filter(Boolean),
+    ),
+  ])
+
 export const readStoredConfiguration = async (): Promise<StoredConfiguration | undefined> => {
   const path = configurationPath()
   if (
@@ -133,6 +148,7 @@ export const makeStoredConfiguration = async (input: {
   readonly relayUrl: string
   readonly deviceName?: string
   readonly workspaces?: ReadonlyArray<string>
+  readonly providers?: ReadonlyArray<ProviderName> | "auto"
   readonly clientToken?: string
   readonly deviceToken?: string
 }): Promise<StoredConfiguration> => {
@@ -143,6 +159,8 @@ export const makeStoredConfiguration = async (input: {
       : await Effect.runPromise(parseWorkspaces("", JSON.stringify(input.workspaces)))
   const clientToken = input.clientToken ?? existing?.clientToken
   const deviceToken = input.deviceToken ?? existing?.deviceToken
+  const providers =
+    input.providers === "auto" ? undefined : (input.providers ?? existing?.providers)
   return StoredConfiguration.make({
     version: 1,
     relayUrl: normalizeRelayUrl(input.relayUrl),
@@ -151,6 +169,7 @@ export const makeStoredConfiguration = async (input: {
     workspaces: canonicalWorkspaces,
     ...(clientToken === undefined ? {} : { clientToken }),
     ...(deviceToken === undefined ? {} : { deviceToken }),
+    ...(providers === undefined ? {} : { providers }),
     ...(existing?.model === undefined ? {} : { model: existing.model }),
     ...(existing?.sandbox === undefined ? {} : { sandbox: existing.sandbox }),
   })
@@ -173,6 +192,17 @@ const environmentProvider = (): string | undefined =>
 const environmentSandbox = (): DeviceConfiguration["sandbox"] => {
   const value = process.env.COHALL_SANDBOX ?? process.env.COHALL_CODEX_SANDBOX
   return value === undefined ? undefined : Schema.decodeUnknownSync(Sandbox)(value)
+}
+
+const environmentProviders = (
+  stored: StoredConfiguration | undefined,
+): ReadonlyArray<ProviderName> | undefined => {
+  const value = process.env.COHALL_DEVICE_PROVIDERS
+  return value === undefined
+    ? stored?.providers
+    : value === "auto"
+      ? undefined
+      : parseProviders(value)
 }
 
 const storedOrDefaults = async (): Promise<StoredConfiguration> => {
@@ -239,6 +269,7 @@ export const loadDeviceConfiguration = Effect.tryPromise({
     }
     const model = environmentProvider() ?? stored.model
     const sandbox = environmentSandbox() ?? stored.sandbox
+    const providers = environmentProviders(stored)
     return DeviceConfiguration.make({
       relayUrl: normalizeRelayUrl(process.env.COHALL_RELAY_URL ?? stored.relayUrl),
       token,
@@ -248,6 +279,7 @@ export const loadDeviceConfiguration = Effect.tryPromise({
           : DeviceId.make(process.env.COHALL_DEVICE_ID),
       name: process.env.COHALL_DEVICE_NAME ?? stored.deviceName,
       workspaces,
+      ...(providers === undefined ? {} : { providers }),
       ...(model === undefined ? {} : { model }),
       ...(sandbox === undefined ? {} : { sandbox }),
     })

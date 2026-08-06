@@ -103,6 +103,7 @@ prompt=$(cat)
 printf 'codex thread=%s args=%s\n' "$COHALL_THREAD_ID" "$*" >> "$PROVIDER_FAKE_LOG"
 if [[ -n "$COHALL_TOKEN$COHALL_CLIENT_TOKEN$COHALL_DEVICE_TOKEN" ]]; then exit 86; fi
 if [[ "$prompt" == *LONG_RUNNING* ]]; then sleep 20; fi
+if [[ "$prompt" == *NOISY_STDERR* ]]; then head -c 70000 /dev/zero >&2; fi
 printf '%s\n' '{"type":"thread.started","thread_id":"22222222-2222-4222-8222-222222222222"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Codex completed the delegated work."}}'
 `,
@@ -138,6 +139,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(skill).toContain("Use the installed `cohall` executable when it is available")
     expect(skill).toContain("cohall delegate")
     expect(await runCohall(root, [])).toContain("cohall join")
+    expect(await runCohall(root, ["device", "--help"])).toContain("cohall device")
 
     const relay = spawn("node", ["bin/cohall.js", "relay"], {
       cwd: root,
@@ -359,6 +361,14 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(await Effect.runPromise(waitForTerminal(client, openCodeError))).toMatchObject({
       status: "failed",
       error: "OpenCode ProviderAuthError: OpenAI API key is missing.",
+    })
+
+    const noisy = await Effect.runPromise(
+      client.createTask({ prompt: "NOISY_STDERR", targetDeviceId: deviceId, workspace: root }),
+    )
+    expect(await Effect.runPromise(waitForTerminal(client, noisy))).toMatchObject({
+      status: "completed",
+      result: "Codex completed the delegated work.",
     })
 
     const long = await Effect.runPromise(

@@ -1,5 +1,5 @@
 import { RelayClient, exchangePairing } from "@cohall/client"
-import { AuthSessionId, Provider, TaskId, ThreadId, makeDeviceId } from "@cohall/protocol"
+import { AuthSessionId, Provider, TaskId, ThreadId, makeDeviceId, version } from "@cohall/protocol"
 import * as Providers from "@cohall/providers"
 import { Effect, Schema } from "effect"
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises"
@@ -13,6 +13,7 @@ import {
   loadOwnerConfiguration,
   makeStoredConfiguration,
   normalizeRelayUrl,
+  parseProviders,
   parseWorkspaces,
   readStoredConfiguration,
   writeStoredConfiguration,
@@ -39,6 +40,7 @@ const valueOptions = new Set([
   "prompt",
   "prompt-file",
   "provider",
+  "providers",
   "relay",
   "sandbox",
   "target",
@@ -59,8 +61,9 @@ const aliases = new Map([
 const help = `Cohall connects agents running on your own devices.
 
 Usage:
-  cohall join --relay <url> --workspace <path> [--token-file <path>]
-  cohall configure [--relay url] [--name name] [--workspace path] [--model id]
+  cohall join --relay <url> --workspace <path> [--providers list] [--token-file <path>]
+  cohall configure [--relay url] [--name name] [--workspace path]
+                   [--providers codex,opencode|auto] [--model id]
   cohall config
   cohall devices
   cohall delegate [prompt] [--target @device] [--provider provider]
@@ -285,7 +288,14 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   const arguments_ = parseArguments(raw)
 
   if (command === "join") {
-    allowOptions(arguments_, ["client-only", "name", "relay", "token-file", "workspace"])
+    allowOptions(arguments_, [
+      "client-only",
+      "name",
+      "providers",
+      "relay",
+      "token-file",
+      "workspace",
+    ])
     noPositionals(arguments_, command)
     const token = await pairingToken(arguments_)
     const relayUrl = normalizeRelayUrl(option(arguments_, "relay") ?? "http://127.0.0.1:8787")
@@ -293,6 +303,13 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const suppliedWorkspaces = values(arguments_, "workspace")
     const workspaces = suppliedWorkspaces.length === 0 ? existing?.workspaces : suppliedWorkspaces
     const deviceName = option(arguments_, "name")
+    const providerInput = option(arguments_, "providers")
+    const providers =
+      providerInput === undefined
+        ? undefined
+        : providerInput === "auto"
+          ? "auto"
+          : parseProviders(providerInput)
     if (!arguments_.options.has("client-only") && (workspaces?.length ?? 0) === 0) {
       throw new Error("At least one --workspace is required when joining a device")
     }
@@ -300,6 +317,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       relayUrl,
       ...(deviceName === undefined ? {} : { deviceName }),
       ...(workspaces === undefined ? {} : { workspaces }),
+      ...(providers === undefined ? {} : { providers }),
     })
     const paired = await Effect.runPromise(exchangePairing(relayUrl, { token }))
     const clientToken = paired.credentials.find(
@@ -347,6 +365,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
             workspaces: configuration.workspaces,
             client_credential: configuration.clientToken !== undefined,
             device_credential: configuration.deviceToken !== undefined,
+            providers: configuration.providers ?? "auto",
             model: configuration.model,
             sandbox: configuration.sandbox,
           }),
@@ -355,7 +374,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   }
 
   if (command === "configure") {
-    allowOptions(arguments_, ["model", "name", "relay", "sandbox", "workspace"])
+    allowOptions(arguments_, ["model", "name", "providers", "relay", "sandbox", "workspace"])
     noPositionals(arguments_, command)
     const existing = await readStoredConfiguration()
     const relayUrl = normalizeRelayUrl(
@@ -368,6 +387,13 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         : await Effect.runPromise(parseWorkspaces("", JSON.stringify(supplied)))
     const sandbox = option(arguments_, "sandbox")
     const model = option(arguments_, "model") ?? existing?.model
+    const providerInput = option(arguments_, "providers")
+    const providers =
+      providerInput === undefined
+        ? existing?.providers
+        : providerInput === "auto"
+          ? undefined
+          : parseProviders(providerInput)
     const configuration = StoredConfiguration.make({
       version: 1,
       relayUrl,
@@ -376,6 +402,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       workspaces,
       ...(existing?.clientToken === undefined ? {} : { clientToken: existing.clientToken }),
       ...(existing?.deviceToken === undefined ? {} : { deviceToken: existing.deviceToken }),
+      ...(providers === undefined ? {} : { providers }),
       ...(model === undefined ? {} : { model }),
       ...((sandbox ?? existing?.sandbox) === undefined
         ? {}
@@ -409,8 +436,17 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     print({
       cli_skill: "npx -y @akshar5/cohall skill install all",
       codex_mcp: "codex mcp add cohall -- npx -y @akshar5/cohall mcp",
-      claude_mcp: "claude mcp add --scope user cohall -- npx -y @akshar5/cohall mcp",
-      opencode_mcp: "Run opencode mcp add and use: npx -y @akshar5/cohall mcp",
+      claude_mcp:
+        "claude mcp add --transport stdio --scope user cohall -- npx -y @akshar5/cohall mcp",
+      stdio_config: {
+        command: "npx",
+        args: ["-y", "@akshar5/cohall", "mcp"],
+      },
+      opencode_mcp: {
+        type: "local",
+        command: ["npx", "-y", "@akshar5/cohall", "mcp"],
+        enabled: true,
+      },
     })
     return
   }
@@ -425,21 +461,65 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const response = await fetch(`${relayUrl}/api/health`, {
       signal: AbortSignal.timeout(10_000),
     }).catch(() => undefined)
+    const providerInput = process.env.COHALL_DEVICE_PROVIDERS
+    const selectedProviders =
+      providerInput === undefined
+        ? configuration?.providers
+        : providerInput === "auto"
+          ? undefined
+          : parseProviders(providerInput)
+    const providerExecutables = Object.fromEntries(
+      Provider.literals.map((provider) => [
+        provider,
+        Providers.findExecutable(provider === "claude-code" ? "claude" : provider) ?? "not found",
+      ]),
+    )
+    const clientToken = process.env.COHALL_CLIENT_TOKEN ?? configuration?.clientToken
+    const hasDeviceCredential =
+      process.env.COHALL_DEVICE_TOKEN !== undefined || configuration?.deviceToken !== undefined
+    const deviceId = process.env.COHALL_DEVICE_ID ?? configuration?.deviceId
+    const currentDevice =
+      response?.ok !== true || clientToken === undefined || deviceId === undefined
+        ? undefined
+        : await Effect.runPromise(
+            RelayClient.make({ baseUrl: relayUrl, token: clientToken }).devices(),
+          )
+            .then((devices) => devices.find((device) => device.id === deviceId))
+            .catch(() => undefined)
+    const warnings = [
+      ...(response?.ok === true ? [] : ["Relay is unreachable"]),
+      ...(hasDeviceCredential &&
+      response?.ok === true &&
+      currentDevice?.status !== "online" &&
+      currentDevice?.status !== "busy"
+        ? [
+            clientToken === undefined
+              ? "Device status cannot be checked without a client credential"
+              : "Device daemon is not connected or is not registered with the relay",
+          ]
+        : []),
+      ...(selectedProviders?.flatMap((provider) =>
+        providerExecutables[provider] === "not found"
+          ? [`Configured provider ${provider} is not installed or not on PATH`]
+          : [],
+      ) ?? []),
+    ]
     print({
+      version,
       relay: response?.ok === true ? "reachable" : "unreachable",
       relay_url: relayUrl,
       config_path: configurationPath(),
       client_credential:
         process.env.COHALL_CLIENT_TOKEN !== undefined || configuration?.clientToken !== undefined,
-      device_credential:
-        process.env.COHALL_DEVICE_TOKEN !== undefined || configuration?.deviceToken !== undefined,
+      device_credential: hasDeviceCredential,
       workspaces: configuration?.workspaces ?? [],
-      providers: Object.fromEntries(
-        Provider.literals.map((provider) => [
-          provider,
-          Providers.findExecutable(provider === "claude-code" ? "claude" : provider) ?? "not found",
-        ]),
-      ),
+      providers: providerExecutables,
+      provider_selection: selectedProviders ?? "auto",
+      provider_authentication: "checked when delegated work starts",
+      device_status:
+        hasDeviceCredential === false ? "not configured" : (currentDevice?.status ?? "unknown"),
+      device_version: currentDevice?.version,
+      warnings,
     })
     return
   }

@@ -13,10 +13,12 @@ npm install --global --prefix "$HOME/.local" @akshar5/cohall
 npx -y @akshar5/cohall doctor
 ```
 
-Copy `deploy/systemd/cohall-device.service` to
-`~/.config/systemd/user/cohall-device.service`, then:
+Copy the service shipped in the globally installed package, then start it:
 
 ```bash
+package_root="$(npm root --global --prefix "$HOME/.local")/@akshar5/cohall"
+install -Dm644 "$package_root/deploy/systemd/cohall-device.service" \
+  "$HOME/.config/systemd/user/cohall-device.service"
 systemctl --user daemon-reload
 systemctl --user enable --now cohall-device
 journalctl --user -u cohall-device -f
@@ -52,14 +54,23 @@ reverse proxy. Device connections are outbound WebSockets.
 
 ## macOS
 
-Run `npm install --global @akshar5/cohall`, then update the executable path in
-`deploy/launchd/com.cohall.device.plist` to match `command -v cohall`. Copy the
-plist to `~/Library/LaunchAgents/`, then load it:
+Run `npm install --global @akshar5/cohall`, copy the packaged launch agent, then
+update its executable path to match `command -v cohall`:
 
 ```bash
+package_root="$(npm root --global)/@akshar5/cohall"
+mkdir -p "$HOME/Library/LaunchAgents"
+cp "$package_root/deploy/launchd/com.cohall.device.plist" \
+  "$HOME/Library/LaunchAgents/com.cohall.device.plist"
+cohall_path="$(command -v cohall)"
+/usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 $cohall_path" \
+  "$HOME/Library/LaunchAgents/com.cohall.device.plist"
 launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/com.cohall.device.plist
 launchctl kickstart -k gui/"$(id -u)"/com.cohall.device
 ```
+
+The relay and device worker may run on the same machine. Configure the worker
+with the relay's private Tailscale URL and install both services independently.
 
 ## Windows
 
@@ -74,6 +85,10 @@ The script registers a per-user scheduled task that starts `cohall device` at
 logon and restarts it after failures.
 
 ## Troubleshooting
+
+Start with `cohall doctor`. It reports relay reachability, device connectivity,
+provider selection, executable discovery, and version information without
+printing credentials.
 
 Inspect a task's redacted lifecycle, including dispatches, reconnect-driven
 requeues, execution, cancellation, and completion:
