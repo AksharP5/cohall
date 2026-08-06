@@ -1,7 +1,7 @@
 import { Provider, type Provider as ProviderName } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { accessSync, constants } from "node:fs"
-import { platform } from "node:os"
+import { homedir, platform } from "node:os"
 import { delimiter, extname, isAbsolute, join } from "node:path"
 import { spawn } from "node:child_process"
 import type { Readable } from "node:stream"
@@ -45,8 +45,12 @@ const executables = {
   opencode: "opencode",
 } as const satisfies Record<ProviderName, string>
 
-const providerEnvironment = (): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("COHALL_")))
+const providerEnvironment = (): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("COHALL_")),
+  ),
+  PATH: executableDirectories().join(delimiter),
+})
 
 const record = (value: unknown): JsonRecord | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -64,11 +68,34 @@ const executableCandidates = (command: string): ReadonlyArray<string> => {
     .map((extension) => `${command}${extension.toLowerCase()}`)
 }
 
+const executableDirectories = (): ReadonlyArray<string> => {
+  const home = homedir()
+  const configured = (process.env.PATH ?? "").split(delimiter).filter(Boolean)
+  const common =
+    platform() === "win32"
+      ? [
+          process.env.APPDATA === undefined ? undefined : join(process.env.APPDATA, "npm"),
+          process.env.LOCALAPPDATA === undefined
+            ? undefined
+            : join(process.env.LOCALAPPDATA, "pnpm"),
+          join(home, ".bun", "bin"),
+        ]
+      : [
+          join(home, ".local", "bin"),
+          join(home, ".npm-global", "bin"),
+          join(home, ".bun", "bin"),
+          join(home, ".local", "share", "pnpm"),
+          "/opt/homebrew/bin",
+          "/usr/local/bin",
+        ]
+  return [...new Set([...configured, ...common.filter((path) => path !== undefined)])]
+}
+
 export const findExecutable = (command: string): string | undefined => {
   const paths =
     isAbsolute(command) || command.includes("/") || command.includes("\\")
       ? [""]
-      : (process.env.PATH ?? "").split(delimiter)
+      : executableDirectories()
   for (const directory of paths) {
     for (const candidate of executableCandidates(command)) {
       const path = directory.length === 0 ? candidate : join(directory, candidate)
@@ -120,6 +147,40 @@ const boundedText = (stream: Readable, limit: number, onOverflow: () => void): P
     stream.once("end", onEnd)
     stream.once("error", onError)
   })
+
+interface CapturedText {
+  readonly text: string
+  readonly truncated: boolean
+}
+
+const captureText = (stream: Readable, limit: number): Promise<CapturedText> =>
+  new Promise((resolve, reject) => {
+    const chunks: Array<Buffer> = []
+    let captured = 0
+    let truncated = false
+    const onData = (chunk: Buffer | string): void => {
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk
+      const remaining = limit - captured
+      if (remaining > 0) {
+        const selected = bytes.byteLength <= remaining ? bytes : bytes.subarray(0, remaining)
+        chunks.push(selected)
+        captured += selected.byteLength
+      }
+      truncated ||= bytes.byteLength > remaining
+    }
+    const onEnd = (): void =>
+      resolve({ text: Buffer.concat(chunks, captured).toString("utf8"), truncated })
+    stream.on("data", onData)
+    stream.once("end", onEnd)
+    stream.once("error", reject)
+  })
+
+const failureMessage = (command: string, stderr: CapturedText, exitCode: number): string => {
+  const fallback = `${command} exited with status ${exitCode}`
+  const suffix = stderr.truncated ? "\n[stderr truncated after 64 KiB]" : ""
+  const available = 16_384 - suffix.length
+  return `${(stderr.text.trim() || fallback).slice(0, available)}${suffix}`
+}
 
 const codexCommand = (options: RunOptions): ReadonlyArray<string> => {
   const common = [
@@ -280,18 +341,12 @@ const byteLength = (value: string): number => new TextEncoder().encode(value).by
 export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError> =>
   Effect.tryPromise({
     try: async (signal) => {
-      if (!available(options.provider)) {
+      const [commandName, ...arguments_] = command(options)
+      const executable = commandName === undefined ? undefined : findExecutable(commandName)
+      if (executable === undefined) {
         throw new ProviderUnavailableError({
           provider: options.provider,
           message: `${executables[options.provider]} is not available on this device`,
-        })
-      }
-
-      const [executable, ...arguments_] = command(options)
-      if (executable === undefined) {
-        throw new ProviderRunError({
-          provider: options.provider,
-          message: `No command is configured for ${options.provider}`,
         })
       }
       const child = spawn(executable, arguments_, {
@@ -325,7 +380,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
 
       const [stdout, stderr, exitCode] = await Promise.all([
         boundedText(child.stdout, 1024 * 1024, terminate),
-        boundedText(child.stderr, 64 * 1024, terminate),
+        captureText(child.stderr, 64 * 1024),
         exited,
       ])
       signal.removeEventListener("abort", terminate)
@@ -335,9 +390,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
       if (exitCode !== 0) {
         throw new ProviderRunError({
           provider: options.provider,
-          message: (
-            stderr.trim() || `${executables[options.provider]} exited with status ${exitCode}`
-          ).slice(0, 16_384),
+          message: failureMessage(executables[options.provider], stderr, exitCode),
           exitCode,
         })
       }

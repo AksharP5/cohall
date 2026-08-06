@@ -28,6 +28,8 @@
   ],
   "files": [
     "bin",
+    "deploy",
+    "docs",
     "CHANGELOG.md",
     "LICENSE",
     "README.md"

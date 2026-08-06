@@ -78,6 +78,7 @@ read -rsp 'Pairing token: ' pairing_token; printf '\n'
 printf '%s' "$pairing_token" | npx -y @akshar5/cohall join \
   --relay https://cohall.example.com \
   --name macbook \
+  --providers codex \
   --workspace "$HOME/dev" \
   --workspace "$HOME/.skillsync/repo"
 unset pairing_token
@@ -130,8 +131,50 @@ terminal.
 
 ## Optional MCP
 
-Run `npx -y @akshar5/cohall integrations` for current setup commands. The MCP
-server exposes:
+The MCP subprocess uses the current user's stored Cohall client configuration.
+For clients that accept the common `mcpServers` JSON shape, paste:
+
+```json
+{
+  "mcpServers": {
+    "cohall": {
+      "command": "npx",
+      "args": ["-y", "@akshar5/cohall", "mcp"]
+    }
+  }
+}
+```
+
+Codex:
+
+```bash
+codex mcp add cohall -- npx -y @akshar5/cohall mcp
+```
+
+Claude Code, available in every project for the current user:
+
+```bash
+claude mcp add --transport stdio --scope user cohall -- \
+  npx -y @akshar5/cohall mcp
+```
+
+OpenCode `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cohall": {
+      "type": "local",
+      "command": ["npx", "-y", "@akshar5/cohall", "mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Run `npx -y @akshar5/cohall integrations` to print these command components.
+The MCP server exposes:
 
 - `list_devices`
 - `delegate`
@@ -149,7 +192,14 @@ and [service setup](docs/services.md).
 
 ## Provider behavior
 
-Target devices advertise only provider executables they actually have:
+Target devices advertise provider executables they actually have. Authentication
+is checked when delegated work starts. Restrict a device to providers you have
+configured locally:
+
+```bash
+cohall configure --providers codex,claude-code
+cohall configure --providers auto
+```
 
 | Provider    | Required command | Session continuation     |
 | ----------- | ---------------- | ------------------------ |
@@ -167,7 +217,9 @@ enforced after resolving symlinks.
 
 `npx -y @akshar5/cohall config` shows the active stored configuration without
 printing tokens. `npx -y @akshar5/cohall configure` changes relay, name,
-workspaces, model, or Codex sandbox.
+workspaces, enabled providers, model, or Codex sandbox.
+`npx -y @akshar5/cohall doctor` checks relay reachability, this device's relay
+status, provider selection, executable paths, and version information.
 Environment variables override stored values:
 
 | Variable                                  | Purpose                                        |
@@ -179,6 +231,7 @@ Environment variables override stored values:
 | `COHALL_TOKEN`                            | Relay owner credential                         |
 | `COHALL_DEVICE_ID`                        | Stable device ID override                      |
 | `COHALL_DEVICE_NAME`                      | Advertised device name                         |
+| `COHALL_DEVICE_PROVIDERS`                 | Provider allowlist or `auto`                   |
 | `COHALL_DEVICE_WORKSPACES`                | Comma-separated workspace roots                |
 | `COHALL_DEVICE_WORKSPACES_JSON`           | JSON workspace roots; supports commas in paths |
 | `COHALL_MODEL`                            | Target provider model override                 |

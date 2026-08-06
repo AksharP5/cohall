@@ -53,7 +53,7 @@ const capabilities = (providers: ReadonlyArray<Provider>): Device["capabilities"
   const values: Array<Device["capabilities"][number]> = providers.map((provider) => ({
     id: provider,
     label: providerLabel(provider),
-    detail: `Uses this device's local ${providerLabel(provider)} login, configuration, and tools`,
+    detail: `${providerLabel(provider)} executable detected; authentication is checked when work starts`,
   }))
   if (
     Providers.findExecutable("google-chrome") !== undefined ||
@@ -71,6 +71,14 @@ const capabilities = (providers: ReadonlyArray<Provider>): Device["capabilities"
   return values
 }
 
+export const selectProviders = (
+  installed: ReadonlyArray<Provider>,
+  configured?: ReadonlyArray<Provider>,
+): ReadonlyArray<Provider> =>
+  configured === undefined
+    ? installed
+    : configured.filter((provider) => installed.includes(provider))
+
 const describeDevice = (
   configuration: DeviceConfiguration,
   status: "online" | "busy" = "online",
@@ -82,7 +90,8 @@ const describeDevice = (
       : operatingSystem === "win32"
         ? "windows"
         : "unknown"
-  const providers = Providers.availableProviders()
+  const installed = Providers.availableProviders()
+  const providers = selectProviders(installed, configuration.providers)
   return Device.make({
     id: configuration.id,
     name: configuration.name,

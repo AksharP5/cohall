@@ -1,12 +1,12 @@
 import { DeviceConfiguration } from "./config.ts"
-import { allowedWorkspace } from "./daemon.ts"
+import { allowedWorkspace, selectProviders } from "./daemon.ts"
 import { DeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
 import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { parseWorkspaces } from "./config.ts"
+import { parseProviders, parseWorkspaces } from "./config.ts"
 
 const directories: Array<string> = []
 
@@ -23,6 +23,13 @@ afterEach(async () => {
 })
 
 describe("device workspace configuration", () => {
+  it("normalizes provider allowlists and advertises only installed selections", () => {
+    expect(parseProviders("codex, opencode, codex")).toEqual(["codex", "opencode"])
+    expect(() => parseProviders("codex,missing")).toThrow()
+    expect(selectProviders(["codex", "opencode"], ["claude-code", "codex"])).toEqual(["codex"])
+    expect(selectProviders(["codex", "opencode"])).toEqual(["codex", "opencode"])
+  })
+
   it("canonicalizes existing roots and preserves commas in JSON paths", async () => {
     const directory = await temporary()
     const first = join(directory, "cohall,primary")
