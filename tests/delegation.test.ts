@@ -117,7 +117,13 @@ printf '%s\n' '{"result":"Claude completed the delegated work.","session_id":"33
     await writeFile(
       join(bin, "opencode"),
       `#!/usr/bin/env bash
+prompt="\${!#}"
+if [[ -n "$(cat)" ]]; then exit 87; fi
 printf 'opencode thread=%s args=%s\n' "$COHALL_THREAD_ID" "$*" >> "$PROVIDER_FAKE_LOG"
+if [[ "$prompt" == *OPEN_CODE_ERROR* ]]; then
+  printf '%s\n' '{"type":"error","sessionID":"44444444-4444-4444-8444-444444444444","error":{"name":"ProviderAuthError","data":{"message":"OpenAI API key is missing."}}}'
+  exit 0
+fi
 printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444","part":{"text":"OpenCode completed the delegated work."}}'
 `,
     )
@@ -342,6 +348,19 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       expect((await Effect.runPromise(waitForTerminal(client, task))).result).toBe(result)
     }
 
+    const openCodeError = await Effect.runPromise(
+      client.createTask({
+        prompt: "OPEN_CODE_ERROR",
+        provider: "opencode",
+        targetDeviceId: deviceId,
+        workspace: root,
+      }),
+    )
+    expect(await Effect.runPromise(waitForTerminal(client, openCodeError))).toMatchObject({
+      status: "failed",
+      error: "OpenCode ProviderAuthError: OpenAI API key is missing.",
+    })
+
     const long = await Effect.runPromise(
       client.createTask({ prompt: "LONG_RUNNING", targetDeviceId: deviceId, workspace: root }),
     )
@@ -367,6 +386,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     ).toBe(true)
     const log = await readFile(fakeLog, "utf8")
     const codexLines = log.split("\n").filter((line) => line.startsWith("codex "))
+    expect(codexLines[0]).toContain("--skip-git-repo-check")
     expect(codexLines[0]).toContain('sandbox_mode="workspace-write"')
     expect(codexLines[1]).toContain("exec resume")
     expect(codexLines[1]).toContain('sandbox_mode="workspace-write"')
