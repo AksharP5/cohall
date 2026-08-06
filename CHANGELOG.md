@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/AksharP5/cohall/compare/v0.3.1...v0.3.2) (2026-08-06)
+
+
+### Bug Fixes
+
+* make setup and provider diagnostics reliable ([#11](https://github.com/AksharP5/cohall/issues/11)) ([3c621c7](https://github.com/AksharP5/cohall/commit/3c621c7b2c13ba192ced7d93319cc41df3af256e))
+
 ## [0.3.1](https://github.com/AksharP5/cohall/compare/v0.3.0...v0.3.1) (2026-08-06)
 
 
