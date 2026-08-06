@@ -81,7 +81,19 @@ configure --providers auto` to return to executable auto-detection.
 
 ## Upgrade
 
-`npx -y @akshar5/cohall` resolves the current npm release. For a globally
-installed service, stop it, run `npm install --global @akshar5/cohall@latest`,
-verify `cohall doctor`, and restart it. Back up the relay data directory before
-upgrading a production relay; SQLite schema migrations run in place.
+Package runners such as `npx`, `bunx`, and `pnpm dlx` already resolve a current
+release. Upgrade a global installation and its running services with:
+
+```bash
+cohall upgrade
+```
+
+Cohall uses the package manager and global prefix that installed it, verifies
+the installed version, then restarts only active Cohall relay and device
+services. An already-current install is not restarted. Choose an exact version
+with `cohall upgrade --to 1.2.3`. Use `--dry-run` to inspect the plan or
+`--no-restart` to leave active services pending a manual restart.
+
+Back up the data directory before upgrading a production relay; SQLite schema
+migrations run in place. A system-level relay may require running the command
+with the same privileges used to install and manage that service.

@@ -220,6 +220,11 @@ printing tokens. `npx -y @akshar5/cohall configure` changes relay, name,
 workspaces, enabled providers, model, or Codex sandbox.
 `npx -y @akshar5/cohall doctor` checks relay reachability, this device's relay
 status, provider selection, executable paths, and version information.
+
+For a global installation used by services, `cohall upgrade` updates through
+the same npm, Bun, or pnpm installation and restarts only active Cohall relay
+and device jobs. Use `cohall upgrade --dry-run` to inspect the plan or
+`cohall upgrade --no-restart` to update files without restarting services.
 Environment variables override stored values:
 
 | Variable                                  | Purpose                                        |
