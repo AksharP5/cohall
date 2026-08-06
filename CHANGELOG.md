@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/AksharP5/cohall/compare/v0.3.2...v0.3.3) (2026-08-06)
+
+
+### Bug Fixes
+
+* patch MCP dependencies and release runtime ([#13](https://github.com/AksharP5/cohall/issues/13)) ([4155c00](https://github.com/AksharP5/cohall/commit/4155c00583cbe71e0afd85cc0438085dbdfa546c))
+
 ## [0.3.2](https://github.com/AksharP5/cohall/compare/v0.3.1...v0.3.2) (2026-08-06)
 
 
