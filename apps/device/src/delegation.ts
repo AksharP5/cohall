@@ -5,13 +5,15 @@ import {
   TaskId,
   TaskStatus,
   ThreadId,
+  terminalTaskStatuses,
   isTerminalTask,
   type Device,
   type Provider as ProviderName,
   type Task,
+  type TaskTrace,
   type ThreadId as ThreadIdType,
 } from "@cohall/protocol"
-import { Effect, Schema } from "effect"
+import { Effect, Schedule, Schema } from "effect"
 import type { ClientConfiguration } from "./config.ts"
 
 export class DeviceSelectionError extends Schema.TaggedErrorClass<DeviceSelectionError>()(
@@ -126,6 +128,31 @@ export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
     task = yield* client.getTask(task.id)
   }
   return task
+})
+
+export const followTaskTrace = Effect.fn("Cohall.followTaskTrace")(function* (
+  client: RelayClient,
+  taskId: TaskId,
+  onTrace: (trace: TaskTrace) => void,
+) {
+  let revision: string | undefined
+  const poll = client.traceTask(taskId).pipe(
+    Effect.tap((trace) => {
+      const latest = trace.events.at(-1)
+      const nextRevision = `${trace.status}:${latest?.kind ?? "none"}:${latest?.at ?? "none"}`
+      if (nextRevision === revision) {
+        return Effect.succeed(undefined)
+      }
+      revision = nextRevision
+      return Effect.sync(() => onTrace(trace))
+    }),
+  )
+  return yield* poll.pipe(
+    Effect.repeat({
+      until: (trace) => terminalTaskStatuses.has(trace.status),
+      schedule: Schedule.spaced("1 second"),
+    }),
+  )
 })
 
 export const threadContext = Effect.fn("Cohall.threadContext")(function* (

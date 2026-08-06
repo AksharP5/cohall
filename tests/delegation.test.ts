@@ -1,6 +1,7 @@
 import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
 import {
   Device,
+  TaskTrace,
   isTerminalTask,
   type AuthSession,
   type Task,
@@ -126,7 +127,10 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     const ownerToken = "integration-owner-token"
     const relayUrl = `http://127.0.0.1:${relayPort}`
     const root = process.cwd()
-    expect(await runCohall(root, ["skill"])).toContain("# Cohall")
+    const skill = await runCohall(root, ["skill"])
+    expect(skill).toContain("# Cohall")
+    expect(skill).toContain("Use the installed `cohall` executable when it is available")
+    expect(skill).toContain("cohall delegate")
     expect(await runCohall(root, [])).toContain("cohall join")
 
     const relay = spawn("node", ["bin/cohall.js", "relay"], {
@@ -262,6 +266,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       "list_devices",
       "delegate",
       "task_status",
+      "task_trace",
       "wait_task",
       "cancel_task",
       "thread_context",
@@ -290,6 +295,24 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     )
     expect(completed.result).toBe("Codex completed the delegated work.")
     expect(completed.providerSessionId).toBe("22222222-2222-4222-8222-222222222222")
+    const rawTrace: unknown = JSON.parse(
+      await runCohall(root, ["trace", queued.task_id], cliEnvironment),
+    )
+    const trace = Schema.decodeUnknownSync(TaskTrace)(rawTrace)
+    expect(trace.events.map((event) => event.kind)).toEqual([
+      "queued",
+      "assigned",
+      "running",
+      "completed",
+    ])
+    expect(trace.targetDevice.name).toBe("test-device")
+    expect(rawTrace).not.toHaveProperty("prompt")
+    expect(rawTrace).not.toHaveProperty("result")
+    expect(rawTrace).not.toHaveProperty("providerSessionId")
+    const followedTrace: unknown = JSON.parse(
+      await runCohall(root, ["trace", queued.task_id, "--follow"], cliEnvironment),
+    )
+    expect(Schema.decodeUnknownSync(TaskTrace)(followedTrace).status).toBe("completed")
 
     const continued = await Effect.runPromise(
       client.createTask({
@@ -334,6 +357,9 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(running.status).toBe("running")
     expect((await Effect.runPromise(client.cancelTask(long.id))).status).toBe("cancelling")
     expect((await Effect.runPromise(waitForTerminal(client, long))).status).toBe("cancelled")
+    expect(
+      (await Effect.runPromise(client.traceTask(long.id))).events.map((event) => event.kind),
+    ).toEqual(["queued", "assigned", "running", "cancelling", "cancelled"])
 
     const context = await Effect.runPromise(client.threadContext(queued.thread_id))
     expect(

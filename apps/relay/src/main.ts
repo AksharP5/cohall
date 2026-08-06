@@ -501,6 +501,10 @@ export const runRelay = async (): Promise<void> => {
       if (request.method === "GET" && task?.[1] !== undefined) {
         return json(yield* store.getTask(yield* pathId(TaskId, task[1])))
       }
+      const trace = url.pathname.match(/^\/api\/tasks\/([^/]+)\/trace$/)
+      if (request.method === "GET" && trace?.[1] !== undefined) {
+        return json(yield* store.traceTask(yield* pathId(TaskId, trace[1])))
+      }
       const cancel = url.pathname.match(/^\/api\/tasks\/([^/]+)\/cancel$/)
       if (request.method === "POST" && cancel?.[1] !== undefined) {
         const id = yield* pathId(TaskId, cancel[1])

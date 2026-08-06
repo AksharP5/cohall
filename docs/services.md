@@ -72,3 +72,17 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\install-device.ps1
 
 The script registers a per-user scheduled task that starts `cohall device` at
 logon and restarts it after failures.
+
+## Troubleshooting
+
+Inspect a task's redacted lifecycle, including dispatches, reconnect-driven
+requeues, execution, cancellation, and completion:
+
+```bash
+cohall trace <task-id>
+cohall trace <task-id> --follow
+```
+
+Use `journalctl --user -u cohall-device -f` for a Linux device and
+`journalctl -u cohall-relay -f` for a system relay. The trace is durable and
+portable; service logs remain machine-local.

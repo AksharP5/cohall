@@ -17,7 +17,13 @@ import {
   readStoredConfiguration,
   writeStoredConfiguration,
 } from "./config.ts"
-import { createDelegation, taskResult, threadContext, waitForTask } from "./delegation.ts"
+import {
+  createDelegation,
+  followTaskTrace,
+  taskResult,
+  threadContext,
+  waitForTask,
+} from "./delegation.ts"
 
 interface Arguments {
   readonly options: ReadonlyMap<string, ReadonlyArray<string> | true>
@@ -41,7 +47,7 @@ const valueOptions = new Set([
   "token-file",
   "workspace",
 ])
-const flagOptions = new Set(["client-only", "no-wait"])
+const flagOptions = new Set(["client-only", "follow", "no-wait"])
 const aliases = new Map([
   ["-c", "context"],
   ["-p", "prompt"],
@@ -61,6 +67,7 @@ Usage:
                   [--context text] [--thread uuid] [--workspace path]
                   [--timeout seconds] [--no-wait]
   cohall status <task-id>
+  cohall trace <task-id> [--follow]
   cohall wait <task-id> [--timeout seconds]
   cohall cancel <task-id>
   cohall thread <thread-id>
@@ -158,6 +165,7 @@ const identifier = (arguments_: Arguments, label: string): string => {
   return value
 }
 const print = (value: unknown): void => console.log(JSON.stringify(value, null, 2))
+const printLine = (value: unknown): void => console.log(JSON.stringify(value))
 
 const readInput = async (
   arguments_: Arguments,
@@ -533,6 +541,16 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     allowOptions(arguments_, [])
     const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
     print(taskResult(await Effect.runPromise(relay.getTask(id))))
+    return
+  }
+  if (command === "trace") {
+    allowOptions(arguments_, ["follow"])
+    const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
+    if (arguments_.options.has("follow")) {
+      await Effect.runPromise(followTaskTrace(relay, id, printLine))
+      return
+    }
+    print(await Effect.runPromise(relay.traceTask(id)))
     return
   }
   if (command === "wait") {

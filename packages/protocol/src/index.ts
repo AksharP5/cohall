@@ -47,6 +47,8 @@ export const TaskStatus = Schema.Literals([
   "cancelled",
 ])
 export type TaskStatus = typeof TaskStatus.Type
+export const TaskTraceEventKind = Schema.Literals([...TaskStatus.literals, "requeued"])
+export type TaskTraceEventKind = typeof TaskTraceEventKind.Type
 export const MessageRole = Schema.Literals(["human", "agent", "system"])
 export type MessageRole = typeof MessageRole.Type
 export const ConnectionRole = Schema.Literals(["client", "device"])
@@ -162,6 +164,32 @@ export const Task = Schema.Struct({
   completedAt: Schema.optionalKey(Timestamp),
 })
 export interface Task extends Schema.Schema.Type<typeof Task> {}
+
+export const TaskTraceEvent = Schema.Struct({
+  kind: TaskTraceEventKind,
+  at: Timestamp,
+  detail: Schema.optionalKey(optionalText(512)),
+})
+export interface TaskTraceEvent extends Schema.Schema.Type<typeof TaskTraceEvent> {}
+
+export const TaskTrace = Schema.Struct({
+  taskId: TaskId,
+  threadId: ThreadId,
+  status: TaskStatus,
+  provider: Provider,
+  sourceDeviceId: Schema.optionalKey(DeviceId),
+  targetDevice: Device,
+  parentTaskId: Schema.optionalKey(TaskId),
+  workspace: Schema.optionalKey(bounded(4096)),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+  startedAt: Schema.optionalKey(Timestamp),
+  completedAt: Schema.optionalKey(Timestamp),
+  events: boundedArray(TaskTraceEvent, 100),
+  truncated: Schema.Boolean,
+  error: Schema.optionalKey(optionalText(16_384)),
+})
+export interface TaskTrace extends Schema.Schema.Type<typeof TaskTrace> {}
 
 export const ThreadContext = Schema.Struct({
   thread: Thread,

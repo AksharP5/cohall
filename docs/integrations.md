@@ -59,6 +59,8 @@ Or pass `COHALL_RELAY_URL` and `COHALL_CLIENT_TOKEN` directly. Never place an
 owner or device token in an MCP client configuration.
 
 CLI and MCP are equivalent entry points. Use one per delegated task.
+Both expose redacted task tracing through `cohall trace <task-id>` and the
+`task_trace` MCP tool.
 Replace the `npx`, `-y`, `@akshar5/cohall` command prefix with `bunx`,
 `@akshar5/cohall` or `pnpm`, `dlx`, `@akshar5/cohall` when that better matches
 the host.

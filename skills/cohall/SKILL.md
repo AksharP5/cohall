@@ -10,12 +10,15 @@ keeps its local files, credentials, browser state, provider login, skills, and
 permissions. The relay carries prompts, final results, and task state; it is not
 a lead agent.
 
+Use the installed `cohall` executable when it is available. Fall back to
+`npx -y @akshar5/cohall` only when Cohall is not installed globally.
+
 ## Delegate work
 
 1. List devices unless the target is already explicit:
 
    ```bash
-   npx -y @akshar5/cohall devices
+   cohall devices
    ```
 
 2. Choose a target whose provider, workspaces, platform, and capabilities fit
@@ -24,7 +27,7 @@ a lead agent.
 3. Delegate one concrete outcome. Send only the context the target needs:
 
    ```bash
-   npx -y @akshar5/cohall delegate \
+   cohall delegate \
      --target @macbook \
      --provider codex \
      --workspace /Users/me/dev/project \
@@ -43,7 +46,7 @@ a lead agent.
    its local session:
 
    ```bash
-   npx -y @akshar5/cohall delegate \
+   cohall delegate \
      --thread 11111111-1111-4111-8111-111111111111 \
      --target @macbook \
      --prompt 'Check whether yesterday’s deployment failed for the same reason.'
@@ -68,17 +71,17 @@ ordinary shell or a separate agent turn.
 Queue work when the current agent can make independent progress:
 
 ```bash
-npx -y @akshar5/cohall delegate --target @linux --no-wait \
+cohall delegate --target @linux --no-wait \
   --prompt 'Run the project test suite and report failures.'
-npx -y @akshar5/cohall status <task-id>
-npx -y @akshar5/cohall wait <task-id> --timeout 1800
+cohall status <task-id>
+cohall wait <task-id> --timeout 1800
 ```
 
 The timeout error includes the task ID and last known status. The task continues
 unless cancelled:
 
 ```bash
-npx -y @akshar5/cohall cancel <task-id>
+cohall cancel <task-id>
 ```
 
 Active cancellation is acknowledged by the target device; `cancelling` means
@@ -87,7 +90,7 @@ the provider process has not confirmed termination yet.
 ## Read shared context
 
 ```bash
-npx -y @akshar5/cohall thread <thread-id>
+cohall thread <thread-id>
 ```
 
 This returns a byte-bounded recent window of prompts, final responses, and task
@@ -98,7 +101,7 @@ states. Check `truncated`; older history remains on the relay when it is true.
 Use `--prompt-file` or stdin for multiline work without shell interpolation:
 
 ```bash
-npx -y @akshar5/cohall delegate --target @macbook --prompt - <<'COHALL_PROMPT'
+cohall delegate --target @macbook --prompt - <<'COHALL_PROMPT'
 Analyze the authenticated pages in the attached task context.
 Return the shared conclusions, disagreements, and source URLs.
 COHALL_PROMPT
@@ -108,11 +111,21 @@ Only one input may read stdin. Use `--context-file` when the prompt uses stdin.
 
 ## Diagnostics
 
-If a command cannot connect or no target is available, run:
+Trace a known task before inspecting machine-local service logs:
 
 ```bash
-npx -y @akshar5/cohall doctor
-npx -y @akshar5/cohall devices
+cohall trace <task-id> --follow
+```
+
+The trace is redacted and reports relay dispatch, device execution, retries,
+and terminal state. Use `cohall thread <thread-id>` when prompt and result
+history is relevant.
+
+If Cohall cannot connect or no target is available, run:
+
+```bash
+cohall doctor
+cohall devices
 ```
 
 Return the diagnostic failure to the user rather than claiming remote work ran.
