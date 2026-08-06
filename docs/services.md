@@ -84,6 +84,18 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\install-device.ps1
 The script registers a per-user scheduled task that starts `cohall device` at
 logon and restarts it after failures.
 
+## Upgrade running services
+
+Run `cohall upgrade` from a global npm, Bun, or pnpm installation. It updates
+that installation and restarts only active managed Cohall services, with relays
+restarted before device daemons. A delegated upgrade can finish after restarting
+its own device daemon, so it does not leave the task in a reconnect loop.
+
+Direct `npm install --global`, `bun add --global`, or `pnpm add --global`
+replaces files on disk but cannot replace code already loaded by a running Node
+process. Use `cohall upgrade`, or restart the service manager job manually, to
+move a running relay or device to the new version.
+
 ## Troubleshooting
 
 Start with `cohall doctor`. It reports relay reachability, device connectivity,

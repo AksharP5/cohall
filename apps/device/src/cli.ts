@@ -25,6 +25,7 @@ import {
   threadContext,
   waitForTask,
 } from "./delegation.ts"
+import { upgrade } from "./upgrade.ts"
 
 interface Arguments {
   readonly options: ReadonlyMap<string, ReadonlyArray<string> | true>
@@ -47,9 +48,10 @@ const valueOptions = new Set([
   "thread",
   "timeout",
   "token-file",
+  "to",
   "workspace",
 ])
-const flagOptions = new Set(["client-only", "follow", "no-wait"])
+const flagOptions = new Set(["client-only", "dry-run", "follow", "no-restart", "no-wait"])
 const aliases = new Map([
   ["-c", "context"],
   ["-p", "prompt"],
@@ -78,6 +80,7 @@ Usage:
   cohall sessions
   cohall revoke <session-id>
   cohall doctor
+  cohall upgrade [--to version|latest] [--no-restart] [--dry-run]
   cohall device
   cohall relay
   cohall mcp
@@ -286,6 +289,22 @@ export const printSkill = (): void => console.log(skill.trimEnd())
 
 export const runCli = async (command: string, raw: ReadonlyArray<string>): Promise<void> => {
   const arguments_ = parseArguments(raw)
+
+  if (command === "upgrade") {
+    allowOptions(arguments_, ["dry-run", "no-restart", "to"])
+    noPositionals(arguments_, command)
+    const target = option(arguments_, "to")
+    print(
+      await upgrade({
+        currentVersion: version,
+        ...(target === undefined ? {} : { target }),
+        restart: !arguments_.options.has("no-restart"),
+        dryRun: arguments_.options.has("dry-run"),
+        delegated: process.env.COHALL_PROVIDER !== undefined,
+      }),
+    )
+    return
+  }
 
   if (command === "join") {
     allowOptions(arguments_, [

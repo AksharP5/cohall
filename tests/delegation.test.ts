@@ -230,6 +230,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         PROVIDER_FAKE_LOG: fakeLog,
+        COHALL_CONFIG: configPath,
         COHALL_DEVICE_ID: deviceId,
         COHALL_DEVICE_NAME: "test-device",
         COHALL_DEVICE_WORKSPACES: root,
