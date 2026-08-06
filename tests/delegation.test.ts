@@ -105,6 +105,12 @@ if [[ -n "$COHALL_TOKEN$COHALL_CLIENT_TOKEN$COHALL_DEVICE_TOKEN" ]]; then exit 8
 if [[ "$prompt" == *LONG_RUNNING* ]]; then sleep 20; fi
 if [[ "$prompt" == *NOISY_STDERR* ]]; then head -c 70000 /dev/zero >&2; fi
 printf '%s\n' '{"type":"thread.started","thread_id":"22222222-2222-4222-8222-222222222222"}'
+if [[ "$prompt" == *NOISY_STDOUT* ]]; then
+  printf -v padding '%0500d' 0
+  for ((index = 0; index < 2500; index += 1)); do
+    printf '{"type":"item.completed","item":{"type":"command_execution","text":"%s"}}\n' "$padding"
+  done
+fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Codex completed the delegated work."}}'
 `,
     )
@@ -367,6 +373,14 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       client.createTask({ prompt: "NOISY_STDERR", targetDeviceId: deviceId, workspace: root }),
     )
     expect(await Effect.runPromise(waitForTerminal(client, noisy))).toMatchObject({
+      status: "completed",
+      result: "Codex completed the delegated work.",
+    })
+
+    const noisyOutput = await Effect.runPromise(
+      client.createTask({ prompt: "NOISY_STDOUT", targetDeviceId: deviceId, workspace: root }),
+    )
+    expect(await Effect.runPromise(waitForTerminal(client, noisyOutput))).toMatchObject({
       status: "completed",
       result: "Codex completed the delegated work.",
     })

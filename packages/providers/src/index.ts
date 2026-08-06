@@ -4,6 +4,7 @@ import { accessSync, constants } from "node:fs"
 import { homedir, platform } from "node:os"
 import { delimiter, extname, isAbsolute, join } from "node:path"
 import { spawn } from "node:child_process"
+import { createInterface } from "node:readline"
 import type { Readable } from "node:stream"
 
 export class ProviderUnavailableError extends Schema.TaggedErrorClass<ProviderUnavailableError>()(
@@ -228,28 +229,44 @@ const command = (options: RunOptions): ReadonlyArray<string> => {
   }
 }
 
-const parseCodex = (stdout: string, existingSession?: string): RunResult => {
+const forEachJsonEvent = async (
+  stdout: Readable,
+  onEvent: (event: JsonRecord) => void,
+): Promise<void> => {
+  const lines = createInterface({ input: stdout, crlfDelay: Infinity })
+  try {
+    for await (const line of lines) {
+      if (line.trim().length === 0) {
+        continue
+      }
+      if (Buffer.byteLength(line) > 1024 * 1024) {
+        throw new Error("Provider event exceeded 1024 KiB")
+      }
+      const event = record(JSON.parse(line) as unknown)
+      if (event !== undefined) {
+        onEvent(event)
+      }
+    }
+  } finally {
+    lines.close()
+  }
+}
+
+const parseCodex = async (stdout: Readable, existingSession?: string): Promise<RunResult> => {
   let result = ""
   let sessionId = existingSession
-  for (const line of stdout.split("\n")) {
-    if (line.trim().length === 0) {
-      continue
-    }
-    const event = record(JSON.parse(line) as unknown)
-    if (event === undefined) {
-      continue
-    }
+  await forEachJsonEvent(stdout, (event) => {
     if (text(event.type) === "thread.started") {
       sessionId = text(event.thread_id) ?? sessionId
     }
     if (text(event.type) !== "item.completed") {
-      continue
+      return
     }
     const item = record(event.item)
     if (text(item?.type) === "agent_message") {
       result = text(item?.text) ?? text(item?.content) ?? result
     }
-  }
+  })
   return {
     result: result || "Codex completed the task without a text response.",
     ...(sessionId === undefined ? {} : { sessionId }),
@@ -291,17 +308,10 @@ const openCodeError = (event: JsonRecord): string | undefined => {
   return message === undefined ? "OpenCode reported an error" : `OpenCode: ${message}`
 }
 
-const parseOpenCode = (stdout: string, existingSession?: string): RunResult => {
+const parseOpenCode = async (stdout: Readable, existingSession?: string): Promise<RunResult> => {
   let result = ""
   let sessionId = existingSession
-  for (const line of stdout.split("\n")) {
-    if (line.trim().length === 0) {
-      continue
-    }
-    const event = record(JSON.parse(line) as unknown)
-    if (event === undefined) {
-      continue
-    }
+  await forEachJsonEvent(stdout, (event) => {
     const failure = openCodeError(event)
     if (failure !== undefined) {
       throw new Error(failure)
@@ -316,7 +326,7 @@ const parseOpenCode = (stdout: string, existingSession?: string): RunResult => {
     if (content !== undefined && content.length > 0) {
       result = content
     }
-  }
+  })
   if (result.length === 0) {
     throw new Error(
       "OpenCode produced no result; verify its authentication and use a supported project workspace",
@@ -325,14 +335,23 @@ const parseOpenCode = (stdout: string, existingSession?: string): RunResult => {
   return { result, ...(sessionId === undefined ? {} : { sessionId }) }
 }
 
-const parse = (options: RunOptions, stdout: string): RunResult => {
-  switch (options.provider) {
-    case "codex":
-      return parseCodex(stdout, options.sessionId)
-    case "claude-code":
-      return parseClaude(stdout, options.sessionId)
-    case "opencode":
-      return parseOpenCode(stdout, options.sessionId)
+const parse = async (
+  options: RunOptions,
+  stdout: Readable,
+  onFailure: () => void,
+): Promise<RunResult> => {
+  try {
+    switch (options.provider) {
+      case "codex":
+        return await parseCodex(stdout, options.sessionId)
+      case "claude-code":
+        return parseClaude(await boundedText(stdout, 1024 * 1024, onFailure), options.sessionId)
+      case "opencode":
+        return await parseOpenCode(stdout, options.sessionId)
+    }
+  } catch (cause) {
+    onFailure()
+    throw cause
   }
 }
 
@@ -378,8 +397,8 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
       signal.addEventListener("abort", terminate, { once: true })
       child.stdin.end(options.provider === "opencode" ? undefined : options.prompt)
 
-      const [stdout, stderr, exitCode] = await Promise.all([
-        boundedText(child.stdout, 1024 * 1024, terminate),
+      const [result, stderr, exitCode] = await Promise.all([
+        parse(options, child.stdout, terminate),
         captureText(child.stderr, 64 * 1024),
         exited,
       ])
@@ -394,7 +413,6 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
           exitCode,
         })
       }
-      const result = parse(options, stdout)
       if (byteLength(result.result) > 131_072) {
         throw new ProviderRunError({
           provider: options.provider,
