@@ -77,6 +77,17 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
   )
 
   server.registerTool(
+    "task_trace",
+    {
+      title: "Trace a delegated task",
+      description:
+        "Read the redacted relay and device lifecycle for troubleshooting a Cohall task.",
+      inputSchema: { task_id: z.string().uuid() },
+    },
+    async ({ task_id }) => output(await Effect.runPromise(client.traceTask(TaskId.make(task_id)))),
+  )
+
+  server.registerTool(
     "wait_task",
     {
       title: "Wait for delegated work",

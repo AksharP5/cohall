@@ -6,6 +6,9 @@ import {
   PairingCredential,
   PairingResult,
   Task,
+  TaskId,
+  TaskTrace,
+  TaskTraceEvent,
   Timestamp,
   Thread,
   ThreadContext,
@@ -21,8 +24,8 @@ import {
   type CreateTaskInput,
   type DeviceId,
   type Provider,
-  type TaskId,
   type TaskStatus,
+  type TaskTraceEventKind,
   type ThreadId,
 } from "@cohall/protocol"
 import { Context, Effect, Layer, Schema } from "effect"
@@ -88,6 +91,13 @@ interface TaskRow {
   readonly completed_at: string | null
 }
 
+interface TaskTraceEventRow {
+  readonly id: number
+  readonly kind: string
+  readonly created_at: string
+  readonly detail: string | null
+}
+
 interface PairingRow {
   readonly token_hash: string
   readonly label: string
@@ -133,6 +143,7 @@ export interface Interface {
     providerSessionId?: string,
   ) => Effect.Effect<Task, PersistenceError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
+  readonly traceTask: (taskId: TaskId) => Effect.Effect<TaskTrace, PersistenceError>
   readonly threadContext: (threadId: ThreadId) => Effect.Effect<ThreadContext, PersistenceError>
   readonly pendingTasksFor: (
     deviceId: DeviceId,
@@ -251,6 +262,15 @@ const taskFromRow = (row: TaskRow): Effect.Effect<Task, PersistenceError> =>
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
   })
 
+const taskTraceEventFromRow = (
+  row: TaskTraceEventRow,
+): Effect.Effect<TaskTraceEvent, PersistenceError> =>
+  decode("RelayStore.decodeTaskTraceEvent", TaskTraceEvent, {
+    kind: row.kind,
+    at: row.created_at,
+    ...(row.detail === null ? {} : { detail: row.detail }),
+  })
+
 const rolesFromRow = (row: AuthSessionRow): ReadonlyArray<ConnectionRoleName> =>
   Schema.decodeUnknownSync(Schema.Array(ConnectionRole))(JSON.parse(row.roles_json))
 
@@ -311,7 +331,46 @@ const recentWithin = <A>(items: ReadonlyArray<A>, byteBudget: number) => {
   return { items: selected, truncated: selected.length < items.length }
 }
 
+const derivedTraceEvents = (task: Task): ReadonlyArray<TaskTraceEvent> => {
+  const detail = "Derived from task timestamps; earlier trace events were not recorded"
+  const events: Array<TaskTraceEvent> = [
+    TaskTraceEvent.make({ kind: "queued", at: task.createdAt, detail }),
+  ]
+  if (task.startedAt !== undefined) {
+    events.push(TaskTraceEvent.make({ kind: "running", at: task.startedAt, detail }))
+  } else if (task.status === "assigned") {
+    events.push(TaskTraceEvent.make({ kind: "assigned", at: task.updatedAt, detail }))
+  }
+  if (task.status === "cancelling") {
+    events.push(TaskTraceEvent.make({ kind: "cancelling", at: task.updatedAt, detail }))
+  }
+  if (
+    task.completedAt !== undefined &&
+    (task.status === "completed" || task.status === "failed" || task.status === "cancelled")
+  ) {
+    events.push(TaskTraceEvent.make({ kind: task.status, at: task.completedAt, detail }))
+  }
+  return events
+}
+
 const makeService = (db: Database): Interface => {
+  const recordTaskTraceEvent = (
+    taskId: TaskId,
+    kind: TaskTraceEventKind,
+    detail: string,
+    createdAt: Timestamp = now(),
+  ): void => {
+    db.query(
+      `INSERT INTO task_trace_events (task_id, kind, created_at, detail)
+       VALUES (?, ?, ?, ?)`,
+    ).run(taskId, kind, createdAt, detail)
+    db.query(
+      `DELETE FROM task_trace_events WHERE task_id = ? AND id NOT IN (
+         SELECT id FROM task_trace_events WHERE task_id = ? ORDER BY id DESC LIMIT 1000
+       )`,
+    ).run(taskId, taskId)
+  }
+
   const queryTask = (taskId: TaskId): TaskRow | null =>
     db.query<TaskRow, [string]>("SELECT * FROM tasks WHERE id = ?").get(taskId)
 
@@ -331,6 +390,59 @@ const makeService = (db: Database): Interface => {
     return yield* taskFromRow(row)
   })
 
+  const traceTask = Effect.fn("RelayStore.traceTask")(function* (taskId: TaskId) {
+    const task = yield* getTask(taskId)
+    const [deviceRow, eventRows] = yield* Effect.try({
+      try: () =>
+        [
+          db
+            .query<DeviceRow, [string]>("SELECT * FROM devices WHERE id = ?")
+            .get(task.targetDeviceId),
+          db
+            .query<TaskTraceEventRow, [string]>(
+              `SELECT * FROM (
+                 SELECT id, kind, created_at, detail FROM task_trace_events
+                 WHERE task_id = ? ORDER BY id DESC LIMIT 101
+               ) ORDER BY id`,
+            )
+            .all(taskId),
+        ] as const,
+      catch: operationError("RelayStore.traceTask"),
+    })
+    if (deviceRow === null) {
+      return yield* Effect.fail(
+        new PersistenceError({
+          operation: "RelayStore.traceTask.device",
+          message: `Unknown target device ${task.targetDeviceId}`,
+        }),
+      )
+    }
+    const targetDevice = yield* deviceFromRow(deviceRow)
+    const selectedRows = eventRows.slice(-100)
+    const recordedEvents = yield* Effect.forEach(selectedRows, taskTraceEventFromRow)
+    const events = recordedEvents.length === 0 ? derivedTraceEvents(task) : recordedEvents
+    return TaskTrace.make({
+      taskId: task.id,
+      threadId: task.threadId,
+      status: task.status,
+      provider: task.provider,
+      targetDevice,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      events,
+      truncated:
+        eventRows.length > 100 ||
+        recordedEvents.length === 0 ||
+        recordedEvents[0]?.kind !== "queued",
+      ...(task.sourceDeviceId === undefined ? {} : { sourceDeviceId: task.sourceDeviceId }),
+      ...(task.parentTaskId === undefined ? {} : { parentTaskId: task.parentTaskId }),
+      ...(task.workspace === undefined ? {} : { workspace: task.workspace }),
+      ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
+      ...(task.completedAt === undefined ? {} : { completedAt: task.completedAt }),
+      ...(task.error === undefined ? {} : { error: task.error }),
+    })
+  })
+
   const listDevices = Effect.fn("RelayStore.listDevices")(function* () {
     const rows = yield* Effect.try({
       try: () =>
@@ -345,10 +457,23 @@ const makeService = (db: Database): Interface => {
       try: () =>
         db.transaction(() => {
           const timestamp = now()
+          const interrupted = db
+            .query<{ readonly id: string }, []>(
+              "SELECT id FROM tasks WHERE status IN ('assigned', 'running')",
+            )
+            .all()
           db.query("UPDATE devices SET status = 'offline'").run()
           db.query(
             "UPDATE tasks SET status = 'queued', updated_at = ? WHERE status IN ('assigned', 'running')",
           ).run(timestamp)
+          for (const task of interrupted) {
+            recordTaskTraceEvent(
+              TaskId.make(task.id),
+              "requeued",
+              "Relay restarted before the task completed",
+              timestamp,
+            )
+          }
           db.query("DELETE FROM auth_pairings WHERE expires_at <= ? OR used_at IS NOT NULL").run(
             timestamp,
           )
@@ -513,6 +638,7 @@ const makeService = (db: Database): Interface => {
             task.createdAt,
             task.updatedAt,
           )
+          recordTaskTraceEvent(task.id, "queued", "Relay accepted the task", timestamp)
           db.query(
             `INSERT INTO messages (
               id, thread_id, role, kind, author_id, author_name, content, created_at,
@@ -608,31 +734,38 @@ const makeService = (db: Database): Interface => {
     taskId: TaskId,
     expected: ReadonlyArray<TaskStatus>,
     update: TaskUpdate,
+    event?: { readonly kind: TaskTraceEventKind; readonly detail: string },
   ) {
     const current = yield* getTask(taskId)
     if (!expected.includes(current.status)) {
       return current
     }
     const placeholders = expected.map(() => "?").join(", ")
+    const timestamp = now()
     yield* Effect.try({
       try: () =>
-        db
-          .query(
-            `UPDATE tasks SET status = ?, provider_session_id = ?, result = ?, error = ?,
-           started_at = ?, completed_at = ?, updated_at = ?
-           WHERE id = ? AND status IN (${placeholders})`,
-          )
-          .run(
-            update.status ?? current.status,
-            update.providerSessionId ?? current.providerSessionId ?? null,
-            update.result ?? current.result ?? null,
-            update.error ?? current.error ?? null,
-            update.startedAt ?? current.startedAt ?? null,
-            update.completedAt ?? current.completedAt ?? null,
-            now(),
-            taskId,
-            ...expected,
-          ),
+        db.transaction(() => {
+          const result = db
+            .query(
+              `UPDATE tasks SET status = ?, provider_session_id = ?, result = ?, error = ?,
+             started_at = ?, completed_at = ?, updated_at = ?
+             WHERE id = ? AND status IN (${placeholders})`,
+            )
+            .run(
+              update.status ?? current.status,
+              update.providerSessionId ?? current.providerSessionId ?? null,
+              update.result ?? current.result ?? null,
+              update.error ?? current.error ?? null,
+              update.startedAt ?? current.startedAt ?? null,
+              update.completedAt ?? current.completedAt ?? null,
+              timestamp,
+              taskId,
+              ...expected,
+            )
+          if (result.changes === 1 && event !== undefined) {
+            recordTaskTraceEvent(taskId, event.kind, event.detail, timestamp)
+          }
+        })(),
       catch: operationError("RelayStore.transition"),
     })
     return yield* getTask(taskId)
@@ -643,18 +776,29 @@ const makeService = (db: Database): Interface => {
     if (current.status !== "queued") {
       return current
     }
+    const timestamp = now()
     yield* Effect.try({
       try: () =>
-        db
-          .query(
-            `UPDATE tasks SET status = 'assigned', updated_at = ?
-             WHERE id = ? AND status = 'queued' AND NOT EXISTS (
-               SELECT 1 FROM tasks active
-               WHERE active.target_device_id = ? AND active.id <> ?
-                 AND active.status IN ('assigned', 'running', 'cancelling')
-             )`,
-          )
-          .run(now(), taskId, current.targetDeviceId, taskId),
+        db.transaction(() => {
+          const result = db
+            .query(
+              `UPDATE tasks SET status = 'assigned', updated_at = ?
+               WHERE id = ? AND status = 'queued' AND NOT EXISTS (
+                 SELECT 1 FROM tasks active
+                 WHERE active.target_device_id = ? AND active.id <> ?
+                   AND active.status IN ('assigned', 'running', 'cancelling')
+               )`,
+            )
+            .run(timestamp, taskId, current.targetDeviceId, taskId)
+          if (result.changes === 1) {
+            recordTaskTraceEvent(
+              taskId,
+              "assigned",
+              "Relay dispatched the task over the device WebSocket",
+              timestamp,
+            )
+          }
+        })(),
       catch: operationError("RelayStore.assignTask"),
     })
     return yield* getTask(taskId)
@@ -710,6 +854,16 @@ const makeService = (db: Database): Interface => {
           if (updated.changes !== 1) {
             return
           }
+          recordTaskTraceEvent(
+            taskId,
+            status,
+            status === "completed"
+              ? "Target device completed the task"
+              : status === "failed"
+                ? "Target device reported a task failure"
+                : "Target device acknowledged cancellation",
+            timestamp,
+          )
           if (providerSessionId !== undefined) {
             db.query(
               `INSERT INTO provider_sessions (thread_id, device_id, provider, session_id, updated_at)
@@ -756,22 +910,51 @@ const makeService = (db: Database): Interface => {
     if (["completed", "failed", "cancelled"].includes(current.status)) {
       return current
     }
+    if (current.status === "cancelling") {
+      return current
+    }
+    const timestamp = now()
     return current.status === "queued"
-      ? yield* transition(taskId, ["queued"], { status: "cancelled", completedAt: now() })
-      : yield* transition(taskId, ["assigned", "running", "cancelling"], {
-          status: "cancelling",
-        })
+      ? yield* transition(
+          taskId,
+          ["queued"],
+          { status: "cancelled", completedAt: timestamp },
+          { kind: "cancelled", detail: "Client cancelled the task before dispatch" },
+        )
+      : yield* transition(
+          taskId,
+          ["assigned", "running"],
+          {
+            status: "cancelling",
+          },
+          { kind: "cancelling", detail: "Client requested task cancellation" },
+        )
   })
 
   const requeueTasksFor = Effect.fn("RelayStore.requeueTasksFor")(function* (deviceId: DeviceId) {
+    const timestamp = now()
     yield* Effect.try({
       try: () =>
-        db
-          .query(
+        db.transaction(() => {
+          const interrupted = db
+            .query<{ readonly id: string }, [string]>(
+              `SELECT id FROM tasks WHERE target_device_id = ?
+               AND status IN ('assigned', 'running')`,
+            )
+            .all(deviceId)
+          db.query(
             `UPDATE tasks SET status = 'queued', updated_at = ?
-           WHERE target_device_id = ? AND status IN ('assigned', 'running')`,
-          )
-          .run(now(), deviceId),
+             WHERE target_device_id = ? AND status IN ('assigned', 'running')`,
+          ).run(timestamp, deviceId)
+          for (const task of interrupted) {
+            recordTaskTraceEvent(
+              TaskId.make(task.id),
+              "requeued",
+              "Target device disconnected before task completion",
+              timestamp,
+            )
+          }
+        })(),
       catch: operationError("RelayStore.requeueTasksFor"),
     })
   })
@@ -966,14 +1149,26 @@ const makeService = (db: Database): Interface => {
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
     createDelegation,
     getTask,
+    traceTask,
     threadContext,
     pendingTasksFor,
     assignTask,
-    rollbackAssignment: (taskId) => transition(taskId, ["assigned"], { status: "queued" }),
+    rollbackAssignment: (taskId) =>
+      transition(
+        taskId,
+        ["assigned"],
+        { status: "queued" },
+        { kind: "requeued", detail: "Target device was unavailable during dispatch" },
+      ),
     acceptTask: (taskId, deviceId) =>
       requireTarget(taskId, deviceId).pipe(
         Effect.flatMap(() =>
-          transition(taskId, ["assigned"], { status: "running", startedAt: now() }),
+          transition(
+            taskId,
+            ["assigned"],
+            { status: "running", startedAt: now() },
+            { kind: "running", detail: "Target device accepted the task and started the provider" },
+          ),
         ),
       ),
     finishTask: (taskId, deviceId, result, providerSessionId) =>
@@ -1027,6 +1222,13 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         );
         CREATE INDEX IF NOT EXISTS tasks_thread_created ON tasks(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS tasks_target_status ON tasks(target_device_id, status);
+        CREATE TABLE IF NOT EXISTS task_trace_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL, created_at TEXT NOT NULL, detail TEXT
+        );
+        CREATE INDEX IF NOT EXISTS task_trace_events_task_id
+          ON task_trace_events(task_id, id);
         CREATE TABLE IF NOT EXISTS provider_sessions (
           thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
           device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,

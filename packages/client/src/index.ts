@@ -8,6 +8,7 @@ import {
   PairingCredential,
   PairingResult,
   Task,
+  TaskTrace,
   ThreadContext,
   type AuthSessionId,
   type TaskId,
@@ -40,6 +41,7 @@ export interface Interface {
   readonly devices: () => Effect.Effect<ReadonlyArray<Device>, RelayClientError>
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<Task, RelayClientError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
+  readonly traceTask: (taskId: TaskId) => Effect.Effect<TaskTrace, RelayClientError>
   readonly cancelTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
   readonly threadContext: (threadId: ThreadId) => Effect.Effect<ThreadContext, RelayClientError>
   readonly createPairing: (
@@ -156,6 +158,8 @@ export const make = (options: RelayClientOptions): Interface => {
       }),
     getTask: (taskId) =>
       request("RelayClient.getTask", `/api/tasks/${encodeURIComponent(taskId)}`, Task),
+    traceTask: (taskId) =>
+      request("RelayClient.traceTask", `/api/tasks/${encodeURIComponent(taskId)}/trace`, TaskTrace),
     cancelTask: (taskId) =>
       request("RelayClient.cancelTask", `/api/tasks/${encodeURIComponent(taskId)}/cancel`, Task, {
         method: "POST",

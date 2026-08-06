@@ -85,6 +85,27 @@ it("bounds outstanding work, serial assignment, and thread context", async () =>
     expect(assigned.status).toBe("assigned")
     expect(stillQueued.status).toBe("queued")
 
+    const trace = await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        yield* store.rollbackAssignment(first.id)
+        yield* store.assignTask(first.id)
+        yield* store.acceptTask(first.id, deviceId)
+        yield* store.finishTask(first.id, deviceId, "done")
+        return yield* store.traceTask(first.id)
+      }),
+    )
+    expect(trace.events.map((event) => event.kind)).toEqual([
+      "queued",
+      "assigned",
+      "requeued",
+      "assigned",
+      "running",
+      "completed",
+    ])
+    expect(trace.targetDevice.id).toBe(deviceId)
+    expect(trace.truncated).toBe(false)
+
     const context = await run(
       Effect.gen(function* () {
         const store = yield* RelayStore.Service

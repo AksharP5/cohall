@@ -117,12 +117,16 @@ npx -y @akshar5/cohall delegate --target @linux --no-wait \
   --prompt 'Run the test suite and report failures.'
 npx -y @akshar5/cohall wait <task-id> --timeout 1800
 npx -y @akshar5/cohall cancel <task-id>
+npx -y @akshar5/cohall trace <task-id> --follow
 npx -y @akshar5/cohall thread <thread-id>
 ```
 
 Follow-ups using the same `thread_id` resume the provider session on the target
 device. Active cancellation remains `cancelling` until the target acknowledges
-that its local process stopped.
+that its local process stopped. `trace` reports the durable relay and device
+lifecycle without prompts, results, credentials, or provider session IDs.
+`--follow` emits changed snapshots as newline-delimited JSON until the task is
+terminal.
 
 ## Optional MCP
 
@@ -132,6 +136,7 @@ server exposes:
 - `list_devices`
 - `delegate`
 - `task_status`
+- `task_trace`
 - `wait_task`
 - `cancel_task`
 - `thread_context`
