@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/AksharP5/cohall/compare/v0.3.3...v0.3.4) (2026-08-06)
+
+
+### Bug Fixes
+
+* stream large provider event output ([565259a](https://github.com/AksharP5/cohall/commit/565259a59e45257785958fbc8430bcbfd30606a1))
+
 ## [0.3.3](https://github.com/AksharP5/cohall/compare/v0.3.2...v0.3.3) (2026-08-06)
 
 
