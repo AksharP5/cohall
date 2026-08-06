@@ -124,6 +124,7 @@ const boundedText = (stream: Readable, limit: number, onOverflow: () => void): P
 const codexCommand = (options: RunOptions): ReadonlyArray<string> => {
   const common = [
     "--json",
+    "--skip-git-repo-check",
     "-c",
     'approval_policy="never"',
     ...(options.model === undefined ? [] : ["--model", options.model]),
@@ -152,6 +153,7 @@ const opencodeCommand = (options: RunOptions): ReadonlyArray<string> => [
   "json",
   ...(options.model === undefined ? [] : ["--model", options.model]),
   ...(options.sessionId === undefined ? [] : ["--session", options.sessionId]),
+  options.prompt,
 ]
 
 const command = (options: RunOptions): ReadonlyArray<string> => {
@@ -211,6 +213,23 @@ const textFromPart = (value: unknown): string | undefined => {
   return text(part.text) ?? text(part.content) ?? text(record(part.part)?.text)
 }
 
+const openCodeError = (event: JsonRecord): string | undefined => {
+  if (text(event.type) !== "error") {
+    return undefined
+  }
+  const error = record(event.error)
+  const name = text(error?.name)
+  const message =
+    text(record(error?.data)?.message) ??
+    text(error?.message) ??
+    text(event.message) ??
+    text(event.error)
+  if (name !== undefined && message !== undefined) {
+    return `OpenCode ${name}: ${message}`
+  }
+  return message === undefined ? "OpenCode reported an error" : `OpenCode: ${message}`
+}
+
 const parseOpenCode = (stdout: string, existingSession?: string): RunResult => {
   let result = ""
   let sessionId = existingSession
@@ -221,6 +240,10 @@ const parseOpenCode = (stdout: string, existingSession?: string): RunResult => {
     const event = record(JSON.parse(line) as unknown)
     if (event === undefined) {
       continue
+    }
+    const failure = openCodeError(event)
+    if (failure !== undefined) {
+      throw new Error(failure)
     }
     sessionId =
       text(event.sessionID) ??
@@ -234,7 +257,9 @@ const parseOpenCode = (stdout: string, existingSession?: string): RunResult => {
     }
   }
   if (result.length === 0) {
-    throw new Error("OpenCode completed without a text response")
+    throw new Error(
+      "OpenCode produced no result; verify its authentication and use a supported project workspace",
+    )
   }
   return { result, ...(sessionId === undefined ? {} : { sessionId }) }
 }
@@ -296,7 +321,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
         killTimer.unref()
       }
       signal.addEventListener("abort", terminate, { once: true })
-      child.stdin.end(options.prompt)
+      child.stdin.end(options.provider === "opencode" ? undefined : options.prompt)
 
       const [stdout, stderr, exitCode] = await Promise.all([
         boundedText(child.stdout, 1024 * 1024, terminate),
