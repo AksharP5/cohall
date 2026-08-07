@@ -161,6 +161,7 @@ describe("managed service upgrades", () => {
     expect(restartReceipts[1]).toContain(
       '"restartingService": "systemd-user:cohall-device.service"',
     )
+    await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
   })
 
   it("restarts active services when the installed files are already current", async () => {
@@ -198,6 +199,7 @@ describe("managed service upgrades", () => {
       target: "1.2.3",
       restart: true,
       dryRun: false,
+      delegated: true,
       entrypoint,
       platform: "linux",
       uid: 1000,
@@ -214,6 +216,9 @@ describe("managed service upgrades", () => {
       "systemctl --user restart cohall-relay.service",
       "systemctl --user restart cohall-device.service",
     ])
+    await expect(readFile(join(root, "upgrade-restart.json"), "utf8")).resolves.toContain(
+      '"restartingService": "systemd-user:cohall-device.service"',
+    )
   })
 
   it("refuses to restart a service backed by a different installation", async () => {
@@ -308,6 +313,7 @@ describe("managed service upgrades", () => {
       currentVersion: "1.2.3",
       restart: true,
       dryRun: true,
+      delegated: true,
       platform: "linux",
       uid: 1000,
       statePath,
@@ -322,6 +328,7 @@ describe("managed service upgrades", () => {
       currentVersion: "1.2.3",
       restart: true,
       dryRun: false,
+      delegated: true,
       platform: "linux",
       uid: 1000,
       statePath,

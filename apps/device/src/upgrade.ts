@@ -72,6 +72,7 @@ export interface UpgradeOptions {
   readonly platform?: NodeJS.Platform
   readonly uid?: number
   readonly statePath?: string
+  readonly delegated?: boolean
   readonly runner?: CommandRunner
 }
 
@@ -378,6 +379,7 @@ const restartServices = async (
   services: ReadonlyArray<ManagedService>,
   statePath: string,
   state: RestartReceipt,
+  preserveDeviceReceipt: boolean,
 ): Promise<RestartReceipt> => {
   let current = state
   for (const service of services) {
@@ -398,6 +400,10 @@ const restartServices = async (
       await writeReceipt(statePath, current)
       throw cause
     }
+    if (service.device && preserveDeviceReceipt) {
+      // Some service managers return before terminating this process. The replacement task consumes the marker.
+      return current
+    }
     current = {
       version: current.version,
       fromVersion: current.fromVersion,
@@ -409,6 +415,12 @@ const restartServices = async (
   }
   return current
 }
+
+const reportedRestartServices = (receipt: RestartReceipt): ReadonlyArray<string> =>
+  receipt.restartingService === undefined ||
+  receipt.restartedServices.includes(receipt.restartingService)
+    ? receipt.restartedServices
+    : [...receipt.restartedServices, receipt.restartingService]
 
 export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> => {
   const runner = options.runner ?? defaultRunner
@@ -457,16 +469,24 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
     if (remaining.length > 0) {
       await writeReceipt(statePath, resumed)
-      resumed = await restartServices(runner, remaining, statePath, resumed)
+      resumed = await restartServices(
+        runner,
+        remaining,
+        statePath,
+        resumed,
+        options.delegated === true,
+      )
     }
-    await rm(statePath, { force: true })
+    if (resumed.restartingService === undefined) {
+      await rm(statePath, { force: true })
+    }
     return {
       upgraded: previous.fromVersion !== previous.version,
       from_version: previous.fromVersion,
       installed_version: previous.version,
       requested_version: previous.version,
       package_manager: previous.packageManager,
-      services_restarted: resumed.restartedServices,
+      services_restarted: reportedRestartServices(resumed),
       services_pending_restart: [],
       resumed_after_restart: true,
       dry_run: false,
@@ -529,15 +549,23 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     restartedServices: [],
   }
   await writeReceipt(statePath, initial)
-  const completed = await restartServices(runner, services, statePath, initial)
-  await rm(statePath, { force: true })
+  const completed = await restartServices(
+    runner,
+    services,
+    statePath,
+    initial,
+    options.delegated === true,
+  )
+  if (completed.restartingService === undefined) {
+    await rm(statePath, { force: true })
+  }
   return {
     upgraded,
     from_version: options.currentVersion,
     installed_version: nextVersion,
     requested_version: target,
     package_manager: installation.manager,
-    services_restarted: completed.restartedServices,
+    services_restarted: reportedRestartServices(completed),
     services_pending_restart: [],
     resumed_after_restart: false,
     dry_run: false,
