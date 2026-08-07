@@ -1,7 +1,8 @@
 import { Provider, type Provider as ProviderName } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { accessSync, constants } from "node:fs"
-import { homedir, platform } from "node:os"
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { homedir, platform, tmpdir } from "node:os"
 import { delimiter, extname, isAbsolute, join } from "node:path"
 import { spawn } from "node:child_process"
 import { createInterface } from "node:readline"
@@ -208,24 +209,55 @@ const claudeCommand = (options: RunOptions): ReadonlyArray<string> => [
   ...(options.sessionId === undefined ? [] : ["--resume", options.sessionId]),
 ]
 
-const opencodeCommand = (options: RunOptions): ReadonlyArray<string> => [
+const opencodeCommand = (options: RunOptions, promptPath: string): ReadonlyArray<string> => [
   "opencode",
   "run",
   "--format",
   "json",
   ...(options.model === undefined ? [] : ["--model", options.model]),
   ...(options.sessionId === undefined ? [] : ["--session", options.sessionId]),
-  options.prompt,
+  "--file",
+  promptPath,
+  "Complete the task described in the attached Cohall prompt file.",
 ]
 
-const command = (options: RunOptions): ReadonlyArray<string> => {
+interface PreparedCommand {
+  readonly command: ReadonlyArray<string>
+  readonly input?: string
+  readonly cleanup: () => Promise<void>
+}
+
+const prepareCommand = async (options: RunOptions): Promise<PreparedCommand> => {
   switch (options.provider) {
     case "codex":
-      return codexCommand(options)
+      return {
+        command: codexCommand(options),
+        input: options.prompt,
+        cleanup: () => Promise.resolve(),
+      }
     case "claude-code":
-      return claudeCommand(options)
-    case "opencode":
-      return opencodeCommand(options)
+      return {
+        command: claudeCommand(options),
+        input: options.prompt,
+        cleanup: () => Promise.resolve(),
+      }
+    case "opencode": {
+      const directory = await mkdtemp(join(tmpdir(), "cohall-opencode-"))
+      const promptPath = join(directory, "prompt.md")
+      try {
+        if (platform() !== "win32") {
+          await chmod(directory, 0o700)
+        }
+        await writeFile(promptPath, options.prompt, { mode: 0o600 })
+        return {
+          command: opencodeCommand(options, promptPath),
+          cleanup: () => rm(directory, { recursive: true, force: true }),
+        }
+      } catch (cause) {
+        await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+        throw cause
+      }
+    }
   }
 }
 
@@ -360,14 +392,15 @@ const byteLength = (value: string): number => new TextEncoder().encode(value).by
 export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError> =>
   Effect.tryPromise({
     try: async (signal) => {
-      const [commandName, ...arguments_] = command(options)
-      const executable = commandName === undefined ? undefined : findExecutable(commandName)
+      const executable = findExecutable(executables[options.provider])
       if (executable === undefined) {
         throw new ProviderUnavailableError({
           provider: options.provider,
           message: `${executables[options.provider]} is not available on this device`,
         })
       }
+      const prepared = await prepareCommand(options)
+      const [, ...arguments_] = prepared.command
       const child = spawn(executable, arguments_, {
         cwd: options.cwd,
         env: {
@@ -395,37 +428,45 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
         killTimer.unref()
       }
       signal.addEventListener("abort", terminate, { once: true })
-      child.stdin.end(options.provider === "opencode" ? undefined : options.prompt)
+      child.stdin.end(prepared.input)
 
-      const [result, stderr, exitCode] = await Promise.all([
-        parse(options, child.stdout, terminate),
-        captureText(child.stderr, 64 * 1024),
-        exited,
-      ])
-      signal.removeEventListener("abort", terminate)
-      if (killTimer !== undefined && child.exitCode !== null) {
-        clearTimeout(killTimer)
+      try {
+        const [result, stderr, exitCode] = await Promise.all([
+          parse(options, child.stdout, terminate),
+          captureText(child.stderr, 64 * 1024),
+          exited,
+        ])
+        if (exitCode !== 0) {
+          throw new ProviderRunError({
+            provider: options.provider,
+            message: failureMessage(executables[options.provider], stderr, exitCode),
+            exitCode,
+          })
+        }
+        if (byteLength(result.result) > 131_072) {
+          throw new ProviderRunError({
+            provider: options.provider,
+            message: "Provider result exceeded 128 KiB",
+          })
+        }
+        if (result.sessionId !== undefined && byteLength(result.sessionId) > 4_096) {
+          throw new ProviderRunError({
+            provider: options.provider,
+            message: "Provider session ID exceeded 4 KiB",
+          })
+        }
+        return result
+      } finally {
+        signal.removeEventListener("abort", terminate)
+        if (child.exitCode === null) {
+          terminate()
+          await exited.catch(() => undefined)
+        }
+        if (killTimer !== undefined) {
+          clearTimeout(killTimer)
+        }
+        await prepared.cleanup()
       }
-      if (exitCode !== 0) {
-        throw new ProviderRunError({
-          provider: options.provider,
-          message: failureMessage(executables[options.provider], stderr, exitCode),
-          exitCode,
-        })
-      }
-      if (byteLength(result.result) > 131_072) {
-        throw new ProviderRunError({
-          provider: options.provider,
-          message: "Provider result exceeded 128 KiB",
-        })
-      }
-      if (result.sessionId !== undefined && byteLength(result.sessionId) > 4_096) {
-        throw new ProviderRunError({
-          provider: options.provider,
-          message: "Provider session ID exceeded 4 KiB",
-        })
-      }
-      return result
     },
     catch: (cause) => {
       if (cause instanceof ProviderUnavailableError || cause instanceof ProviderRunError) {

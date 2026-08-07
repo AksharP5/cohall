@@ -11,7 +11,7 @@ import { Effect, Schedule, Schema } from "effect"
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { execFile, spawn, type ChildProcess } from "node:child_process"
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -124,9 +124,17 @@ printf '%s\n' '{"result":"Claude completed the delegated work.","session_id":"33
     await writeFile(
       join(bin, "opencode"),
       `#!/usr/bin/env bash
-prompt="\${!#}"
 if [[ -n "$(cat)" ]]; then exit 87; fi
-printf 'opencode thread=%s args=%s\n' "$COHALL_THREAD_ID" "$*" >> "$PROVIDER_FAKE_LOG"
+prompt_file=""
+for ((index = 1; index <= $#; index += 1)); do
+  if [[ "\${!index}" == "--file" ]]; then
+    file_index=$((index + 1))
+    prompt_file="\${!file_index}"
+  fi
+done
+if [[ -z "$prompt_file" || ! -f "$prompt_file" ]]; then exit 88; fi
+prompt="$(cat "$prompt_file")"
+printf 'opencode thread=%s prompt_file=%s args=%s\n' "$COHALL_THREAD_ID" "$prompt_file" "$*" >> "$PROVIDER_FAKE_LOG"
 if [[ "$prompt" == *OPEN_CODE_ERROR* ]]; then
   printf '%s\n' '{"type":"error","sessionID":"44444444-4444-4444-8444-444444444444","error":{"name":"ProviderAuthError","data":{"message":"OpenAI API key is missing."}}}'
   exit 0
@@ -434,6 +442,15 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(codexLines[0]).toContain('sandbox_mode="workspace-write"')
     expect(codexLines[1]).toContain("exec resume")
     expect(codexLines[1]).toContain('sandbox_mode="workspace-write"')
+    const openCodeLines = log.split("\n").filter((line) => line.startsWith("opencode "))
+    expect(openCodeLines).toHaveLength(2)
+    expect(openCodeLines.join("\n")).not.toContain("Use opencode")
+    expect(openCodeLines.join("\n")).not.toContain("OPEN_CODE_ERROR")
+    for (const line of openCodeLines) {
+      const promptPath = line.match(/prompt_file=([^ ]+)/)?.[1]
+      expect(promptPath).toBeDefined()
+      await expect(access(promptPath ?? "missing")).rejects.toMatchObject({ code: "ENOENT" })
+    }
 
     await Effect.runPromise(owner.revokeAuthSession(deviceCredential.session.id))
     const offline = await Effect.runPromise(
