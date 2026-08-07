@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5](https://github.com/AksharP5/cohall/compare/v0.4.4...v0.4.5) (2026-08-07)
+
+
+### Bug Fixes
+
+* **relay:** keep upgrades available and forget stale devices ([#32](https://github.com/AksharP5/cohall/issues/32)) ([d5b054d](https://github.com/AksharP5/cohall/commit/d5b054db37b8e2737af7540cac4f74f64e457a7f))
+
 ## [0.4.4](https://github.com/AksharP5/cohall/compare/v0.4.3...v0.4.4) (2026-08-07)
 
 
