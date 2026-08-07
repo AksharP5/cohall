@@ -100,7 +100,7 @@ describe("headless Cohall", () => {
       join(bin, "codex"),
       `#!/usr/bin/env bash
 prompt=$(cat)
-printf 'codex thread=%s args=%s\n' "$COHALL_THREAD_ID" "$*" >> "$PROVIDER_FAKE_LOG"
+printf 'codex thread=%s config=%s args=%s\n' "$COHALL_THREAD_ID" "$COHALL_CONFIG" "$*" >> "$PROVIDER_FAKE_LOG"
 if [[ -n "$COHALL_TOKEN$COHALL_CLIENT_TOKEN$COHALL_DEVICE_TOKEN" ]]; then exit 86; fi
 if [[ "$prompt" == *LONG_RUNNING* ]]; then sleep 20; fi
 if [[ "$prompt" == *NOISY_STDERR* ]]; then head -c 70000 /dev/zero >&2; fi
@@ -439,8 +439,10 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     const log = await readFile(fakeLog, "utf8")
     const codexLines = log.split("\n").filter((line) => line.startsWith("codex "))
     expect(codexLines[0]).toContain("--skip-git-repo-check")
+    expect(codexLines[0]).toContain(`config=${configPath}`)
     expect(codexLines[0]).toContain('sandbox_mode="workspace-write"')
     expect(codexLines[1]).toContain("exec resume")
+    expect(codexLines[1]).toContain(`config=${configPath}`)
     expect(codexLines[1]).toContain('sandbox_mode="workspace-write"')
     const openCodeLines = log.split("\n").filter((line) => line.startsWith("opencode "))
     expect(openCodeLines).toHaveLength(2)
