@@ -91,6 +91,9 @@ that installation and restarts only active managed Cohall services, with relays
 restarted before device daemons. Active services restart even when the installed
 files already match the requested version. A delegated upgrade can finish after
 restarting its own device daemon, so it does not leave the task in a reconnect loop.
+Before changing files, Cohall verifies that active systemd and launchd jobs use
+the same global installation as the invoked CLI. If they differ, run the
+executable named in the error or update the service definition first.
 
 Direct `npm install --global`, `bun add --global`, or `pnpm add --global`
 replaces files on disk but cannot replace code already loaded by a running Node
