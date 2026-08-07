@@ -5,7 +5,6 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
 import { delimiter, extname, isAbsolute, join } from "node:path"
 import { spawn } from "node:child_process"
-import { createInterface } from "node:readline"
 import type { Readable } from "node:stream"
 
 export class ProviderUnavailableError extends Schema.TaggedErrorClass<ProviderUnavailableError>()(
@@ -267,22 +266,44 @@ const forEachJsonEvent = async (
   stdout: Readable,
   onEvent: (event: JsonRecord) => void,
 ): Promise<void> => {
-  const lines = createInterface({ input: stdout, crlfDelay: Infinity })
-  try {
-    for await (const line of lines) {
-      if (line.trim().length === 0) {
-        continue
-      }
-      if (Buffer.byteLength(line) > 1024 * 1024) {
-        throw new Error("Provider event exceeded 1024 KiB")
-      }
-      const event = record(JSON.parse(line) as unknown)
-      if (event !== undefined) {
-        onEvent(event)
-      }
+  const limit = 1024 * 1024
+  let chunks: Array<Buffer> = []
+  let size = 0
+  const append = (chunk: Buffer): void => {
+    if (size + chunk.byteLength > limit) {
+      throw new Error("Provider event exceeded 1024 KiB")
     }
-  } finally {
-    lines.close()
+    if (chunk.byteLength > 0) {
+      chunks.push(chunk)
+      size += chunk.byteLength
+    }
+  }
+  const emit = (): void => {
+    const line = Buffer.concat(chunks, size).toString("utf8")
+    chunks = []
+    size = 0
+    if (line.trim().length === 0) {
+      return
+    }
+    const event = record(JSON.parse(line) as unknown)
+    if (event !== undefined) {
+      onEvent(event)
+    }
+  }
+
+  for await (const chunk of stdout) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+    let start = 0
+    for (let newline = bytes.indexOf(0x0a, start); newline !== -1; ) {
+      append(bytes.subarray(start, newline))
+      emit()
+      start = newline + 1
+      newline = bytes.indexOf(0x0a, start)
+    }
+    append(bytes.subarray(start))
+  }
+  if (size > 0) {
+    emit()
   }
 }
 
