@@ -9,6 +9,7 @@ import skill from "../../../skills/cohall/SKILL.md" with { type: "text" }
 import {
   StoredConfiguration,
   configurationPath,
+  credentialsForRelay,
   loadClientConfiguration,
   loadOwnerConfiguration,
   makeStoredConfiguration,
@@ -419,8 +420,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       deviceId: existing?.deviceId ?? makeDeviceId(),
       deviceName: option(arguments_, "name") ?? existing?.deviceName ?? "cohall-device",
       workspaces,
-      ...(existing?.clientToken === undefined ? {} : { clientToken: existing.clientToken }),
-      ...(existing?.deviceToken === undefined ? {} : { deviceToken: existing.deviceToken }),
+      ...credentialsForRelay(existing, relayUrl),
       ...(providers === undefined ? {} : { providers }),
       ...(model === undefined ? {} : { model }),
       ...((sandbox ?? existing?.sandbox) === undefined
@@ -477,6 +477,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const relayUrl = normalizeRelayUrl(
       process.env.COHALL_RELAY_URL ?? configuration?.relayUrl ?? "http://127.0.0.1:8787",
     )
+    const storedCredentials = credentialsForRelay(configuration, relayUrl)
     const response = await fetch(`${relayUrl}/api/health`, {
       signal: AbortSignal.timeout(10_000),
     }).catch(() => undefined)
@@ -493,9 +494,9 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         Providers.findExecutable(provider === "claude-code" ? "claude" : provider) ?? "not found",
       ]),
     )
-    const clientToken = process.env.COHALL_CLIENT_TOKEN ?? configuration?.clientToken
+    const clientToken = process.env.COHALL_CLIENT_TOKEN ?? storedCredentials.clientToken
     const hasDeviceCredential =
-      process.env.COHALL_DEVICE_TOKEN !== undefined || configuration?.deviceToken !== undefined
+      process.env.COHALL_DEVICE_TOKEN !== undefined || storedCredentials.deviceToken !== undefined
     const deviceId = process.env.COHALL_DEVICE_ID ?? configuration?.deviceId
     const currentDevice =
       response?.ok !== true || clientToken === undefined || deviceId === undefined
@@ -529,7 +530,8 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       relay_url: relayUrl,
       config_path: configurationPath(),
       client_credential:
-        process.env.COHALL_CLIENT_TOKEN !== undefined || configuration?.clientToken !== undefined,
+        process.env.COHALL_CLIENT_TOKEN !== undefined ||
+        storedCredentials.clientToken !== undefined,
       device_credential: hasDeviceCredential,
       workspaces: configuration?.workspaces ?? [],
       providers: providerExecutables,

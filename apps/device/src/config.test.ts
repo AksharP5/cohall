@@ -1,4 +1,11 @@
-import { DeviceConfiguration } from "./config.ts"
+import {
+  DeviceConfiguration,
+  StoredConfiguration,
+  credentialsForRelay,
+  loadClientConfiguration,
+  loadDeviceConfiguration,
+  writeStoredConfiguration,
+} from "./config.ts"
 import { allowedWorkspace, selectProviders } from "./daemon.ts"
 import { DeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
@@ -23,6 +30,82 @@ afterEach(async () => {
 })
 
 describe("device workspace configuration", () => {
+  it("retains credentials only for their issuing relay", () => {
+    const configuration = StoredConfiguration.make({
+      version: 1,
+      relayUrl: "https://old-relay.example",
+      deviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      deviceName: "test",
+      workspaces: ["/workspace"],
+      clientToken: "client-secret",
+      deviceToken: "device-secret",
+    })
+
+    expect(credentialsForRelay(configuration, "https://old-relay.example/")).toEqual({
+      clientToken: "client-secret",
+      deviceToken: "device-secret",
+    })
+    expect(credentialsForRelay(configuration, "https://new-relay.example")).toEqual({})
+  })
+
+  it("requires explicit credentials when the environment changes relays", async () => {
+    const directory = await temporary()
+    const previous = {
+      config: process.env.COHALL_CONFIG,
+      relay: process.env.COHALL_RELAY_URL,
+      clientToken: process.env.COHALL_CLIENT_TOKEN,
+      deviceToken: process.env.COHALL_DEVICE_TOKEN,
+    }
+    process.env.COHALL_CONFIG = join(directory, "config.json")
+    process.env.COHALL_RELAY_URL = "https://new-relay.example"
+    delete process.env.COHALL_CLIENT_TOKEN
+    delete process.env.COHALL_DEVICE_TOKEN
+
+    try {
+      await writeStoredConfiguration(
+        StoredConfiguration.make({
+          version: 1,
+          relayUrl: "https://old-relay.example",
+          deviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+          deviceName: "test",
+          workspaces: [directory],
+          clientToken: "old-client-secret",
+          deviceToken: "old-device-secret",
+        }),
+      )
+
+      await expect(Effect.runPromise(loadClientConfiguration)).rejects.toThrow(
+        "No client credential",
+      )
+      await expect(Effect.runPromise(loadDeviceConfiguration)).rejects.toThrow(
+        "No device credential",
+      )
+
+      process.env.COHALL_CLIENT_TOKEN = "new-client-secret"
+      process.env.COHALL_DEVICE_TOKEN = "new-device-secret"
+      await expect(Effect.runPromise(loadClientConfiguration)).resolves.toMatchObject({
+        relayUrl: "https://new-relay.example",
+        token: "new-client-secret",
+      })
+      await expect(Effect.runPromise(loadDeviceConfiguration)).resolves.toMatchObject({
+        relayUrl: "https://new-relay.example",
+        token: "new-device-secret",
+      })
+    } finally {
+      const restore = (name: string, value: string | undefined): void => {
+        if (value === undefined) {
+          delete process.env[name]
+          return
+        }
+        process.env[name] = value
+      }
+      restore("COHALL_CONFIG", previous.config)
+      restore("COHALL_RELAY_URL", previous.relay)
+      restore("COHALL_CLIENT_TOKEN", previous.clientToken)
+      restore("COHALL_DEVICE_TOKEN", previous.deviceToken)
+    }
+  })
+
   it("normalizes provider allowlists and advertises only installed selections", () => {
     expect(parseProviders("codex, opencode, codex")).toEqual(["codex", "opencode"])
     expect(() => parseProviders("codex,missing")).toThrow()

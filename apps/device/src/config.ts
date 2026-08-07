@@ -144,6 +144,19 @@ export const writeStoredConfiguration = async (
   }
 }
 
+export const credentialsForRelay = (
+  configuration: StoredConfiguration | undefined,
+  relayUrl: string,
+): { readonly clientToken?: string; readonly deviceToken?: string } => {
+  if (configuration?.relayUrl !== normalizeRelayUrl(relayUrl)) {
+    return {}
+  }
+  return {
+    ...(configuration.clientToken === undefined ? {} : { clientToken: configuration.clientToken }),
+    ...(configuration.deviceToken === undefined ? {} : { deviceToken: configuration.deviceToken }),
+  }
+}
+
 export const makeStoredConfiguration = async (input: {
   readonly relayUrl: string
   readonly deviceName?: string
@@ -153,17 +166,19 @@ export const makeStoredConfiguration = async (input: {
   readonly deviceToken?: string
 }): Promise<StoredConfiguration> => {
   const existing = await readStoredConfiguration()
+  const relayUrl = normalizeRelayUrl(input.relayUrl)
+  const retainedCredentials = credentialsForRelay(existing, relayUrl)
   const canonicalWorkspaces =
     input.workspaces === undefined
       ? (existing?.workspaces ?? [])
       : await Effect.runPromise(parseWorkspaces("", JSON.stringify(input.workspaces)))
-  const clientToken = input.clientToken ?? existing?.clientToken
-  const deviceToken = input.deviceToken ?? existing?.deviceToken
+  const clientToken = input.clientToken ?? retainedCredentials.clientToken
+  const deviceToken = input.deviceToken ?? retainedCredentials.deviceToken
   const providers =
     input.providers === "auto" ? undefined : (input.providers ?? existing?.providers)
   return StoredConfiguration.make({
     version: 1,
-    relayUrl: normalizeRelayUrl(input.relayUrl),
+    relayUrl,
     deviceId: existing?.deviceId ?? makeDeviceId(),
     deviceName: input.deviceName ?? existing?.deviceName ?? hostname(),
     workspaces: canonicalWorkspaces,
@@ -222,14 +237,16 @@ const storedOrDefaults = async (): Promise<StoredConfiguration> => {
 export const loadClientConfiguration = Effect.tryPromise({
   try: async () => {
     const stored = await storedOrDefaults()
-    const token = process.env.COHALL_CLIENT_TOKEN ?? stored.clientToken
+    const relayUrl = normalizeRelayUrl(process.env.COHALL_RELAY_URL ?? stored.relayUrl)
+    const token =
+      process.env.COHALL_CLIENT_TOKEN ?? credentialsForRelay(stored, relayUrl).clientToken
     if (token === undefined) {
       throw new Error(
         `No client credential. Run cohall join with a pairing token on stdin or set COHALL_CLIENT_TOKEN.`,
       )
     }
     return ClientConfiguration.make({
-      relayUrl: normalizeRelayUrl(process.env.COHALL_RELAY_URL ?? stored.relayUrl),
+      relayUrl,
       token,
       ...(process.env.COHALL_THREAD_ID === undefined
         ? {}
@@ -257,7 +274,9 @@ export const loadOwnerConfiguration = Effect.tryPromise({
 export const loadDeviceConfiguration = Effect.tryPromise({
   try: async () => {
     const stored = await storedOrDefaults()
-    const token = process.env.COHALL_DEVICE_TOKEN ?? stored.deviceToken
+    const relayUrl = normalizeRelayUrl(process.env.COHALL_RELAY_URL ?? stored.relayUrl)
+    const token =
+      process.env.COHALL_DEVICE_TOKEN ?? credentialsForRelay(stored, relayUrl).deviceToken
     if (token === undefined) {
       throw new Error(
         `No device credential. Run cohall join with a pairing token on stdin or set COHALL_DEVICE_TOKEN.`,
@@ -271,7 +290,7 @@ export const loadDeviceConfiguration = Effect.tryPromise({
     const sandbox = environmentSandbox() ?? stored.sandbox
     const providers = environmentProviders(stored)
     return DeviceConfiguration.make({
-      relayUrl: normalizeRelayUrl(process.env.COHALL_RELAY_URL ?? stored.relayUrl),
+      relayUrl,
       token,
       id:
         process.env.COHALL_DEVICE_ID === undefined
