@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.1](https://github.com/AksharP5/cohall/compare/v0.4.0...v0.4.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **device:** bound relay message buffering ([15b975e](https://github.com/AksharP5/cohall/commit/15b975eb658ac8b1140ed0481ab4726543265ca4))
+* **providers:** bound JSON events while streaming ([7e0a4fc](https://github.com/AksharP5/cohall/commit/7e0a4fccc1b68e630b0b8bb553bbb66b84795798))
+* **providers:** preserve custom config for nested delegation ([#21](https://github.com/AksharP5/cohall/issues/21)) ([63c95f8](https://github.com/AksharP5/cohall/commit/63c95f84f00ad03ad8d017696a5a87cbb8c6c05d))
+* **upgrade:** restart already-current services ([a2c775f](https://github.com/AksharP5/cohall/commit/a2c775fe48a4dffda54ea7537f34b1a2b6d1e6ed))
+
 ## [0.4.0](https://github.com/AksharP5/cohall/compare/v0.3.4...v0.4.0) (2026-08-07)
 
 
