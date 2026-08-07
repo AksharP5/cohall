@@ -112,21 +112,26 @@ describe("managed service upgrades", () => {
     )
 
     const invocations: Array<string> = []
+    const restartReceipts: Array<string> = []
+    const statePath = join(root, "upgrade-restart.json")
     const runner: CommandRunner = {
-      run: (command, arguments_) => {
+      run: async (command, arguments_) => {
         const invocation = [command, ...arguments_].join(" ")
         invocations.push(invocation)
         if (invocation === "systemctl is-active --quiet cohall-relay.service") {
-          return Promise.resolve({ exitCode: 3, stdout: "", stderr: "" })
+          return { exitCode: 3, stdout: "", stderr: "" }
         }
         if (invocation.includes(" show --property=ExecStart --value ")) {
-          return Promise.resolve({
+          return {
             exitCode: 0,
             stdout: `{ path=${entrypoint} ; argv[]=${entrypoint} device ; }`,
             stderr: "",
-          })
+          }
         }
-        return Promise.resolve(success())
+        if (invocation.includes(" restart ")) {
+          restartReceipts.push(await readFile(statePath, "utf8"))
+        }
+        return success()
       },
     }
 
@@ -138,7 +143,7 @@ describe("managed service upgrades", () => {
       entrypoint,
       platform: "linux",
       uid: 1000,
-      statePath: join(root, "upgrade-restart.json"),
+      statePath,
       runner,
     })
 
@@ -152,6 +157,10 @@ describe("managed service upgrades", () => {
       "systemctl --user restart cohall-relay.service",
       "systemctl --user restart cohall-device.service",
     ])
+    expect(restartReceipts[0]).toContain('"restartingService": "systemd-user:cohall-relay.service"')
+    expect(restartReceipts[1]).toContain(
+      '"restartingService": "systemd-user:cohall-device.service"',
+    )
   })
 
   it("restarts active services when the installed files are already current", async () => {
@@ -284,6 +293,7 @@ describe("managed service upgrades", () => {
         packageManager: "npm",
         pendingServices: ["systemd-user:cohall-device.service"],
         restartedServices: ["systemd-user:cohall-relay.service"],
+        restartingService: "systemd-user:cohall-device.service",
       }),
     )
     const invocations: Array<string> = []
@@ -298,7 +308,6 @@ describe("managed service upgrades", () => {
       currentVersion: "1.2.3",
       restart: true,
       dryRun: true,
-      delegated: true,
       platform: "linux",
       uid: 1000,
       statePath,
@@ -313,7 +322,6 @@ describe("managed service upgrades", () => {
       currentVersion: "1.2.3",
       restart: true,
       dryRun: false,
-      delegated: true,
       platform: "linux",
       uid: 1000,
       statePath,
