@@ -59,6 +59,7 @@ const RestartReceipt = Schema.Struct({
   packageManager: PackageManager,
   pendingServices: Schema.Array(Schema.String),
   restartedServices: Schema.Array(Schema.String),
+  restartingService: Schema.optionalKey(Schema.String),
 })
 interface RestartReceipt extends Schema.Schema.Type<typeof RestartReceipt> {}
 
@@ -71,7 +72,6 @@ export interface UpgradeOptions {
   readonly platform?: NodeJS.Platform
   readonly uid?: number
   readonly statePath?: string
-  readonly delegated?: boolean
   readonly runner?: CommandRunner
 }
 
@@ -381,11 +381,27 @@ const restartServices = async (
 ): Promise<RestartReceipt> => {
   let current = state
   for (const service of services) {
-    for (const invocation of service.restart) {
-      await checked(runner, invocation, 60_000)
+    current = { ...current, restartingService: service.id }
+    await writeReceipt(statePath, current)
+    try {
+      for (const invocation of service.restart) {
+        await checked(runner, invocation, 60_000)
+      }
+    } catch (cause) {
+      current = {
+        version: current.version,
+        fromVersion: current.fromVersion,
+        packageManager: current.packageManager,
+        pendingServices: current.pendingServices,
+        restartedServices: current.restartedServices,
+      }
+      await writeReceipt(statePath, current)
+      throw cause
     }
     current = {
-      ...current,
+      version: current.version,
+      fromVersion: current.fromVersion,
+      packageManager: current.packageManager,
       pendingServices: current.pendingServices.filter((id) => id !== service.id),
       restartedServices: [...current.restartedServices, service.id],
     }
@@ -423,14 +439,16 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
       }
     }
     const activeIds = new Set(active.map((service) => service.id))
-    const completedByRestart =
-      options.delegated === true
-        ? pending.filter((service) => service.device && activeIds.has(service.id))
-        : []
+    const completedByRestart = pending.filter(
+      (service) =>
+        service.device && service.id === previous.restartingService && activeIds.has(service.id),
+    )
     const completedIds = new Set(completedByRestart.map((service) => service.id))
     const remaining = active.filter((service) => !completedIds.has(service.id))
     let resumed: RestartReceipt = {
-      ...previous,
+      version: previous.version,
+      fromVersion: previous.fromVersion,
+      packageManager: previous.packageManager,
       pendingServices: previous.pendingServices.filter((id) => !completedIds.has(id)),
       restartedServices: [
         ...previous.restartedServices,

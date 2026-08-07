@@ -301,7 +301,6 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         ...(target === undefined ? {} : { target }),
         restart: !arguments_.options.has("no-restart"),
         dryRun: arguments_.options.has("dry-run"),
-        delegated: process.env.COHALL_PROVIDER !== undefined,
       }),
     )
     return
