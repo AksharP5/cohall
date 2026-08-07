@@ -222,6 +222,25 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     const saved = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>
     expect(saved.clientToken).toBeTypeOf("string")
     expect(saved).not.toHaveProperty("deviceToken")
+    await expect(
+      runCohall(root, ["devices"], {
+        ...process.env,
+        COHALL_CONFIG: configPath,
+        COHALL_RELAY_URL: "http://127.0.0.1:1",
+      }),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining("No client credential") })
+    await runCohall(root, ["configure", "--name", "same-relay"], {
+      ...process.env,
+      COHALL_CONFIG: configPath,
+    })
+    expect(JSON.parse(await readFile(configPath, "utf8"))).toHaveProperty("clientToken")
+    await runCohall(root, ["configure", "--relay", "http://127.0.0.1:1"], {
+      ...process.env,
+      COHALL_CONFIG: configPath,
+    })
+    const moved = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>
+    expect(moved).not.toHaveProperty("clientToken")
+    expect(moved).not.toHaveProperty("deviceToken")
 
     const client = RelayClient.make({ baseUrl: relayUrl, token: clientCredential.token })
     const device = spawn("node", ["bin/cohall.js", "device"], {
