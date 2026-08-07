@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/AksharP5/cohall/compare/v0.4.2...v0.4.3) (2026-08-07)
+
+
+### Bug Fixes
+
+* **upgrade:** persist self-restart progress ([b06ae1a](https://github.com/AksharP5/cohall/commit/b06ae1a4ed1ac467f44e118e630e78fca5a9aadb))
+
 ## [0.4.2](https://github.com/AksharP5/cohall/compare/v0.4.1...v0.4.2) (2026-08-07)
 
 
