@@ -1,0 +1,11 @@
+[Unit]
+Description=Cohall relay socket
+
+[Socket]
+ListenStream=127.0.0.1:8787
+NoDelay=true
+FileDescriptorName=cohall-relay
+Service=cohall-relay.service
+
+[Install]
+WantedBy=sockets.target

@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, it } from "vitest"
+import { Database } from "./database.ts"
 import { RelayStore } from "./store.ts"
 
 it("bounds outstanding work, serial assignment, and thread context", async () => {
@@ -114,6 +115,94 @@ it("bounds outstanding work, serial assignment, and thread context", async () =>
     )
     expect(context.truncated).toBe(true)
     expect(new TextEncoder().encode(JSON.stringify(context)).byteLength).toBeLessThan(1_100_000)
+  } finally {
+    await runtime.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it("forgets only offline devices and revokes their registration", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-store-forget-"))
+  const databasePath = join(directory, "relay.db")
+  const legacy = new Database(databasePath)
+  legacy.exec(`
+    CREATE TABLE devices (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL,
+      platform TEXT NOT NULL, architecture TEXT NOT NULL, status TEXT NOT NULL,
+      providers_json TEXT NOT NULL, capabilities_json TEXT NOT NULL,
+      workspaces_json TEXT NOT NULL, version TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+      connected_at TEXT
+    )
+  `)
+  legacy.close()
+  const runtime = ManagedRuntime.make(RelayStore.layer(databasePath))
+  const run = <A, E>(effect: Effect.Effect<A, E, RelayStore.Service>): Promise<A> =>
+    runtime.runPromise(effect)
+  try {
+    const paired = await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        const pairing = yield* store.createPairing({ label: "stale device", roles: ["device"] })
+        return yield* store.exchangePairing(pairing.token)
+      }),
+    )
+    const credential = paired.credentials[0]
+    const deviceId = credential?.session.deviceId
+    if (credential === undefined || deviceId === undefined) {
+      throw new Error("Expected a device credential")
+    }
+    const device = Device.make({
+      id: deviceId,
+      name: "stale-device",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "offline",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+
+    await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        yield* store.upsertDevice(device)
+        yield* store.forgetDevice(deviceId)
+      }),
+    )
+    expect(
+      await run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.listDevices()
+        }),
+      ),
+    ).toEqual([])
+    expect(
+      await run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.authenticateSession(credential.token, "device")
+        }),
+      ),
+    ).toBeUndefined()
+
+    await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        yield* store.upsertDevice(Device.make({ ...device, status: "online" }))
+      }),
+    )
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.forgetDevice(deviceId)
+        }),
+      ),
+    ).rejects.toMatchObject({ message: expect.stringContaining("must be offline") })
   } finally {
     await runtime.dispose()
     await rm(directory, { recursive: true, force: true })

@@ -4,12 +4,13 @@ import {
   credentialsForRelay,
   loadClientConfiguration,
   loadDeviceConfiguration,
+  loadOwnerConfiguration,
   writeStoredConfiguration,
 } from "./config.ts"
 import { allowedWorkspace, selectProviders } from "./daemon.ts"
 import { DeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -103,6 +104,38 @@ describe("device workspace configuration", () => {
       restore("COHALL_RELAY_URL", previous.relay)
       restore("COHALL_CLIENT_TOKEN", previous.clientToken)
       restore("COHALL_DEVICE_TOKEN", previous.deviceToken)
+    }
+  })
+
+  it("uses the relay host's protected owner credential", async () => {
+    const directory = await temporary()
+    const dataDirectory = join(directory, "relay")
+    await mkdir(dataDirectory)
+    await writeFile(join(dataDirectory, "owner-token"), "local-owner-token\n", { mode: 0o600 })
+    const previous = {
+      config: process.env.COHALL_CONFIG,
+      dataDirectory: process.env.COHALL_DATA_DIR,
+      ownerToken: process.env.COHALL_TOKEN,
+    }
+    process.env.COHALL_CONFIG = join(directory, "config.json")
+    process.env.COHALL_DATA_DIR = dataDirectory
+    delete process.env.COHALL_TOKEN
+
+    try {
+      await expect(Effect.runPromise(loadOwnerConfiguration)).resolves.toMatchObject({
+        token: "local-owner-token",
+      })
+    } finally {
+      const restore = (name: string, value: string | undefined): void => {
+        if (value === undefined) {
+          delete process.env[name]
+          return
+        }
+        process.env[name] = value
+      }
+      restore("COHALL_CONFIG", previous.config)
+      restore("COHALL_DATA_DIR", previous.dataDirectory)
+      restore("COHALL_TOKEN", previous.ownerToken)
     }
   })
 

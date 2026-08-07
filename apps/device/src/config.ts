@@ -53,6 +53,16 @@ const defaultConfigDirectory = (): string => {
   return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "cohall")
 }
 
+const defaultRelayDataDirectory = (): string => {
+  if (platform() === "win32") {
+    return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Cohall")
+  }
+  if (platform() === "darwin") {
+    return join(homedir(), "Library", "Application Support", "Cohall", "relay")
+  }
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "cohall")
+}
+
 export const configurationPath = (): string =>
   resolve(process.env.COHALL_CONFIG ?? join(defaultConfigDirectory(), "config.json"))
 
@@ -259,9 +269,19 @@ export const loadClientConfiguration = Effect.tryPromise({
 export const loadOwnerConfiguration = Effect.tryPromise({
   try: async () => {
     const stored = await storedOrDefaults()
-    const token = process.env.COHALL_TOKEN
-    if (token === undefined) {
-      throw new Error("No owner credential. Set COHALL_TOKEN on the owner-authenticated machine.")
+    const ownerTokenPath = join(
+      resolve(process.env.COHALL_DATA_DIR ?? defaultRelayDataDirectory()),
+      "owner-token",
+    )
+    const token =
+      process.env.COHALL_TOKEN ??
+      (await readFile(ownerTokenPath, "utf8")
+        .then((value) => value.trim())
+        .catch(() => undefined))
+    if (token === undefined || token.length === 0) {
+      throw new Error(
+        "No owner credential. Run this command on the relay host or set COHALL_TOKEN.",
+      )
     }
     return ClientConfiguration.make({
       relayUrl: normalizeRelayUrl(process.env.COHALL_RELAY_URL ?? stored.relayUrl),

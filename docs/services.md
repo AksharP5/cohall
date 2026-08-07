@@ -41,16 +41,23 @@ COHALL_TOKEN=replace-with-a-random-owner-token
 COHALL_DATA_DIR=/var/lib/cohall
 ```
 
-Install `deploy/systemd/cohall-relay.service`, then:
+Install `deploy/systemd/cohall-relay.service` and
+`deploy/systemd/cohall-relay.socket`. The packaged socket listens on loopback;
+change `ListenStream` to the relay's private Tailscale address when devices
+connect directly over Tailscale. Then:
 
 ```bash
 systemctl daemon-reload
+systemctl enable --now cohall-relay.socket
 systemctl enable --now cohall-relay
 journalctl -u cohall-relay -f
 ```
 
 Expose the relay only through a private network such as Tailscale or an HTTPS
-reverse proxy. Device connections are outbound WebSockets.
+reverse proxy. Device connections are outbound WebSockets. The socket unit keeps
+the listener available across relay service restarts: new connections wait for
+the replacement process instead of failing. Existing WebSockets reconnect, and
+durable tasks resume after the replacement relay starts.
 
 ## macOS
 
@@ -89,7 +96,9 @@ logon and restarts it after failures.
 Run `cohall upgrade` from a global npm, Bun, or pnpm installation. It updates
 that installation and restarts only active managed Cohall services, with relays
 restarted before device daemons. Active services restart even when the installed
-files already match the requested version. A delegated upgrade can finish after
+files already match the requested version. A systemd relay installed with the
+packaged socket unit keeps accepting new connections while its process restarts.
+A delegated upgrade can finish after
 restarting its own device daemon: a durable receipt records the restart attempt,
 and a delegated caller leaves that marker for the replacement task to consume
 after reconnecting, even when a service manager returns before ending the old process.

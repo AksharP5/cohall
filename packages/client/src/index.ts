@@ -11,6 +11,7 @@ import {
   TaskTrace,
   ThreadContext,
   type AuthSessionId,
+  type DeviceId,
   type TaskId,
   type ThreadId,
 } from "@cohall/protocol"
@@ -39,6 +40,7 @@ export type RelayClientError = RelayRequestError | RelayDecodeError
 
 export interface Interface {
   readonly devices: () => Effect.Effect<ReadonlyArray<Device>, RelayClientError>
+  readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, RelayClientError>
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<Task, RelayClientError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
   readonly traceTask: (taskId: TaskId) => Effect.Effect<TaskTrace, RelayClientError>
@@ -151,6 +153,13 @@ export const make = (options: RelayClientOptions): Interface => {
 
   return Service.of({
     devices: () => request("RelayClient.devices", "/api/devices", Schema.Array(Device)),
+    forgetDevice: (deviceId) =>
+      request(
+        "RelayClient.forgetDevice",
+        `/api/devices/${encodeURIComponent(deviceId)}/forget`,
+        Device,
+        { method: "POST" },
+      ),
     createTask: (input) =>
       request("RelayClient.createTask", "/api/tasks", Task, {
         method: "POST",

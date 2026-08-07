@@ -228,6 +228,8 @@ current, ensuring an older loaded process is replaced. Cohall refuses to restart
 a service configured to use a different global installation; run that service's
 executable directly or update its service definition first. Use `cohall upgrade --dry-run` to inspect the plan or
 `cohall upgrade --no-restart` to update files without restarting services.
+Linux relays can use the packaged systemd socket unit so new connections remain
+available while the relay process is replaced; see [service setup](docs/services.md).
 Environment variables override stored values:
 
 | Variable                                  | Purpose                                        |
@@ -250,6 +252,11 @@ Environment variables override stored values:
 | `COHALL_RELAY_ALLOW_REMOTE`               | Explicit non-loopback binding opt-in           |
 
 The owner token can create pairing credentials, list sessions, and revoke them.
+`cohall forget <device-id>` removes an offline device from discovery after
+confirming it has no outstanding tasks, revokes its device credential, and
+preserves its completed task history. On the relay host, owner commands read the
+protected local owner-token file automatically; remote owner commands require
+`COHALL_TOKEN`.
 Ordinary client and device credentials are role-separated, device-bound where
 applicable, expiring, and stored only as SHA-256 hashes by the relay.
 

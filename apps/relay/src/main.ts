@@ -1,6 +1,7 @@
 import {
   AuthSessionId,
   Device,
+  DeviceId,
   SocketEvent,
   TaskId,
   ThreadId,
@@ -19,16 +20,41 @@ import { Effect, ManagedRuntime, Schema } from "effect"
 import { createHash, timingSafeEqual } from "node:crypto"
 import { access, chmod } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
+import type { ListenOptions } from "node:net"
 import { platform } from "node:os"
 import { WebSocketServer, type RawData } from "ws"
-import { loadEnvironmentConfiguration } from "./config.ts"
+import { loadEnvironmentConfiguration, type RelayConfiguration } from "./config.ts"
 import { Hub, type ConnectionSocket } from "./hub.ts"
 import { RelayStore } from "./store.ts"
+
+type RelayListenOptions = ListenOptions | { readonly fd: number }
 
 class RequestError extends Schema.TaggedErrorClass<RequestError>()("Relay.RequestError", {
   status: Schema.Int,
   message: Schema.String,
 }) {}
+
+export const relayListenOptions = (
+  configuration: Pick<RelayConfiguration, "host" | "port">,
+  environment: NodeJS.ProcessEnv = process.env,
+  pid = process.pid,
+): RelayListenOptions => {
+  const listenPid = Number(environment.LISTEN_PID)
+  const listenFds = Number(environment.LISTEN_FDS)
+  if (listenPid !== pid || !Number.isInteger(listenFds) || listenFds < 1) {
+    return { host: configuration.host, port: configuration.port }
+  }
+
+  const descriptorNames = environment.LISTEN_FDNAMES?.split(":") ?? []
+  const namedIndex = descriptorNames.indexOf("cohall-relay")
+  if (namedIndex >= 0 && namedIndex < listenFds) {
+    return { fd: 3 + namedIndex }
+  }
+  if (listenFds === 1) {
+    return { fd: 3 }
+  }
+  throw new Error("Cohall received multiple systemd sockets but none was named cohall-relay")
+}
 
 const json = (value: unknown, status = 200): Response =>
   Response.json(value, {
@@ -487,6 +513,22 @@ export const runRelay = async (): Promise<void> => {
       if (url.pathname === "/api/devices" && request.method === "GET") {
         return json(yield* store.listDevices())
       }
+      const forgetDevice = url.pathname.match(/^\/api\/devices\/([^/]+)\/forget$/)
+      if (request.method === "POST" && forgetDevice?.[1] !== undefined) {
+        if (principal !== "owner") {
+          return yield* new RequestError({ status: 403, message: "Owner token required" })
+        }
+        const id = yield* pathId(DeviceId, forgetDevice[1])
+        if (hub.hasDevice(id)) {
+          return yield* new RequestError({
+            status: 409,
+            message: `Device ${id} must be offline before it can be forgotten`,
+          })
+        }
+        const forgotten = yield* store.forgetDevice(id)
+        hub.closeDevice(id)
+        return json(forgotten)
+      }
       if (url.pathname === "/api/tasks" && request.method === "POST") {
         const input = yield* body(request, decodeCreateTaskInput)
         const target = yield* chooseDevice(input, sourceDeviceId)
@@ -534,7 +576,10 @@ export const runRelay = async (): Promise<void> => {
                     ? 404
                     : cause.message.includes("outstanding task limit")
                       ? 429
-                      : 500,
+                      : cause.message.includes("must be offline") ||
+                          cause.message.includes("still has outstanding tasks")
+                        ? 409
+                        : 500,
               message: cause.message,
             }),
       ),
@@ -664,13 +709,20 @@ export const runRelay = async (): Promise<void> => {
   })
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
-    server.listen(configuration.port, configuration.host, () => {
+    server.listen(relayListenOptions(configuration), () => {
       server.off("error", reject)
       resolve()
     })
   })
 
-  console.log(`Cohall relay listening on http://${configuration.host}:${configuration.port}`)
+  const address = server.address()
+  const listener =
+    typeof address === "string"
+      ? address
+      : address?.family === "IPv6"
+        ? `[${address.address}]:${address.port}`
+        : `${address?.address ?? configuration.host}:${address?.port ?? configuration.port}`
+  console.log(`Cohall relay listening on http://${listener}`)
   let stopping = false
   const shutdown = async (): Promise<void> => {
     if (stopping) {
