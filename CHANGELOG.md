@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/AksharP5/cohall/compare/v0.4.3...v0.4.4) (2026-08-07)
+
+
+### Bug Fixes
+
+* **upgrade:** retain delegated restart receipts ([2c7e9c7](https://github.com/AksharP5/cohall/commit/2c7e9c713baff421c21f3780991f9ffcb0536d1d))
+
 ## [0.4.3](https://github.com/AksharP5/cohall/compare/v0.4.2...v0.4.3) (2026-08-07)
 
 
