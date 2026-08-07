@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  deviceVersionWarning,
   normalizeUpgradeTarget,
   packageInstallCommand,
   packageInstallation,
@@ -27,6 +28,14 @@ afterEach(async () => {
 const success = (): CommandResult => ({ exitCode: 0, stdout: "", stderr: "" })
 
 describe("upgrade target", () => {
+  it("warns when the CLI and running daemon use different installations", () => {
+    expect(deviceVersionWarning("1.2.3", "1.2.3")).toBeUndefined()
+    expect(deviceVersionWarning("1.2.3", undefined)).toBeUndefined()
+    expect(deviceVersionWarning("1.2.3", "1.2.2")).toContain(
+      "executable configured by the device service",
+    )
+  })
+
   it("accepts latest and exact semantic versions", () => {
     expect(normalizeUpgradeTarget(undefined)).toBe("latest")
     expect(normalizeUpgradeTarget("latest")).toBe("latest")
@@ -110,6 +119,13 @@ describe("managed service upgrades", () => {
         if (invocation === "systemctl is-active --quiet cohall-relay.service") {
           return Promise.resolve({ exitCode: 3, stdout: "", stderr: "" })
         }
+        if (invocation.includes(" show --property=ExecStart --value ")) {
+          return Promise.resolve({
+            exitCode: 0,
+            stdout: `{ path=${entrypoint} ; argv[]=${entrypoint} device ; }`,
+            stderr: "",
+          })
+        }
         return Promise.resolve(success())
       },
     }
@@ -157,6 +173,13 @@ describe("managed service upgrades", () => {
         if (invocation === "systemctl is-active --quiet cohall-relay.service") {
           return Promise.resolve({ exitCode: 3, stdout: "", stderr: "" })
         }
+        if (invocation.includes(" show --property=ExecStart --value ")) {
+          return Promise.resolve({
+            exitCode: 0,
+            stdout: `{ path=${entrypoint} ; argv[]=${entrypoint} device ; }`,
+            stderr: "",
+          })
+        }
         return Promise.resolve(success())
       },
     }
@@ -182,6 +205,72 @@ describe("managed service upgrades", () => {
       "systemctl --user restart cohall-relay.service",
       "systemctl --user restart cohall-device.service",
     ])
+  })
+
+  it("refuses to restart a service backed by a different installation", async () => {
+    const root = await temporaryDirectory()
+    const entrypoint = join(
+      root,
+      "current",
+      "lib",
+      "node_modules",
+      "@akshar5",
+      "cohall",
+      "bin",
+      "cohall.js",
+    )
+    const serviceEntrypoint = join(
+      root,
+      "service",
+      "lib",
+      "node_modules",
+      "@akshar5",
+      "cohall",
+      "bin",
+      "cohall.js",
+    )
+    for (const path of [entrypoint, serviceEntrypoint]) {
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(path, "#!/usr/bin/env node\n")
+      await writeFile(
+        join(dirname(dirname(path)), "package.json"),
+        JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
+      )
+    }
+    const invocations: Array<string> = []
+    const runner: CommandRunner = {
+      run: (command, arguments_) => {
+        const invocation = [command, ...arguments_].join(" ")
+        invocations.push(invocation)
+        if (invocation.includes("is-active") && !invocation.includes("cohall-device")) {
+          return Promise.resolve({ exitCode: 3, stdout: "", stderr: "" })
+        }
+        if (invocation.includes(" show --property=ExecStart --value ")) {
+          return Promise.resolve({
+            exitCode: 0,
+            stdout: `{ path=${serviceEntrypoint} ; argv[]=${serviceEntrypoint} device ; }`,
+            stderr: "",
+          })
+        }
+        return Promise.resolve(success())
+      },
+    }
+
+    await expect(
+      upgrade({
+        currentVersion: "1.2.3",
+        target: "1.2.3",
+        restart: true,
+        dryRun: false,
+        entrypoint,
+        platform: "linux",
+        uid: 1000,
+        statePath: join(root, "upgrade-restart.json"),
+        runner,
+      }),
+    ).rejects.toThrow("uses")
+    expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
+    expect(invocations.some((invocation) => invocation.includes(" restart "))).toBe(false)
   })
 
   it("finishes a delegated upgrade after its device daemon restarts", async () => {

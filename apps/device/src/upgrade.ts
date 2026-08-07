@@ -40,6 +40,10 @@ export interface ManagedService {
   readonly device: boolean
   readonly check: CommandInvocation
   readonly activeOutput?: RegExp
+  readonly entrypoint?: {
+    readonly inspect: CommandInvocation
+    readonly parse: (output: string) => string | undefined
+  }
   readonly restart: ReadonlyArray<CommandInvocation>
 }
 
@@ -95,6 +99,14 @@ export const normalizeUpgradeTarget = (target: string | undefined): string => {
   }
   return normalized
 }
+
+export const deviceVersionWarning = (
+  cliVersion: string,
+  deviceVersion: string | undefined,
+): string | undefined =>
+  deviceVersion === undefined || deviceVersion === cliVersion
+    ? undefined
+    : `Running device daemon uses Cohall ${deviceVersion}, while this CLI is ${cliVersion}. Run upgrade through the executable configured by the device service.`
 
 export const packageInstallation = (
   canonicalEntrypoint: string,
@@ -172,6 +184,13 @@ export const serviceCandidates = (
         manager,
         device,
         check: { command: "systemctl", arguments: [...user, "is-active", "--quiet", unit] },
+        entrypoint: {
+          inspect: {
+            command: "systemctl",
+            arguments: [...user, "show", "--property=ExecStart", "--value", unit],
+          },
+          parse: (output) => output.match(/\bpath=(.*?)\s*;/)?.[1]?.trim(),
+        },
         restart: [{ command: "systemctl", arguments: [...user, "restart", unit] }],
       }
     }
@@ -191,6 +210,10 @@ export const serviceCandidates = (
       device,
       check: { command: "launchctl", arguments: ["print", `${domain}/${label}`] },
       activeOutput: /\bstate\s*=\s*running\b/,
+      entrypoint: {
+        inspect: { command: "launchctl", arguments: ["print", `${domain}/${label}`] },
+        parse: (output) => output.match(/^\s*program\s*=\s*(.+)$/m)?.[1]?.trim(),
+      },
       restart: [{ command: "launchctl", arguments: ["kickstart", "-k", `${domain}/${label}`] }],
     })
     return [launchd("com.cohall.relay", false), launchd("com.cohall.device", true)]
@@ -282,6 +305,35 @@ const activeServices = async (
     }
   }
   return active
+}
+
+const assertServiceInstallations = async (
+  runner: CommandRunner,
+  services: ReadonlyArray<ManagedService>,
+  canonicalEntrypoint: string,
+  entrypoint: string,
+): Promise<void> => {
+  for (const service of services) {
+    if (service.entrypoint === undefined) {
+      continue
+    }
+    const result = await checked(runner, service.entrypoint.inspect, 10_000)
+    const serviceEntrypoint = service.entrypoint.parse(`${result.stdout}\n${result.stderr}`)
+    if (serviceEntrypoint === undefined) {
+      throw new Error(`Could not determine the executable used by active ${service.label}`)
+    }
+    const canonicalServiceEntrypoint = await realpath(serviceEntrypoint).catch((cause: unknown) => {
+      throw new Error(
+        `Could not resolve the executable used by active ${service.label}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      )
+    })
+    if (canonicalServiceEntrypoint === canonicalEntrypoint) {
+      continue
+    }
+    throw new Error(
+      `Active ${service.label} uses ${serviceEntrypoint}, but this Cohall CLI uses ${entrypoint}. Run the service executable's upgrade command so its installation is updated before restart.`,
+    )
+  }
 }
 
 const readReceipt = async (path: string): Promise<RestartReceipt | undefined> =>
@@ -410,9 +462,11 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   if (entrypoint === undefined) {
     throw new Error("Could not resolve the Cohall executable path")
   }
-  const installation = packageInstallation(await realpath(entrypoint), entrypoint)
+  const canonicalEntrypoint = await realpath(entrypoint)
+  const installation = packageInstallation(canonicalEntrypoint, entrypoint)
   const install = packageInstallCommand(installation, target)
   const services = await activeServices(runner, candidates)
+  await assertServiceInstallations(runner, services, canonicalEntrypoint, entrypoint)
 
   if (options.dryRun) {
     return {

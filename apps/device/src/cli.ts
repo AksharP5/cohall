@@ -26,7 +26,7 @@ import {
   threadContext,
   waitForTask,
 } from "./delegation.ts"
-import { upgrade } from "./upgrade.ts"
+import { deviceVersionWarning, upgrade } from "./upgrade.ts"
 
 interface Arguments {
   readonly options: ReadonlyMap<string, ReadonlyArray<string> | true>
@@ -506,8 +506,10 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
           )
             .then((devices) => devices.find((device) => device.id === deviceId))
             .catch(() => undefined)
+    const versionWarning = deviceVersionWarning(version, currentDevice?.version)
     const warnings = [
       ...(response?.ok === true ? [] : ["Relay is unreachable"]),
+      ...(versionWarning === undefined ? [] : [versionWarning]),
       ...(hasDeviceCredential &&
       response?.ok === true &&
       currentDevice?.status !== "online" &&

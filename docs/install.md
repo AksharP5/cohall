@@ -92,7 +92,9 @@ Cohall uses the package manager and global prefix that installed it, verifies
 the installed version, then restarts only active Cohall relay and device
 services. Active services restart even when the package files are already
 current, so a process left on old code by a direct package-manager update is
-replaced. Choose an exact version with `cohall upgrade --to 1.2.3`. Use `--dry-run` to inspect the plan or
+replaced. If a service points to a different global installation, Cohall stops
+with its executable path instead of reporting a misleading successful restart.
+Run that executable's `upgrade` command or update the service definition. Choose an exact version with `cohall upgrade --to 1.2.3`. Use `--dry-run` to inspect the plan or
 `--no-restart` to leave active services pending a manual restart.
 
 Back up the data directory before upgrading a production relay; SQLite schema
