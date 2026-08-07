@@ -463,6 +463,9 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       await expect(access(promptPath ?? "missing")).rejects.toMatchObject({ code: "ENOENT" })
     }
 
+    await expect(Effect.runPromise(owner.forgetDevice(deviceId))).rejects.toMatchObject({
+      status: 409,
+    })
     await Effect.runPromise(owner.revokeAuthSession(deviceCredential.session.id))
     const offline = await Effect.runPromise(
       client.devices().pipe(
@@ -476,6 +479,11 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     )
     expect(offline.find((value) => value.id === deviceId)?.status).toBe("offline")
     expect(await Effect.runPromise(client.devices())).toHaveLength(1)
+    const forgotten = Schema.decodeUnknownSync(Device)(
+      JSON.parse(await runCohall(root, ["forget", deviceId], ownerEnvironment)),
+    )
+    expect(forgotten.id).toBe(deviceId)
+    expect(await Effect.runPromise(client.devices())).toEqual([])
     await Effect.runPromise(owner.revokeAuthSession(clientCredential.session.id))
     await expect(Effect.runPromise(client.devices())).rejects.toMatchObject({ status: 401 })
 

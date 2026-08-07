@@ -1,5 +1,13 @@
 import { RelayClient, exchangePairing } from "@cohall/client"
-import { AuthSessionId, Provider, TaskId, ThreadId, makeDeviceId, version } from "@cohall/protocol"
+import {
+  AuthSessionId,
+  DeviceId,
+  Provider,
+  TaskId,
+  ThreadId,
+  makeDeviceId,
+  version,
+} from "@cohall/protocol"
 import * as Providers from "@cohall/providers"
 import { Effect, Schema } from "effect"
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises"
@@ -80,6 +88,7 @@ Usage:
   cohall pair [--label name] [--client-only]
   cohall sessions
   cohall revoke <session-id>
+  cohall forget <device-id>
   cohall doctor
   cohall upgrade [--to version|latest] [--no-restart] [--dry-run]
   cohall device
@@ -547,7 +556,12 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     return
   }
 
-  if (command === "pair" || command === "sessions" || command === "revoke") {
+  if (
+    command === "pair" ||
+    command === "sessions" ||
+    command === "revoke" ||
+    command === "forget"
+  ) {
     const { configuration, relay } = await ownerClient()
     if (command === "pair") {
       allowOptions(arguments_, ["client-only", "label"])
@@ -570,6 +584,17 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       allowOptions(arguments_, [])
       noPositionals(arguments_, command)
       print(await Effect.runPromise(relay.authSessions()))
+      return
+    }
+    if (command === "forget") {
+      allowOptions(arguments_, [])
+      print(
+        await Effect.runPromise(
+          relay.forgetDevice(
+            Schema.decodeUnknownSync(DeviceId)(identifier(arguments_, "device id")),
+          ),
+        ),
+      )
       return
     }
     allowOptions(arguments_, [])

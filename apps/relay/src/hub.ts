@@ -82,6 +82,10 @@ export class Hub {
     }
   }
 
+  closeDevice(deviceId: DeviceId): void {
+    this.#devices.get(deviceId)?.close(4003, "Device forgotten")
+  }
+
   hasDevice(deviceId: DeviceId): boolean {
     return this.#devices.get(deviceId)?.readyState === WebSocket.OPEN
   }

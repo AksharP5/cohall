@@ -1,7 +1,8 @@
 [Unit]
 Description=Cohall relay
-After=network-online.target
+After=network-online.target cohall-relay.socket
 Wants=network-online.target
+Requires=cohall-relay.socket
 
 [Service]
 Type=simple
@@ -9,6 +10,7 @@ User=cohall
 Group=cohall
 EnvironmentFile=/etc/cohall/relay.env
 ExecStart=/usr/local/bin/cohall relay
+Sockets=cohall-relay.socket
 Restart=on-failure
 RestartSec=3
 UMask=0077

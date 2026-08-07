@@ -130,6 +130,7 @@ export interface TaskUpdate {
 export interface Interface {
   readonly recover: () => Effect.Effect<void, PersistenceError>
   readonly listDevices: () => Effect.Effect<ReadonlyArray<Device>, PersistenceError>
+  readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, PersistenceError>
   readonly upsertDevice: (device: Device) => Effect.Effect<Device, PersistenceError>
   readonly heartbeat: (
     deviceId: DeviceId,
@@ -446,10 +447,50 @@ const makeService = (db: Database): Interface => {
   const listDevices = Effect.fn("RelayStore.listDevices")(function* () {
     const rows = yield* Effect.try({
       try: () =>
-        db.query<DeviceRow, []>("SELECT * FROM devices ORDER BY name COLLATE NOCASE, id").all(),
+        db
+          .query<DeviceRow, []>(
+            "SELECT * FROM devices WHERE forgotten_at IS NULL ORDER BY name COLLATE NOCASE, id",
+          )
+          .all(),
       catch: operationError("RelayStore.listDevices"),
     })
     return yield* Effect.forEach(rows, deviceFromRow)
+  })
+
+  const forgetDevice = Effect.fn("RelayStore.forgetDevice")(function* (deviceId: DeviceId) {
+    const row = yield* Effect.try({
+      try: () =>
+        db.transaction(() => {
+          const device = db
+            .query<DeviceRow, [string]>(
+              "SELECT * FROM devices WHERE id = ? AND forgotten_at IS NULL",
+            )
+            .get(deviceId)
+          if (device === null) {
+            throw new Error(`Unknown device ${deviceId}`)
+          }
+          if (device.status !== "offline") {
+            throw new Error(`Device ${deviceId} must be offline before it can be forgotten`)
+          }
+          const outstanding = db
+            .query<{ readonly count: number }, [string]>(
+              `SELECT COUNT(*) AS count FROM tasks
+               WHERE target_device_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
+            )
+            .get(deviceId)
+          if ((outstanding?.count ?? 0) > 0) {
+            throw new Error(`Device ${deviceId} still has outstanding tasks`)
+          }
+          const timestamp = now()
+          db.query("UPDATE devices SET forgotten_at = ? WHERE id = ?").run(timestamp, deviceId)
+          db.query(
+            "UPDATE auth_sessions SET revoked_at = ? WHERE bound_device_id = ? AND revoked_at IS NULL",
+          ).run(timestamp, deviceId)
+          return device
+        })(),
+      catch: operationError("RelayStore.forgetDevice"),
+    })
+    return yield* deviceFromRow(row)
   })
 
   const recover = Effect.fn("RelayStore.recover")(function* () {
@@ -499,7 +540,8 @@ const makeService = (db: Database): Interface => {
             architecture = excluded.architecture, status = excluded.status,
             providers_json = excluded.providers_json, capabilities_json = excluded.capabilities_json,
             workspaces_json = excluded.workspaces_json, version = excluded.version,
-            last_seen_at = excluded.last_seen_at, connected_at = excluded.connected_at`,
+            last_seen_at = excluded.last_seen_at, connected_at = excluded.connected_at,
+            forgotten_at = NULL`,
           )
           .run(
             device.id,
@@ -1144,6 +1186,7 @@ const makeService = (db: Database): Interface => {
   return Service.of({
     recover,
     listDevices,
+    forgetDevice,
     upsertDevice,
     heartbeat: (deviceId, status) => updateDeviceStatus(deviceId, status),
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
@@ -1198,7 +1241,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           platform TEXT NOT NULL, architecture TEXT NOT NULL, status TEXT NOT NULL,
           providers_json TEXT NOT NULL, capabilities_json TEXT NOT NULL,
           workspaces_json TEXT NOT NULL, version TEXT NOT NULL, last_seen_at TEXT NOT NULL,
-          connected_at TEXT
+          connected_at TEXT, forgotten_at TEXT
         );
         CREATE TABLE IF NOT EXISTS threads (
           id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -1246,6 +1289,12 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         );
         CREATE INDEX IF NOT EXISTS auth_sessions_token ON auth_sessions(token_hash);
       `)
+      const deviceColumns = db
+        .query<{ readonly name: string }, []>("PRAGMA table_info(devices)")
+        .all()
+      if (!deviceColumns.some((column) => column.name === "forgotten_at")) {
+        db.exec("ALTER TABLE devices ADD COLUMN forgotten_at TEXT")
+      }
     },
     catch: operationError("RelayStore.migrate"),
   })
