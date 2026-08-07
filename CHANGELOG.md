@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/AksharP5/cohall/compare/v0.4.1...v0.4.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **upgrade:** detect service installation mismatches ([19bf066](https://github.com/AksharP5/cohall/commit/19bf06674d6fac87576f804e92d863d5c673dda0))
+
 ## [0.4.1](https://github.com/AksharP5/cohall/compare/v0.4.0...v0.4.1) (2026-08-07)
 
 
