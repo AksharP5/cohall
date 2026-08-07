@@ -16,6 +16,9 @@ import { basename, isAbsolute, relative } from "node:path"
 import { WebSocket, type RawData } from "ws"
 import type { DeviceConfiguration } from "./config.ts"
 
+const maxRelayPayloadBytes = 256 * 1024
+const maxQueuedRelayMessages = 8
+
 export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnectionError>()(
   "Device.ConnectionError",
   { message: Schema.String },
@@ -283,7 +286,10 @@ const connect = (
   Effect.tryPromise({
     try: (signal) =>
       new Promise<void>((complete) => {
-        const socket = new WebSocket(socketUrl(configuration))
+        const socket = new WebSocket(socketUrl(configuration), {
+          maxPayload: maxRelayPayloadBytes,
+          perMessageDeflate: false,
+        })
         const heartbeat = setInterval(() => {
           send(
             state,
@@ -295,6 +301,7 @@ const connect = (
           )
         }, 15_000)
         let closed = false
+        let queuedMessages = 0
         const close = (): void => {
           if (closed) {
             return
@@ -320,15 +327,23 @@ const connect = (
           )
         })
         socket.on("message", (message: RawData) => {
-          const text = Buffer.isBuffer(message)
-            ? message.toString("utf8")
-            : message instanceof ArrayBuffer
-              ? Buffer.from(message).toString("utf8")
-              : Array.isArray(message)
-                ? Buffer.concat(message).toString("utf8")
-                : Buffer.from(message).toString("utf8")
+          if (queuedMessages >= maxQueuedRelayMessages) {
+            socket.close(4008, "Message queue limit reached")
+            return
+          }
+          queuedMessages += 1
           state.processing = state.processing
             .then(async () => {
+              if (closed) {
+                return
+              }
+              const text = Buffer.isBuffer(message)
+                ? message.toString("utf8")
+                : message instanceof ArrayBuffer
+                  ? Buffer.from(message).toString("utf8")
+                  : Array.isArray(message)
+                    ? Buffer.concat(message).toString("utf8")
+                    : Buffer.from(message).toString("utf8")
               const event = await Effect.runPromise(
                 Effect.try({
                   try: () => JSON.parse(text) as unknown,
@@ -373,6 +388,9 @@ const connect = (
               console.error(
                 `Invalid relay event: ${cause instanceof Error ? cause.message : String(cause)}`,
               )
+            })
+            .finally(() => {
+              queuedMessages = Math.max(0, queuedMessages - 1)
             })
         })
         socket.once("close", close)
