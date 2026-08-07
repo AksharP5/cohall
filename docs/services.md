@@ -88,8 +88,9 @@ logon and restarts it after failures.
 
 Run `cohall upgrade` from a global npm, Bun, or pnpm installation. It updates
 that installation and restarts only active managed Cohall services, with relays
-restarted before device daemons. A delegated upgrade can finish after restarting
-its own device daemon, so it does not leave the task in a reconnect loop.
+restarted before device daemons. Active services restart even when the installed
+files already match the requested version. A delegated upgrade can finish after
+restarting its own device daemon, so it does not leave the task in a reconnect loop.
 
 Direct `npm install --global`, `bun add --global`, or `pnpm add --global`
 replaces files on disk but cannot replace code already loaded by a running Node

@@ -138,6 +138,52 @@ describe("managed service upgrades", () => {
     ])
   })
 
+  it("restarts active services when the installed files are already current", async () => {
+    const root = await temporaryDirectory()
+    const entrypoint = join(root, "lib", "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
+    const packageRoot = dirname(dirname(entrypoint))
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "#!/usr/bin/env node\n")
+    await writeFile(
+      join(packageRoot, "package.json"),
+      JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
+    )
+
+    const invocations: Array<string> = []
+    const runner: CommandRunner = {
+      run: (command, arguments_) => {
+        const invocation = [command, ...arguments_].join(" ")
+        invocations.push(invocation)
+        if (invocation === "systemctl is-active --quiet cohall-relay.service") {
+          return Promise.resolve({ exitCode: 3, stdout: "", stderr: "" })
+        }
+        return Promise.resolve(success())
+      },
+    }
+
+    const result = await upgrade({
+      currentVersion: "1.2.3",
+      target: "1.2.3",
+      restart: true,
+      dryRun: false,
+      entrypoint,
+      platform: "linux",
+      uid: 1000,
+      statePath: join(root, "upgrade-restart.json"),
+      runner,
+    })
+
+    expect(result.upgraded).toBe(false)
+    expect(result.services_restarted).toEqual([
+      "systemd-user:cohall-relay.service",
+      "systemd-user:cohall-device.service",
+    ])
+    expect(invocations.filter((invocation) => invocation.includes(" restart "))).toEqual([
+      "systemctl --user restart cohall-relay.service",
+      "systemctl --user restart cohall-device.service",
+    ])
+  })
+
   it("finishes a delegated upgrade after its device daemon restarts", async () => {
     const root = await temporaryDirectory()
     const statePath = join(root, "upgrade-restart.json")

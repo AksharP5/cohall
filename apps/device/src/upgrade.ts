@@ -435,7 +435,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   }
   const upgraded = nextVersion !== options.currentVersion
 
-  if (!upgraded || !options.restart || services.length === 0) {
+  if (!options.restart || services.length === 0) {
     return {
       upgraded,
       from_version: options.currentVersion,
@@ -443,8 +443,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
       requested_version: target,
       package_manager: installation.manager,
       services_restarted: [],
-      services_pending_restart:
-        upgraded && !options.restart ? services.map((service) => service.id) : [],
+      services_pending_restart: options.restart ? [] : services.map((service) => service.id),
       resumed_after_restart: false,
       dry_run: false,
     }
@@ -461,7 +460,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   const completed = await restartServices(runner, services, statePath, initial)
   await rm(statePath, { force: true })
   return {
-    upgraded: true,
+    upgraded,
     from_version: options.currentVersion,
     installed_version: nextVersion,
     requested_version: target,
