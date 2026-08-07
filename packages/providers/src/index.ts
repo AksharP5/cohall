@@ -49,7 +49,9 @@ const executables = {
 
 const providerEnvironment = (): NodeJS.ProcessEnv => ({
   ...Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !name.startsWith("COHALL_")),
+    Object.entries(process.env).filter(
+      ([name]) => !name.startsWith("COHALL_") || name === "COHALL_CONFIG",
+    ),
   ),
   PATH: executableDirectories().join(delimiter),
 })
