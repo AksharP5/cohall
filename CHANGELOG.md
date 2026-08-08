@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.6](https://github.com/AksharP5/cohall/compare/v0.4.5...v0.4.6) (2026-08-08)
+
+
+### Bug Fixes
+
+* **skill:** explain cross-device workflows and recovery ([#34](https://github.com/AksharP5/cohall/issues/34)) ([0bba7b9](https://github.com/AksharP5/cohall/commit/0bba7b9645d2c1f577332ebb21a885b973fc6e80))
+
 ## [0.4.5](https://github.com/AksharP5/cohall/compare/v0.4.4...v0.4.5) (2026-08-07)
 
 
