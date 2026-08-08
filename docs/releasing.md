@@ -8,7 +8,6 @@ Before merging a release:
 ```bash
 bun install --frozen-lockfile
 bun run check
-bun run check
 npm pack --dry-run
 ```
 

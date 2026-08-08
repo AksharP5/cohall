@@ -13,6 +13,22 @@ a lead agent.
 Use the installed `cohall` executable when it is available. Fall back to
 `npx -y @akshar5/cohall` only when Cohall is not installed globally.
 
+## Recognize cross-device requests
+
+Treat phrases such as “run this on my Mac,” “ask `@devbox`,” or “have the Linux
+machine check this” as target intent. The `@name` form is a Cohall device
+selector, not chat syntax supplied by the harness. Resolve it with `cohall
+devices`, then delegate the smallest useful outcome.
+
+Good reasons to delegate include:
+
+- Xcode, simulators, signing state, or a signed-in browser on a Mac;
+- Docker services, deployment access, or a repository checkout on a server;
+- long tests that can run remotely while useful local work continues;
+- any machine-local tool, file, login, or network access unavailable here.
+
+Do not delegate ordinary local work when the other device provides no advantage.
+
 ## Delegate work
 
 1. List devices unless the target is already explicit:
@@ -76,6 +92,12 @@ cohall delegate --target @linux --no-wait \
 cohall status <task-id>
 cohall wait <task-id> --timeout 1800
 ```
+
+An accepted task for an offline target waits durably on the relay and dispatches
+when the device reconnects. Accepted tasks survive relay and device restarts.
+The relay itself must be reachable to accept a new task. Interrupted execution
+uses at-least-once delivery and may run again, so make consequential prompts safe
+to retry.
 
 The timeout error includes the task ID and last known status. The task continues
 unless cancelled:

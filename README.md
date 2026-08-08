@@ -36,6 +36,27 @@ session IDs. It does not plan work, copy device credentials, or SSH into a
 machine. Each device runs its own provider CLI with its existing local login,
 configuration, skills, MCP servers, permissions, and workspace access.
 
+## What to use it for
+
+Once the skill is installed, requests in an ordinary agent thread can be as
+direct as:
+
+- “Ask `@macbook` to build the iOS app in Xcode and diagnose the signing error.”
+- “Have `@devbox` reproduce this failure against its Docker services.”
+- “Use `@archlinux`'s signed-in browser to inspect the failed deployment.”
+- “Queue the full test suite on `@devbox`; keep working here and report back.”
+
+The current agent turns that request into a focused Cohall task and incorporates
+the result when it returns. `@macbook` is a device selector understood through
+the installed skill, not special chat syntax built into your harness.
+
+T3 Connect is a remote interface to a T3 Code environment: use it when you want
+to browse that machine's projects, terminal, files, and diffs yourself. Cohall
+instead lets the agent in your current Codex, Claude Code, OpenCode, T3Code, or
+other harness delegate an outcome to an agent on another machine. It provides
+cross-harness CLI/MCP access, durable offline queues, resumable agent threads,
+and redacted task traces. The two tools can be used together.
+
 ## Quick start
 
 Run Cohall anywhere Node.js 24 or newer is installed. Use whichever JavaScript
@@ -90,6 +111,26 @@ npx -y @akshar5/cohall device
 `join` exchanges the one-time token for separate client and device credentials,
 then writes a per-user configuration file with Unix mode `0600`. Workspace roots
 must already exist and are resolved to canonical paths.
+
+## Availability and restarts
+
+The relay must be reachable to accept new tasks or return status. Once accepted,
+a task is stored in SQLite and survives relay or target-device restarts. Work for
+an offline target waits on the relay and starts when that device reconnects.
+Interrupted running work is re-queued with at-least-once delivery, so prompts
+that cause external changes should be safe to retry.
+
+The packaged service definitions reconnect automatically:
+
+- the Linux relay starts at boot through systemd socket and service units;
+- a Linux device starts with its user service, or at boot when user lingering is
+  enabled;
+- a macOS device starts when that user logs in through its LaunchAgent;
+- a Windows device starts at user logon through Task Scheduler.
+
+Powered-off devices do not run work. A powered-off relay cannot accept new work,
+but tasks already written to its persistent data directory remain there for its
+next start. See [service setup](docs/services.md) for installation and checks.
 
 ## Use from an agent
 
@@ -226,8 +267,11 @@ the same npm, Bun, or pnpm installation and restarts only active Cohall relay
 and device jobs. Active jobs restart even when the installed files are already
 current, ensuring an older loaded process is replaced. Cohall refuses to restart
 a service configured to use a different global installation; run that service's
-executable directly or update its service definition first. Use `cohall upgrade --dry-run` to inspect the plan or
-`cohall upgrade --no-restart` to update files without restarting services.
+executable directly or update its service definition first.
+
+- `cohall upgrade --dry-run` previews the plan.
+- `cohall upgrade --no-restart` updates files without restarting services.
+
 Linux relays can use the packaged systemd socket unit so new connections remain
 available while the relay process is replaced; see [service setup](docs/services.md).
 Environment variables override stored values:
