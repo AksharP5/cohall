@@ -4,6 +4,19 @@ Interactive use should use `npx -y @akshar5/cohall`. Unattended services
 install the same npm package so the operating system has a stable executable
 path.
 
+## Startup behavior
+
+| Component      | Starts again                                                                     | Offline behavior                                                         |
+| -------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Linux relay    | At boot when its systemd socket and service are enabled                          | Cannot accept new tasks while down; persisted tasks resume after startup |
+| Linux device   | With the user's systemd manager; at boot without login when lingering is enabled | Accepted tasks wait on the relay and dispatch after reconnect            |
+| macOS device   | At user login through launchd                                                    | Accepted tasks wait while the Mac is off, asleep, or logged out          |
+| Windows device | At user logon through Task Scheduler                                             | Accepted tasks wait while the PC is off or logged out                    |
+
+The relay's data directory must be persistent. Cohall uses at-least-once delivery:
+work interrupted during execution can run again after recovery, so consequential
+tasks should be idempotent.
+
 ## Linux device daemon
 
 Install and pair as the user that will run the daemon:
@@ -25,7 +38,15 @@ journalctl --user -u cohall-device -f
 loginctl enable-linger "$USER"
 ```
 
-Linger is optional; it keeps the daemon running after logout.
+Linger is optional. Without it, the user service starts after login and stops
+with the user's service manager. With it, the service starts at boot and remains
+available after logout. Verify the configuration with:
+
+```bash
+systemctl --user is-enabled cohall-device
+systemctl --user is-active cohall-device
+loginctl show-user "$USER" -p Linger
+```
 
 ## Linux relay
 
@@ -53,6 +74,13 @@ systemctl enable --now cohall-relay
 journalctl -u cohall-relay -f
 ```
 
+Verify both units are enabled and active:
+
+```bash
+systemctl is-enabled cohall-relay.socket cohall-relay.service
+systemctl is-active cohall-relay.socket cohall-relay.service
+```
+
 Expose the relay only through a private network such as Tailscale or an HTTPS
 reverse proxy. Device connections are outbound WebSockets. The socket unit keeps
 the listener available across relay service restarts: new connections wait for
@@ -76,6 +104,14 @@ launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/com.cohall.device.plis
 launchctl kickstart -k gui/"$(id -u)"/com.cohall.device
 ```
 
+The packaged LaunchAgent uses `RunAtLoad` and `KeepAlive`: it starts at login,
+restarts after failure, and reconnects when the network returns. It cannot run
+before that user logs in. Check it with:
+
+```bash
+launchctl print gui/"$(id -u)"/com.cohall.device
+```
+
 The relay and device worker may run on the same machine. Configure the worker
 with the relay's private Tailscale URL and install both services independently.
 
@@ -89,7 +125,7 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\install-device.ps1
 ```
 
 The script registers a per-user scheduled task that starts `cohall device` at
-logon and restarts it after failures.
+logon and restarts it after failures. It does not run before that user logs on.
 
 ## Upgrade running services
 

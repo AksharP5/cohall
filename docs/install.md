@@ -71,9 +71,11 @@ Configuration locations:
 Use `COHALL_CONFIG` to override the path. On Unix, Cohall enforces directory
 mode `0700` and file mode `0600`.
 
-The relay must stay online so devices and clients can reach it. A target device
-must be online only while it is accepting or running work; queued tasks remain
-durable on the relay while it is offline.
+The relay must be reachable to submit new work or read its status. A target
+device only needs to be online while accepting or running work; accepted tasks
+wait durably on the relay while it is offline. Accepted tasks also survive a
+relay restart when its data directory is persistent. A client cannot submit a
+new task while the relay itself is offline.
 
 `--providers` is an optional comma-separated allowlist. It prevents an installed
 but unauthenticated provider executable from being advertised. Run `cohall
@@ -94,8 +96,9 @@ services. Active services restart even when the package files are already
 current, so a process left on old code by a direct package-manager update is
 replaced. If a service points to a different global installation, Cohall stops
 with its executable path instead of reporting a misleading successful restart.
-Run that executable's `upgrade` command or update the service definition. Choose an exact version with `cohall upgrade --to 1.2.3`. Use `--dry-run` to inspect the plan or
-`--no-restart` to leave active services pending a manual restart.
+Run that executable's `upgrade` command or update the service definition. Choose
+an exact version with `cohall upgrade --to 1.2.3`. Use `--dry-run` to inspect the
+plan or `--no-restart` to leave active services pending a manual restart.
 
 Back up the data directory before upgrading a production relay; SQLite schema
 migrations run in place. A system-level relay may require running the command
