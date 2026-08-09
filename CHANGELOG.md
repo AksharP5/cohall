@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.7](https://github.com/AksharP5/cohall/compare/v0.4.6...v0.4.7) (2026-08-09)
+
+
+### Bug Fixes
+
+* **skill:** carry conversation context into handoffs ([#36](https://github.com/AksharP5/cohall/issues/36)) ([f96382f](https://github.com/AksharP5/cohall/commit/f96382ff2385b3825307cbf838dd3e805ce27d8b))
+
 ## [0.4.6](https://github.com/AksharP5/cohall/compare/v0.4.5...v0.4.6) (2026-08-08)
 
 
