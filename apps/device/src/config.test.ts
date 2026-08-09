@@ -7,12 +7,14 @@ import {
   loadOwnerConfiguration,
   writeStoredConfiguration,
 } from "./config.ts"
-import { allowedWorkspace, selectProviders } from "./daemon.ts"
+import { allowedWorkspace, openAllowedWorkspace, selectProviders } from "./daemon.ts"
 import { DeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { execFile } from "node:child_process"
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import { parseProviders, parseWorkspaces } from "./config.ts"
 
@@ -110,8 +112,9 @@ describe("device workspace configuration", () => {
   it("uses the relay host's protected owner credential", async () => {
     const directory = await temporary()
     const dataDirectory = join(directory, "relay")
+    const ownerToken = "local-owner-token".padEnd(64, "0")
     await mkdir(dataDirectory)
-    await writeFile(join(dataDirectory, "owner-token"), "local-owner-token\n", { mode: 0o600 })
+    await writeFile(join(dataDirectory, "owner-token"), `${ownerToken}\n`, { mode: 0o600 })
     const previous = {
       config: process.env.COHALL_CONFIG,
       dataDirectory: process.env.COHALL_DATA_DIR,
@@ -123,7 +126,7 @@ describe("device workspace configuration", () => {
 
     try {
       await expect(Effect.runPromise(loadOwnerConfiguration)).resolves.toMatchObject({
-        token: "local-owner-token",
+        token: ownerToken,
       })
     } finally {
       const restore = (name: string, value: string | undefined): void => {
@@ -172,5 +175,35 @@ describe("device workspace configuration", () => {
     })
     await expect(allowedWorkspace(configuration, escape)).rejects.toThrow("outside")
     await expect(allowedWorkspace(configuration, root)).resolves.toBe(root)
+  })
+
+  it("anchors provider startup to the authorized workspace directory", async () => {
+    const directory = await temporary()
+    const workspace = join(directory, "workspace")
+    const moved = join(directory, "moved")
+    const outside = join(directory, "outside")
+    await Promise.all([mkdir(workspace), mkdir(outside)])
+    await writeFile(join(workspace, "marker"), "authorized")
+    const configuration = DeviceConfiguration.make({
+      relayUrl: "http://127.0.0.1:8787",
+      token: "test",
+      id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      name: "test",
+      workspaces: [directory],
+    })
+    const authorized = await openAllowedWorkspace(configuration, workspace)
+    try {
+      await rename(workspace, moved)
+      await symlink(outside, workspace)
+      await authorized.validate()
+      const result = await promisify(execFile)(
+        process.execPath,
+        ["-e", 'process.stdout.write(require("node:fs").readFileSync("marker", "utf8"))'],
+        { cwd: authorized.cwd },
+      )
+      expect(result.stdout).toBe("authorized")
+    } finally {
+      await authorized.close()
+    }
   })
 })

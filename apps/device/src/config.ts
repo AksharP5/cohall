@@ -283,6 +283,9 @@ export const loadOwnerConfiguration = Effect.tryPromise({
         "No owner credential. Run this command on the relay host or set COHALL_TOKEN.",
       )
     }
+    if (token.length < 32) {
+      throw new Error("The Cohall relay owner token must be at least 32 characters")
+    }
     return ClientConfiguration.make({
       relayUrl: normalizeRelayUrl(process.env.COHALL_RELAY_URL ?? stored.relayUrl),
       token,

@@ -65,9 +65,11 @@ cohall --version
 The relay owner creates a token valid for ten minutes and one exchange:
 
 ```bash
+read -rsp 'Owner token: ' owner_token; printf '\n'
 COHALL_RELAY_URL=https://cohall.example.com \
-COHALL_TOKEN=owner-token \
+COHALL_TOKEN="$owner_token" \
 npx -y @akshar5/cohall pair --label "Workstation"
+unset owner_token
 ```
 
 Transfer it privately. On the machine being added, provide it through stdin so
@@ -154,6 +156,7 @@ Environment variables override stored values:
 | `COHALL_DATA_DIR`                         | Relay database and owner-token directory       |
 | `COHALL_RELAY_HOST` / `COHALL_RELAY_PORT` | Relay listener                                 |
 | `COHALL_RELAY_ALLOW_REMOTE`               | Explicit non-loopback binding opt-in           |
+| `COHALL_HISTORY_TASK_LIMIT`               | Terminal tasks retained; default `1000`        |
 
 The relay must be reachable to submit work or read status. Accepted tasks wait
 durably while a target is offline and survive relay restarts when its data

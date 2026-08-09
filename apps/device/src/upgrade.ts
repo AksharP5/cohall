@@ -1,7 +1,18 @@
 import { Schema } from "effect"
 import { execFile, type ExecFileException } from "node:child_process"
-import { chmod, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { constants } from "node:fs"
+import {
+  access,
+  chmod,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises"
+import { delimiter, dirname, extname, isAbsolute, join } from "node:path"
 import { platform as operatingSystem } from "node:os"
 import { configurationPath } from "./config.ts"
 
@@ -74,6 +85,7 @@ export interface UpgradeOptions {
   readonly statePath?: string
   readonly delegated?: boolean
   readonly runner?: CommandRunner
+  readonly resolveExecutable?: (command: string) => Promise<string>
 }
 
 export interface UpgradeResult {
@@ -134,7 +146,7 @@ export const packageInstallation = (
   if (path.includes("/.bun/install/global/node_modules/")) {
     return { manager: "bun", entrypoint }
   }
-  if (path.includes("/pnpm/global/") || path.includes("/.pnpm/")) {
+  if (path.includes("/pnpm/global/")) {
     return { manager: "pnpm", entrypoint }
   }
 
@@ -166,6 +178,101 @@ export const packageInstallCommand = (
         ],
       }
   }
+}
+
+const executableNames = (command: string): ReadonlyArray<string> => {
+  if (operatingSystem() !== "win32" || extname(command).length > 0) {
+    return [command]
+  }
+  return (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .filter(Boolean)
+    .map((extension) => `${command}${extension.toLowerCase()}`)
+}
+
+export const trustedExecutable = async (command: string): Promise<string> => {
+  const candidates = isAbsolute(command)
+    ? [command]
+    : (process.env.PATH ?? "")
+        .split(delimiter)
+        .filter(Boolean)
+        .flatMap((directory) => executableNames(command).map((name) => join(directory, name)))
+  let selected: string | undefined
+  for (const path of candidates) {
+    const available = await access(
+      path,
+      operatingSystem() === "win32" ? constants.F_OK : constants.X_OK,
+    )
+      .then(() => true)
+      .catch(() => false)
+    if (available) {
+      selected = path
+      break
+    }
+  }
+  if (selected === undefined) {
+    throw new Error(`Could not find ${command} on PATH`)
+  }
+  const canonical = await realpath(selected)
+  if (operatingSystem() === "win32") {
+    return canonical
+  }
+  const uid = process.getuid?.()
+  for (let path = canonical; ; path = dirname(path)) {
+    const metadata = await stat(path)
+    if ((metadata.mode & 0o022) !== 0) {
+      throw new Error(`Refusing executable beneath group- or world-writable path ${path}`)
+    }
+    if (uid !== undefined && metadata.uid !== 0 && metadata.uid !== uid) {
+      throw new Error(`Refusing executable owned by another user at ${path}`)
+    }
+    const parent = dirname(path)
+    if (parent === path) {
+      break
+    }
+  }
+  return canonical
+}
+
+const trustedServices = async (
+  services: ReadonlyArray<ManagedService>,
+  resolveExecutable: (command: string) => Promise<string>,
+): Promise<ReadonlyArray<ManagedService>> => {
+  const resolved = new Map<string, Promise<string>>()
+  const invocation = async (value: CommandInvocation): Promise<CommandInvocation> => {
+    let command = resolved.get(value.command)
+    if (command === undefined) {
+      command = resolveExecutable(value.command)
+      resolved.set(value.command, command)
+    }
+    return { ...value, command: await command }
+  }
+  const secured: Array<ManagedService> = []
+  for (const service of services) {
+    let check: CommandInvocation
+    try {
+      check = await invocation(service.check)
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.startsWith("Could not find ")) {
+        continue
+      }
+      throw cause
+    }
+    secured.push({
+      ...service,
+      check,
+      ...(service.entrypoint === undefined
+        ? {}
+        : {
+            entrypoint: {
+              ...service.entrypoint,
+              inspect: await invocation(service.entrypoint.inspect),
+            },
+          }),
+      restart: await Promise.all(service.restart.map(invocation)),
+    })
+  }
+  return secured
 }
 
 export const serviceCandidates = (
@@ -238,11 +345,11 @@ export const serviceCandidates = (
         },
         restart: [
           {
-            command: "schtasks",
+            command: "schtasks.exe",
             arguments: ["/End", "/TN", "Cohall Device"],
             allowFailure: true,
           },
-          { command: "schtasks", arguments: ["/Run", "/TN", "Cohall Device"] },
+          { command: "schtasks.exe", arguments: ["/Run", "/TN", "Cohall Device"] },
         ],
       },
     ]
@@ -424,9 +531,13 @@ const reportedRestartServices = (receipt: RestartReceipt): ReadonlyArray<string>
 
 export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> => {
   const runner = options.runner ?? defaultRunner
+  const resolveExecutable = options.resolveExecutable ?? trustedExecutable
   const runtimePlatform = options.platform ?? process.platform
   const uid = options.uid ?? process.getuid?.()
-  const candidates = serviceCandidates(runtimePlatform, uid)
+  const candidates = await trustedServices(
+    serviceCandidates(runtimePlatform, uid),
+    resolveExecutable,
+  )
   const statePath = options.statePath ?? restartReceiptPath()
   const previous = await readReceipt(statePath)
 
@@ -520,7 +631,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
   }
 
-  await checked(runner, install)
+  await checked(runner, { ...install, command: await resolveExecutable(install.command) })
   const nextVersion = await installedVersion(entrypoint)
   if (target !== "latest" && nextVersion !== target) {
     throw new Error(`Installed Cohall ${nextVersion}, expected ${target}`)

@@ -3,6 +3,7 @@ import {
   Device,
   DeviceId,
   SocketEvent,
+  maxSocketPayloadBytes,
   TaskId,
   ThreadId,
   decodeCreatePairingInput,
@@ -241,7 +242,9 @@ type Principal = "owner" | AuthSession
 export const runRelay = async (): Promise<void> => {
   const configuration = await Effect.runPromise(loadEnvironmentConfiguration)
   process.umask(0o077)
-  const runtime = ManagedRuntime.make(RelayStore.layer(configuration.databasePath))
+  const runtime = ManagedRuntime.make(
+    RelayStore.layer(configuration.databasePath, configuration.historyTaskLimit),
+  )
   const run = <A, E>(effect: Effect.Effect<A, E, RelayStore.Service>): Promise<A> =>
     runtime.runPromise(effect)
   await run(
@@ -367,13 +370,26 @@ export const runRelay = async (): Promise<void> => {
         socket.close(4003, "Authentication failed")
         return
       }
-      hub.attach(socket, {
+      if (hub.pendingConnections() >= 64) {
+        socket.close(4008, "Pending device connection limit reached")
+        return
+      }
+      const attached = hub.attach(socket, {
         ...(principal === "owner" ? {} : { sessionId: principal.id }),
         ...(principal === "owner" || principal.deviceId === undefined
           ? {}
           : { boundDeviceId: principal.deviceId }),
         ...(principal === "owner" ? {} : { expiresAt: principal.expiresAt }),
       })
+      if (!attached) {
+        socket.close(4008, "Credential connection limit reached")
+        return
+      }
+      socket.data.stageDeadline = setTimeout(() => {
+        if (hub.deviceId(socket) === undefined) {
+          socket.close(4003, "Device registration timeout")
+        }
+      }, 5_000)
       socket.send(
         JSON.stringify(
           SocketEvent.make({ _tag: "Connected", serverVersion: version, connectedAt: now() }),
@@ -596,20 +612,20 @@ export const runRelay = async (): Promise<void> => {
 
   const websocketServer = new WebSocketServer({
     noServer: true,
-    maxPayload: 256 * 1024,
+    maxPayload: maxSocketPayloadBytes,
     perMessageDeflate: false,
   })
   websocketServer.on("connection", (rawSocket) => {
     const socket = rawSocket as ConnectionSocket
     socket.data = {
       processing: Promise.resolve(),
-      authDeadline: undefined,
+      stageDeadline: undefined,
       preAuthFrameReceived: false,
       queuedMessages: 0,
       closed: false,
     }
     connections += 1
-    socket.data.authDeadline = setTimeout(() => {
+    socket.data.stageDeadline = setTimeout(() => {
       if (!hub.isAuthorized(socket)) {
         socket.close(4003, "Authentication timeout")
       }
@@ -619,6 +635,9 @@ export const runRelay = async (): Promise<void> => {
       alive = true
     })
     const heartbeat = setInterval(() => {
+      if (!hub.isAuthorized(socket)) {
+        return
+      }
       if (!alive) {
         socket.terminate()
         return

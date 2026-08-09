@@ -17,12 +17,15 @@ const main = async (): Promise<void> => {
     console.log(version)
     return
   }
+  const commandArguments = process.argv.slice(3)
+  if (
+    commandArguments.length === 1 &&
+    ["--help", "-h", "help"].includes(commandArguments[0] ?? "")
+  ) {
+    printHelp()
+    return
+  }
   if (["device", "relay", "mcp"].includes(command) && process.argv.length > 3) {
-    const arguments_ = process.argv.slice(3)
-    if (arguments_.length === 1 && ["--help", "-h", "help"].includes(arguments_[0] ?? "")) {
-      printHelp()
-      return
-    }
     throw new Error(`${command} does not accept arguments`)
   }
   if (command === "relay") {
@@ -40,7 +43,7 @@ const main = async (): Promise<void> => {
     await runMcp(configuration)
     return
   }
-  await runCli(command, process.argv.slice(3))
+  await runCli(command, commandArguments)
 }
 
 await main().catch((cause: unknown) => {

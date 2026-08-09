@@ -14,7 +14,7 @@ Codex, Claude Code, and OpenCode adapters.
 Current agent
 CLI + skill or MCP
        |
-   HTTPS / WSS
+ HTTP(S) / WS(S)
        |
 Cohall relay + SQLite
      /        \
@@ -25,8 +25,8 @@ Cohall relay + SQLite
 
 The relay stores tasks, results, thread history, and provider session IDs. Each
 device uses its own files, provider login, tools, skills, permissions, and
-signed-in services. Cohall does not copy credentials or remotely control the
-machine.
+signed-in services. Cohall does not expose a raw remote shell or copy
+credentials between devices.
 
 ## What you can do
 
@@ -177,6 +177,8 @@ configuration.
   should be safe to retry.
 - The relay must be reachable to submit new work, but persisted tasks survive a
   relay restart.
+- The relay retains the newest 1,000 terminal tasks by default so history cannot
+  grow without bound.
 - Paired clients can ask a device's local provider to act with that user's normal
   authority. Pair only devices and users you trust.
 - Workspace roots are enforced after resolving symlinks, credentials are

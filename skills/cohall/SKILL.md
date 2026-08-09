@@ -127,7 +127,8 @@ cohall thread <thread-id>
 ```
 
 This returns a byte-bounded recent window of prompts, final responses, and task
-states. Check `truncated`; older history remains on the relay when it is true.
+states. Check `truncated`; older entries may be outside the returned window or
+pruned by the relay's terminal-task retention limit.
 
 ## Input forms
 

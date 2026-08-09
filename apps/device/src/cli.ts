@@ -357,14 +357,25 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     )?.token
     const deviceId = paired.credentials.find((credential) => credential.session.role === "device")
       ?.session.deviceId
-    if (!arguments_.options.has("client-only") && deviceToken === undefined) {
+    const clientOnly = arguments_.options.has("client-only")
+    if (clientOnly && clientToken === undefined) {
+      throw new Error("The pairing credential did not include client access")
+    }
+    if (!clientOnly && deviceToken === undefined) {
       throw new Error("The pairing credential did not include device access")
     }
+    const {
+      clientToken: _retainedClientToken,
+      deviceToken: _retainedDeviceToken,
+      ...configurationDraft
+    } = draft
     const configuration = StoredConfiguration.make({
-      ...draft,
-      deviceId: deviceId ?? draft.deviceId,
+      ...configurationDraft,
+      deviceId: clientOnly
+        ? configurationDraft.deviceId
+        : (deviceId ?? configurationDraft.deviceId),
       ...(clientToken === undefined ? {} : { clientToken }),
-      ...(deviceToken === undefined ? {} : { deviceToken }),
+      ...(clientOnly || deviceToken === undefined ? {} : { deviceToken }),
     })
     await writeStoredConfiguration(configuration)
     print({
@@ -372,7 +383,11 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       config_path: configurationPath(),
       relay_url: configuration.relayUrl,
       device_id: configuration.deviceId,
-      roles: paired.credentials.map((credential) => credential.session.role),
+      roles: clientOnly
+        ? paired.credentials
+            .map((credential) => credential.session.role)
+            .filter((role) => role === "client")
+        : paired.credentials.map((credential) => credential.session.role),
       workspaces: configuration.workspaces,
     })
     return

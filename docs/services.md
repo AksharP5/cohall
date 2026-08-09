@@ -52,13 +52,14 @@ loginctl show-user "$USER" -p Linger
 
 Create a dedicated `cohall` user, install the npm package globally so
 `command -v cohall` returns `/usr/local/bin/cohall`, and place the relay
-environment at `/etc/cohall/relay.env` with mode `0600`:
+environment at `/etc/cohall/relay.env` with mode `0600`. Generate the token with
+`openssl rand -hex 32`; do not use the placeholder literally.
 
 ```dotenv
 COHALL_RELAY_HOST=0.0.0.0
 COHALL_RELAY_PORT=8787
 COHALL_RELAY_ALLOW_REMOTE=true
-COHALL_TOKEN=replace-with-a-random-owner-token
+COHALL_TOKEN=replace-with-the-output-of-openssl-rand-hex-32
 COHALL_DATA_DIR=/var/lib/cohall
 ```
 
@@ -121,7 +122,9 @@ Run `npm install --global @akshar5/cohall`, pair and verify the machine from
 PowerShell, then run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File deploy\windows\install-device.ps1
+$packageRoot = Join-Path (npm root --global) "@akshar5/cohall"
+powershell -ExecutionPolicy Bypass -File `
+  (Join-Path $packageRoot "deploy/windows/install-device.ps1")
 ```
 
 The script registers a per-user scheduled task that starts `cohall device` at

@@ -1,4 +1,4 @@
-import { DeviceId, SocketEvent, now } from "@cohall/protocol"
+import { DeviceId, SocketEvent, maxSocketPayloadBytes, now } from "@cohall/protocol"
 import { Effect } from "effect"
 import { type AddressInfo } from "node:net"
 import { afterEach, describe, expect, it } from "vitest"
@@ -72,11 +72,11 @@ describe("device relay connection", () => {
     await expect(closed).resolves.toBe(4008)
   })
 
-  it("rejects relay frames larger than 256 KiB", async () => {
+  it("rejects relay frames larger than the shared socket budget", async () => {
     const { server, relayUrl } = await startServer()
     const closed = new Promise<number>((resolve) => {
       server.once("connection", (socket) => {
-        socket.once("message", () => socket.send(Buffer.alloc(256 * 1024 + 1)))
+        socket.once("message", () => socket.send(Buffer.alloc(maxSocketPayloadBytes + 1)))
         socket.once("close", resolve)
       })
     })

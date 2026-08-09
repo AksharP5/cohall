@@ -1,6 +1,7 @@
 import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
 import {
   Device,
+  SocketEvent,
   TaskTrace,
   isTerminalTask,
   type AuthSession,
@@ -17,6 +18,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
+import { WebSocket } from "ws"
 
 const children: Array<ChildProcess> = []
 const directories: Array<string> = []
@@ -146,7 +148,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     await Promise.all(["codex", "claude", "opencode"].map((name) => chmod(join(bin, name), 0o755)))
 
     const relayPort = await port()
-    const ownerToken = "integration-owner-token"
+    const ownerToken = "integration-owner-token".padEnd(64, "0")
     const relayUrl = `http://127.0.0.1:${relayPort}`
     const root = process.cwd()
     const skill = await runCohall(root, ["skill"])
@@ -155,6 +157,8 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(skill).toContain("cohall delegate")
     expect(await runCohall(root, [])).toContain("cohall join")
     expect(await runCohall(root, ["device", "--help"])).toContain("cohall device")
+    expect(await runCohall(root, ["delegate", "--help"])).toContain("cohall delegate")
+    expect(await runCohall(root, ["upgrade", "--help"])).toContain("cohall upgrade")
 
     const relay = spawn("node", ["bin/cohall.js", "relay"], {
       cwd: root,
@@ -169,6 +173,16 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     children.push(relay)
     await waitForRelay(relayUrl)
     const owner = RelayClient.make({ baseUrl: relayUrl, token: ownerToken })
+
+    const registrationTimeout = new Promise<number>((resolve, reject) => {
+      const socket = new WebSocket(`${relayUrl.replace("http", "ws")}/ws/device`)
+      socket.once("open", () => {
+        socket.send(JSON.stringify(SocketEvent.make({ _tag: "Authenticate", token: ownerToken })))
+      })
+      socket.once("close", resolve)
+      socket.once("error", reject)
+    })
+    await expect(registrationTimeout).resolves.toBe(4003)
 
     const ownerEnvironment = {
       ...process.env,
@@ -215,7 +229,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     })
 
     const joinPairing = await Effect.runPromise(
-      owner.createPairing({ label: "CLI join", roles: ["client"] }),
+      owner.createPairing({ label: "CLI join", roles: ["client", "device"] }),
     )
     const pairingTokenPath = join(directory, "pairing-token")
     await writeFile(pairingTokenPath, joinPairing.token, { mode: 0o600 })

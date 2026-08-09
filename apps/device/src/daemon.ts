@@ -2,6 +2,7 @@ import {
   Device,
   SocketEvent,
   decodeSocketEvent,
+  maxSocketPayloadBytes,
   now,
   version,
   type Provider,
@@ -10,13 +11,13 @@ import {
 } from "@cohall/protocol"
 import * as Providers from "@cohall/providers"
 import { Effect, Schedule, Schema } from "effect"
-import { realpath } from "node:fs/promises"
+import { constants } from "node:fs"
+import { open, realpath, stat } from "node:fs/promises"
 import { arch, hostname, platform } from "node:os"
 import { basename, isAbsolute, relative } from "node:path"
 import { WebSocket, type RawData } from "ws"
 import type { DeviceConfiguration } from "./config.ts"
 
-const maxRelayPayloadBytes = 256 * 1024
 const maxQueuedRelayMessages = 8
 
 export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnectionError>()(
@@ -132,6 +133,52 @@ export const allowedWorkspace = async (
   return candidate
 }
 
+interface AuthorizedWorkspace {
+  readonly cwd: string
+  readonly validate: () => Promise<void>
+  readonly close: () => Promise<void>
+}
+
+export const openAllowedWorkspace = async (
+  configuration: DeviceConfiguration,
+  requested: string | undefined,
+): Promise<AuthorizedWorkspace> => {
+  const path = await allowedWorkspace(configuration, requested)
+  const operatingSystem = platform()
+  const flags =
+    constants.O_RDONLY |
+    (operatingSystem === "win32" ? 0 : constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  const handle = await open(path, flags)
+  const identity = await handle.stat()
+  if (!identity.isDirectory()) {
+    await handle.close()
+    throw new Error(`Workspace ${path} is not a directory`)
+  }
+  const cwd =
+    operatingSystem === "linux"
+      ? `/proc/self/fd/${handle.fd}`
+      : operatingSystem === "darwin"
+        ? `/dev/fd/${handle.fd}`
+        : path
+  return {
+    cwd,
+    validate: async () => {
+      const current = await handle.stat()
+      if (!current.isDirectory() || current.dev !== identity.dev || current.ino !== identity.ino) {
+        throw new Error(`Workspace ${path} changed before provider startup`)
+      }
+      if (operatingSystem === "win32") {
+        const currentPath = await realpath(path)
+        const currentPathIdentity = await stat(currentPath)
+        if (currentPathIdentity.dev !== identity.dev || currentPathIdentity.ino !== identity.ino) {
+          throw new Error(`Workspace ${path} changed before provider startup`)
+        }
+      }
+    },
+    close: () => handle.close(),
+  }
+}
+
 const promptFor = (task: Task, deviceName: string): string => {
   const context =
     task.context === undefined
@@ -183,8 +230,8 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
   send(state, SocketEvent.make({ _tag: "TaskAccepted", taskId: task.id }))
 
   const workflow = Effect.gen(function* () {
-    const cwd = yield* Effect.tryPromise({
-      try: () => allowedWorkspace(configuration, task.workspace),
+    const workspace = yield* Effect.tryPromise({
+      try: () => openAllowedWorkspace(configuration, task.workspace),
       catch: (cause) =>
         new Providers.ProviderRunError({
           provider: task.provider,
@@ -196,11 +243,12 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
       provider: task.provider,
       threadId: task.threadId,
       prompt: promptFor(task, configuration.name),
-      cwd,
+      cwd: workspace.cwd,
+      beforeSpawn: workspace.validate,
       ...(sessionId === undefined ? {} : { sessionId }),
       ...(configuration.model === undefined ? {} : { model: configuration.model }),
       ...(configuration.sandbox === undefined ? {} : { sandbox: configuration.sandbox }),
-    })
+    }).pipe(Effect.ensuring(Effect.promise(() => workspace.close().catch(() => undefined))))
   })
 
   void Effect.runPromise(workflow, { signal: controller.signal })
@@ -287,7 +335,7 @@ const connect = (
     try: (signal) =>
       new Promise<void>((complete) => {
         const socket = new WebSocket(socketUrl(configuration), {
-          maxPayload: maxRelayPayloadBytes,
+          maxPayload: maxSocketPayloadBytes,
           perMessageDeflate: false,
         })
         const heartbeat = setInterval(() => {
