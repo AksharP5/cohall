@@ -106,28 +106,33 @@ COHALL_TOKEN="$COHALL_TOKEN" \
 npx -y @akshar5/cohall pair --label "MacBook"
 ```
 
-Transfer the token privately. On the device being added:
+Transfer the token privately. On the device being added, one guided command
+configures the device and installs the agent skill. It defaults the device name
+to the hostname and prompts for omitted values when run interactively:
 
 ```bash
 read -rsp 'Pairing token: ' pairing_token; printf '\n'
-printf '%s' "$pairing_token" | npx -y @akshar5/cohall join \
+printf '%s' "$pairing_token" | npx -y @akshar5/cohall init \
   --relay https://cohall.example.com \
-  --name macbook \
   --providers codex \
   --workspace "$HOME/dev"
 unset pairing_token
 ```
 
-### 3. Install the skill and connect
+`cohall join` remains available for scripts that only want to exchange a
+pairing token and write configuration.
+
+### 3. Keep the device available
 
 ```bash
-npx -y @akshar5/cohall skill install all
-npx -y @akshar5/cohall doctor
-npx -y @akshar5/cohall device
+npm install --global --prefix "$HOME/.local" @akshar5/cohall
+cohall service install
+cohall doctor
 ```
 
-Use an operating-system service for an unattended relay or device worker. See
-[service setup](docs/services.md).
+The service installer uses the current user's systemd manager on Linux,
+launchd on macOS, and Task Scheduler on Windows. See
+[service setup](docs/services.md) for boot-before-login and relay-host details.
 
 ## Delegate work
 

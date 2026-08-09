@@ -72,18 +72,25 @@ npx -y @akshar5/cohall pair --label "Workstation"
 unset owner_token
 ```
 
-Transfer it privately. On the machine being added, provide it through stdin so
-it does not appear in process arguments or shell history:
+Transfer it privately. On the machine being added, `cohall init` collects any
+missing values interactively, exchanges the pairing token, writes the
+configuration, and installs the Cohall skill. Provide the token through stdin
+so it does not appear in process arguments or shell history:
 
 ```bash
 read -rsp 'Pairing token: ' pairing_token; printf '\n'
-printf '%s' "$pairing_token" | npx -y @akshar5/cohall join \
+printf '%s' "$pairing_token" | npx -y @akshar5/cohall init \
   --relay https://cohall.example.com \
   --name workstation \
   --providers codex \
   --workspace "$HOME/dev"
 unset pairing_token
 ```
+
+When run in a terminal, omitted relay, name, workspace, provider, and token
+values are prompted with useful defaults. Re-running `cohall init` repairs the
+skill installation and reuses credentials when the selected relay has not
+changed. `cohall join` remains the non-guided configuration primitive.
 
 Workspace roots must already exist. Cohall resolves them to canonical paths and
 rejects delegated work outside them.
@@ -93,7 +100,7 @@ For a client that submits work but never runs a device worker:
 ```bash
 npx -y @akshar5/cohall pair --client-only --label "Automation client"
 read -rsp 'Pairing token: ' pairing_token; printf '\n'
-printf '%s' "$pairing_token" | npx -y @akshar5/cohall join \
+printf '%s' "$pairing_token" | npx -y @akshar5/cohall init \
   --relay https://cohall.example.com \
   --client-only
 unset pairing_token
@@ -101,6 +108,20 @@ unset pairing_token
 
 Automation may use a mode-`0600` token file with `join --token-file
 /path/to/token`.
+
+## Keep a device available
+
+After a global installation, install and start the current user's device
+service with one command:
+
+```bash
+cohall service install
+cohall doctor
+```
+
+Linux uses a systemd user service, macOS uses a LaunchAgent, and Windows uses a
+per-user scheduled task. The installer records the exact global Cohall
+executable, so it refuses temporary package-runner and source-checkout paths.
 
 ## Providers
 
