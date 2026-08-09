@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.9](https://github.com/AksharP5/cohall/compare/v0.4.8...v0.4.9) (2026-08-09)
+
+
+### Bug Fixes
+
+* harden cross-device runtime boundaries ([#40](https://github.com/AksharP5/cohall/issues/40)) ([8f0090d](https://github.com/AksharP5/cohall/commit/8f0090d42edc7067ad695eb378d2f8810ea126d7))
+
 ## [0.4.8](https://github.com/AksharP5/cohall/compare/v0.4.7...v0.4.8) (2026-08-09)
 
 
