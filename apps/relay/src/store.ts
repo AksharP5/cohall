@@ -354,7 +354,7 @@ const derivedTraceEvents = (task: Task): ReadonlyArray<TaskTraceEvent> => {
   return events
 }
 
-const makeService = (db: Database): Interface => {
+const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => {
   const recordTaskTraceEvent = (
     taskId: TaskId,
     kind: TaskTraceEventKind,
@@ -370,6 +370,24 @@ const makeService = (db: Database): Interface => {
          SELECT id FROM task_trace_events WHERE task_id = ? ORDER BY id DESC LIMIT 1000
        )`,
     ).run(taskId, taskId)
+  }
+
+  const pruneTerminalHistory = (preserveTaskId?: TaskId): void => {
+    const exclusion = preserveTaskId === undefined ? "" : "AND id <> ?"
+    const offset = preserveTaskId === undefined ? retainedTerminalTasks : retainedTerminalTasks - 1
+    const staleTasks = `SELECT id FROM tasks
+      WHERE status IN ('completed', 'failed', 'cancelled')
+        ${exclusion}
+      ORDER BY completed_at DESC, updated_at DESC, id DESC
+      LIMIT -1 OFFSET ?`
+    const parameters = preserveTaskId === undefined ? [offset] : [preserveTaskId, offset]
+    db.query(`DELETE FROM messages WHERE task_id IN (${staleTasks})`).run(...parameters)
+    db.query(`DELETE FROM tasks WHERE id IN (${staleTasks})`).run(...parameters)
+    db.query(
+      `DELETE FROM threads
+       WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.thread_id = threads.id)
+         AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.thread_id = threads.id)`,
+    ).run()
   }
 
   const queryTask = (taskId: TaskId): TaskRow | null =>
@@ -521,6 +539,7 @@ const makeService = (db: Database): Interface => {
           db.query(
             "UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL AND roles_json LIKE '%,%'",
           ).run(timestamp)
+          pruneTerminalHistory()
         })(),
       catch: operationError("RelayStore.recover"),
     })
@@ -807,6 +826,13 @@ const makeService = (db: Database): Interface => {
           if (result.changes === 1 && event !== undefined) {
             recordTaskTraceEvent(taskId, event.kind, event.detail, timestamp)
           }
+          if (
+            result.changes === 1 &&
+            update.status !== undefined &&
+            ["completed", "failed", "cancelled"].includes(update.status)
+          ) {
+            pruneTerminalHistory(taskId)
+          }
         })(),
       catch: operationError("RelayStore.transition"),
     })
@@ -939,6 +965,7 @@ const makeService = (db: Database): Interface => {
               current.threadId,
             )
           }
+          pruneTerminalHistory(taskId)
         })(),
       catch: operationError("RelayStore.terminal"),
     })
@@ -1299,7 +1326,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
     catch: operationError("RelayStore.migrate"),
   })
 
-export const layer = (path: string) =>
+export const layer = (path: string, retainedTerminalTasks = 1_000) =>
   Layer.effect(
     Service,
     Effect.acquireRelease(
@@ -1308,7 +1335,7 @@ export const layer = (path: string) =>
         catch: operationError("RelayStore.open"),
       }).pipe(Effect.tap(migrate)),
       (db) => Effect.sync(() => db.close()),
-    ).pipe(Effect.map(makeService)),
+    ).pipe(Effect.map((db) => makeService(db, retainedTerminalTasks))),
   )
 
 export const layerFromDatabase = (db: Database) =>

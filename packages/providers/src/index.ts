@@ -4,7 +4,7 @@ import { accessSync, constants } from "node:fs"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
 import { delimiter, extname, isAbsolute, join } from "node:path"
-import { spawn } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import type { Readable } from "node:stream"
 
 export class ProviderUnavailableError extends Schema.TaggedErrorClass<ProviderUnavailableError>()(
@@ -28,6 +28,7 @@ export interface RunOptions {
   readonly threadId: string
   readonly prompt: string
   readonly cwd: string
+  readonly beforeSpawn?: () => Promise<void>
   readonly sessionId?: string
   readonly model?: string
   readonly sandbox?: "read-only" | "workspace-write" | "danger-full-access"
@@ -412,6 +413,60 @@ const parse = async (
 
 const byteLength = (value: string): number => new TextEncoder().encode(value).byteLength
 
+const processExists = (pid: number): boolean => {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (cause) {
+    if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ESRCH") {
+      return false
+    }
+    throw cause
+  }
+}
+
+const waitForProcessGroup = async (pid: number, timeoutMs: number): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs
+  while (processExists(pid)) {
+    if (Date.now() >= deadline) {
+      return false
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  return true
+}
+
+const terminateWindowsTree = (pid: number): Promise<void> =>
+  new Promise((resolve) => {
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows"
+    execFile(
+      join(systemRoot, "System32", "taskkill.exe"),
+      ["/PID", String(pid), "/T", "/F"],
+      { windowsHide: true },
+      () => resolve(),
+    )
+  })
+
+const terminateProcessTree = async (pid: number): Promise<void> => {
+  if (platform() === "win32") {
+    await terminateWindowsTree(pid)
+    return
+  }
+  try {
+    process.kill(-pid, "SIGTERM")
+  } catch (cause) {
+    if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ESRCH") {
+      return
+    }
+    throw cause
+  }
+  if (await waitForProcessGroup(pid, 5_000)) {
+    return
+  }
+  process.kill(-pid, "SIGKILL")
+  await waitForProcessGroup(pid, 1_000)
+}
+
 export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError> =>
   Effect.tryPromise({
     try: async (signal) => {
@@ -423,71 +478,71 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
         })
       }
       const prepared = await prepareCommand(options)
-      const [, ...arguments_] = prepared.command
-      const child = spawn(executable, arguments_, {
-        cwd: options.cwd,
-        env: {
-          ...providerEnvironment(),
-          COHALL_PROVIDER: options.provider,
-          COHALL_THREAD_ID: options.threadId,
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-      })
-      const exited = new Promise<number>((resolve, reject) => {
-        child.once("error", reject)
-        child.once("exit", (code) => resolve(code ?? 1))
-      })
-      let killTimer: ReturnType<typeof setTimeout> | undefined
-      const terminate = (): void => {
-        if (child.exitCode !== null) {
-          return
-        }
-        child.kill("SIGTERM")
-        killTimer ??= setTimeout(() => {
-          if (child.exitCode === null) {
-            child.kill("SIGKILL")
-          }
-        }, 5_000)
-        killTimer.unref()
-      }
-      signal.addEventListener("abort", terminate, { once: true })
-      child.stdin.end(prepared.input)
-
       try {
-        const [result, stderr, exitCode] = await Promise.all([
-          parse(options, child.stdout, terminate),
-          captureText(child.stderr, 64 * 1024),
-          exited,
-        ])
-        if (exitCode !== 0) {
-          throw new ProviderRunError({
-            provider: options.provider,
-            message: failureMessage(executables[options.provider], stderr, exitCode),
-            exitCode,
-          })
+        await options.beforeSpawn?.()
+        const [, ...arguments_] = prepared.command
+        const child = spawn(executable, arguments_, {
+          cwd: options.cwd,
+          env: {
+            ...providerEnvironment(),
+            COHALL_PROVIDER: options.provider,
+            COHALL_THREAD_ID: options.threadId,
+          },
+          detached: platform() !== "win32",
+          stdio: ["pipe", "pipe", "pipe"],
+        })
+        const exited = new Promise<number>((resolve, reject) => {
+          child.once("error", reject)
+          child.once("exit", (code) => resolve(code ?? 1))
+        })
+        let termination: Promise<void> | undefined
+        const terminate = (): void => {
+          if (child.pid === undefined || termination !== undefined) {
+            return
+          }
+          termination = terminateProcessTree(child.pid)
         }
-        if (byteLength(result.result) > 131_072) {
-          throw new ProviderRunError({
-            provider: options.provider,
-            message: "Provider result exceeded 128 KiB",
-          })
-        }
-        if (result.sessionId !== undefined && byteLength(result.sessionId) > 4_096) {
-          throw new ProviderRunError({
-            provider: options.provider,
-            message: "Provider session ID exceeded 4 KiB",
-          })
-        }
-        return result
-      } finally {
-        signal.removeEventListener("abort", terminate)
-        if (child.exitCode === null) {
+        signal.addEventListener("abort", terminate, { once: true })
+        if (signal.aborted) {
           terminate()
-          await exited.catch(() => undefined)
         }
-        if (killTimer !== undefined) {
-          clearTimeout(killTimer)
+        child.stdin.end(prepared.input)
+
+        try {
+          const [result, stderr, exitCode] = await Promise.all([
+            parse(options, child.stdout, terminate),
+            captureText(child.stderr, 64 * 1024),
+            exited,
+          ])
+          if (exitCode !== 0) {
+            throw new ProviderRunError({
+              provider: options.provider,
+              message: failureMessage(executables[options.provider], stderr, exitCode),
+              exitCode,
+            })
+          }
+          if (byteLength(result.result) > 131_072) {
+            throw new ProviderRunError({
+              provider: options.provider,
+              message: "Provider result exceeded 128 KiB",
+            })
+          }
+          if (result.sessionId !== undefined && byteLength(result.sessionId) > 4_096) {
+            throw new ProviderRunError({
+              provider: options.provider,
+              message: "Provider session ID exceeded 4 KiB",
+            })
+          }
+          return result
+        } finally {
+          signal.removeEventListener("abort", terminate)
+          if (child.exitCode === null) {
+            terminate()
+            await exited.catch(() => undefined)
+          }
+          await termination?.catch(() => undefined)
         }
+      } finally {
         await prepared.cleanup()
       }
     },

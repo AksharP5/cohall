@@ -208,3 +208,71 @@ it("forgets only offline devices and revokes their registration", async () => {
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+it("prunes the oldest terminal task history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-store-history-"))
+  const runtime = ManagedRuntime.make(RelayStore.layer(join(directory, "relay.db"), 2))
+  const run = <A, E>(effect: Effect.Effect<A, E, RelayStore.Service>): Promise<A> =>
+    runtime.runPromise(effect)
+  try {
+    const deviceId = DeviceId.make("33333333-3333-4333-8333-333333333333")
+    await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        yield* store.upsertDevice(
+          Device.make({
+            id: deviceId,
+            name: "history-device",
+            hostname: "localhost",
+            platform: "linux",
+            architecture: "x64",
+            status: "online",
+            providers: ["codex"],
+            capabilities: [],
+            workspaces: [],
+            version,
+            lastSeenAt: now(),
+          }),
+        )
+      }),
+    )
+    const tasks = []
+    for (let index = 0; index < 3; index += 1) {
+      tasks.push(
+        await run(
+          Effect.gen(function* () {
+            const store = yield* RelayStore.Service
+            const task = yield* store.createDelegation({ prompt: `task-${index}` }, deviceId)
+            yield* store.assignTask(task.id)
+            yield* store.acceptTask(task.id, deviceId)
+            return yield* store.finishTask(task.id, deviceId, `result-${index}`)
+          }),
+        ),
+      )
+    }
+    const oldest = tasks[0]
+    const newest = tasks[2]
+    if (oldest === undefined || newest === undefined) {
+      throw new Error("Expected three completed tasks")
+    }
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.getTask(oldest.id)
+        }),
+      ),
+    ).rejects.toMatchObject({ message: expect.stringContaining("Unknown task") })
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.getTask(newest.id)
+        }),
+      ),
+    ).resolves.toMatchObject({ result: "result-2" })
+  } finally {
+    await runtime.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})

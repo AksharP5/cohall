@@ -6,10 +6,11 @@ import { join, resolve } from "node:path"
 export const RelayConfiguration = Schema.Struct({
   host: Schema.NonEmptyString,
   port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65_535 })),
-  token: Schema.NonEmptyString,
+  token: Schema.String.check(Schema.isMinLength(32)),
   dataDirectory: Schema.NonEmptyString,
   databasePath: Schema.NonEmptyString,
   allowRemote: Schema.Boolean,
+  historyTaskLimit: Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 100_000 })),
 })
 export interface RelayConfiguration extends Schema.Schema.Type<typeof RelayConfiguration> {}
 
@@ -74,6 +75,10 @@ export const loadEnvironmentConfiguration = Effect.tryPromise({
       await chmod(dataDirectory, 0o700)
     }
     const token = process.env.COHALL_TOKEN ?? (await tokenFrom(join(dataDirectory, "owner-token")))
+    if (token.length < 32) {
+      throw new Error("The Cohall relay owner token must be at least 32 characters")
+    }
+    const historyTaskLimit = Number(process.env.COHALL_HISTORY_TASK_LIMIT ?? "1000")
     return Schema.decodeUnknownSync(RelayConfiguration)({
       host,
       port,
@@ -81,6 +86,7 @@ export const loadEnvironmentConfiguration = Effect.tryPromise({
       dataDirectory,
       databasePath: join(dataDirectory, "cohall.db"),
       allowRemote,
+      historyTaskLimit,
     })
   },
   catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),

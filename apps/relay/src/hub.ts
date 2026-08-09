@@ -3,7 +3,7 @@ import { WebSocket } from "ws"
 
 export interface ConnectionData {
   processing: Promise<void>
-  authDeadline: ReturnType<typeof setTimeout> | undefined
+  stageDeadline: ReturnType<typeof setTimeout> | undefined
   preAuthFrameReceived: boolean
   queuedMessages: number
   closed: boolean
@@ -21,13 +21,28 @@ export class Hub {
   readonly #principals = new Map<ConnectionSocket, Principal>()
   readonly #devices = new Map<DeviceId, ConnectionSocket>()
   readonly #deviceIds = new Map<ConnectionSocket, DeviceId>()
+  readonly #sessions = new Map<AuthSessionId, ConnectionSocket>()
+  readonly #ownerSockets = new Set<ConnectionSocket>()
 
-  attach(socket: ConnectionSocket, principal: Principal): void {
-    this.#principals.set(socket, principal)
-    if (socket.data.authDeadline !== undefined) {
-      clearTimeout(socket.data.authDeadline)
-      socket.data.authDeadline = undefined
+  attach(socket: ConnectionSocket, principal: Principal): boolean {
+    if (principal.sessionId === undefined) {
+      if (this.#ownerSockets.size >= 16) {
+        return false
+      }
+      this.#ownerSockets.add(socket)
+    } else {
+      const existing = this.#sessions.get(principal.sessionId)
+      if (existing !== undefined && existing.readyState === WebSocket.OPEN) {
+        return false
+      }
+      this.#sessions.set(principal.sessionId, socket)
     }
+    this.#principals.set(socket, principal)
+    if (socket.data.stageDeadline !== undefined) {
+      clearTimeout(socket.data.stageDeadline)
+      socket.data.stageDeadline = undefined
+    }
+    return true
   }
 
   isAuthorized(socket: ConnectionSocket): boolean {
@@ -47,20 +62,36 @@ export class Hub {
   }
 
   registerDevice(deviceId: DeviceId, socket: ConnectionSocket): boolean {
+    if (this.#deviceIds.has(socket)) {
+      return false
+    }
     const previous = this.#devices.get(deviceId)
     if (previous !== undefined && previous !== socket && previous.readyState === WebSocket.OPEN) {
       return false
     }
     this.#devices.set(deviceId, socket)
     this.#deviceIds.set(socket, deviceId)
+    if (socket.data.stageDeadline !== undefined) {
+      clearTimeout(socket.data.stageDeadline)
+      socket.data.stageDeadline = undefined
+    }
     return true
   }
 
+  pendingConnections(): number {
+    return this.#principals.size - this.#deviceIds.size
+  }
+
   detach(socket: ConnectionSocket): DeviceId | undefined {
-    if (socket.data.authDeadline !== undefined) {
-      clearTimeout(socket.data.authDeadline)
+    if (socket.data.stageDeadline !== undefined) {
+      clearTimeout(socket.data.stageDeadline)
     }
+    const principal = this.#principals.get(socket)
     this.#principals.delete(socket)
+    this.#ownerSockets.delete(socket)
+    if (principal?.sessionId !== undefined && this.#sessions.get(principal.sessionId) === socket) {
+      this.#sessions.delete(principal.sessionId)
+    }
     const deviceId = this.#deviceIds.get(socket)
     this.#deviceIds.delete(socket)
     if (deviceId === undefined || this.#devices.get(deviceId) !== socket) {

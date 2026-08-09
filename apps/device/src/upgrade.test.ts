@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -8,6 +8,7 @@ import {
   packageInstallCommand,
   packageInstallation,
   serviceCandidates,
+  trustedExecutable,
   upgrade,
   type CommandResult,
   type CommandRunner,
@@ -26,6 +27,8 @@ afterEach(async () => {
 })
 
 const success = (): CommandResult => ({ exitCode: 0, stdout: "", stderr: "" })
+const resolveExecutable = (command: string): Promise<string> =>
+  Promise.resolve(command === "systemctl" ? "/usr/bin/systemctl" : command)
 
 describe("upgrade target", () => {
   it("warns when the CLI and running daemon use different installations", () => {
@@ -50,6 +53,18 @@ describe("upgrade target", () => {
 })
 
 describe("package installation", () => {
+  it.skipIf(process.platform === "win32")(
+    "rejects executables beneath writable directories",
+    async () => {
+      const root = await temporaryDirectory()
+      const executable = join(root, "npm")
+      await writeFile(executable, "#!/bin/sh\nexit 0\n")
+      await chmod(root, 0o777)
+      await chmod(executable, 0o755)
+      await expect(trustedExecutable(executable)).rejects.toThrow("group- or world-writable")
+    },
+  )
+
   it("preserves a custom npm prefix", () => {
     const installation = packageInstallation(
       "/home/user/.local/lib/node_modules/@akshar5/cohall/bin/cohall.js",
@@ -118,7 +133,7 @@ describe("managed service upgrades", () => {
       run: async (command, arguments_) => {
         const invocation = [command, ...arguments_].join(" ")
         invocations.push(invocation)
-        if (invocation === "systemctl is-active --quiet cohall-relay.service") {
+        if (invocation === "/usr/bin/systemctl is-active --quiet cohall-relay.service") {
           return { exitCode: 3, stdout: "", stderr: "" }
         }
         if (invocation.includes(" show --property=ExecStart --value ")) {
@@ -145,6 +160,7 @@ describe("managed service upgrades", () => {
       uid: 1000,
       statePath,
       runner,
+      resolveExecutable,
     })
 
     expect(result.installed_version).toBe("1.2.3")
@@ -154,8 +170,8 @@ describe("managed service upgrades", () => {
     ])
     expect(invocations).toContain(`npm install --global --prefix ${root} @akshar5/cohall@1.2.3`)
     expect(invocations.filter((invocation) => invocation.includes(" restart "))).toEqual([
-      "systemctl --user restart cohall-relay.service",
-      "systemctl --user restart cohall-device.service",
+      "/usr/bin/systemctl --user restart cohall-relay.service",
+      "/usr/bin/systemctl --user restart cohall-device.service",
     ])
     expect(restartReceipts[0]).toContain('"restartingService": "systemd-user:cohall-relay.service"')
     expect(restartReceipts[1]).toContain(
@@ -180,7 +196,7 @@ describe("managed service upgrades", () => {
       run: (command, arguments_) => {
         const invocation = [command, ...arguments_].join(" ")
         invocations.push(invocation)
-        if (invocation === "systemctl is-active --quiet cohall-relay.service") {
+        if (invocation === "/usr/bin/systemctl is-active --quiet cohall-relay.service") {
           return Promise.resolve({ exitCode: 3, stdout: "", stderr: "" })
         }
         if (invocation.includes(" show --property=ExecStart --value ")) {
@@ -205,6 +221,7 @@ describe("managed service upgrades", () => {
       uid: 1000,
       statePath: join(root, "upgrade-restart.json"),
       runner,
+      resolveExecutable,
     })
 
     expect(result.upgraded).toBe(false)
@@ -213,8 +230,8 @@ describe("managed service upgrades", () => {
       "systemd-user:cohall-device.service",
     ])
     expect(invocations.filter((invocation) => invocation.includes(" restart "))).toEqual([
-      "systemctl --user restart cohall-relay.service",
-      "systemctl --user restart cohall-device.service",
+      "/usr/bin/systemctl --user restart cohall-relay.service",
+      "/usr/bin/systemctl --user restart cohall-device.service",
     ])
     await expect(readFile(join(root, "upgrade-restart.json"), "utf8")).resolves.toContain(
       '"restartingService": "systemd-user:cohall-device.service"',
@@ -340,7 +357,9 @@ describe("managed service upgrades", () => {
       "systemd-user:cohall-relay.service",
       "systemd-user:cohall-device.service",
     ])
-    expect(invocations).toEqual(["systemctl --user is-active --quiet cohall-device.service"])
+    expect(invocations).toEqual([
+      "/usr/bin/systemctl --user is-active --quiet cohall-device.service",
+    ])
     await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
   })
 })

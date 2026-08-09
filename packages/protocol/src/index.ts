@@ -4,6 +4,8 @@ declare const __COHALL_VERSION__: string
 export const version =
   typeof __COHALL_VERSION__ === "undefined" ? "0.0.0-development" : __COHALL_VERSION__
 
+export const maxSocketPayloadBytes = 1024 * 1024
+
 const bounded = (maxLength: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maxLength))
 const optionalText = (maxLength: number) => Schema.String.check(Schema.isMaxLength(maxLength))
