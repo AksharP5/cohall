@@ -154,12 +154,9 @@ export const openAllowedWorkspace = async (
     await handle.close()
     throw new Error(`Workspace ${path} is not a directory`)
   }
-  const cwd =
-    operatingSystem === "linux"
-      ? `/proc/self/fd/${handle.fd}`
-      : operatingSystem === "darwin"
-        ? `/dev/fd/${handle.fd}`
-        : path
+  // macOS resolves cwd after closing non-inherited descriptors during posix_spawn,
+  // so /dev/fd cannot safely serve as a directory cwd there.
+  const cwd = operatingSystem === "linux" ? `/proc/self/fd/${handle.fd}` : path
   return {
     cwd,
     validate: async () => {
@@ -167,7 +164,7 @@ export const openAllowedWorkspace = async (
       if (!current.isDirectory() || current.dev !== identity.dev || current.ino !== identity.ino) {
         throw new Error(`Workspace ${path} changed before provider startup`)
       }
-      if (operatingSystem === "win32") {
+      if (operatingSystem !== "linux") {
         const currentPath = await realpath(path)
         const currentPathIdentity = await stat(currentPath)
         if (currentPathIdentity.dev !== identity.dev || currentPathIdentity.ino !== identity.ino) {

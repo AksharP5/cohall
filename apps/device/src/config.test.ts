@@ -12,7 +12,7 @@ import { DeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
 import { execFile } from "node:child_process"
 import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { platform, tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
@@ -177,7 +177,7 @@ describe("device workspace configuration", () => {
     await expect(allowedWorkspace(configuration, root)).resolves.toBe(root)
   })
 
-  it("anchors provider startup to the authorized workspace directory", async () => {
+  it("protects provider startup from an authorized workspace replacement", async () => {
     const directory = await temporary()
     const workspace = join(directory, "workspace")
     const moved = join(directory, "moved")
@@ -195,6 +195,10 @@ describe("device workspace configuration", () => {
     try {
       await rename(workspace, moved)
       await symlink(outside, workspace)
+      if (platform() !== "linux") {
+        await expect(authorized.validate()).rejects.toThrow("changed before provider startup")
+        return
+      }
       await authorized.validate()
       const result = await promisify(execFile)(
         process.execPath,
