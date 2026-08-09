@@ -23,24 +23,26 @@ Install and pair as the user that will run the daemon:
 
 ```bash
 npm install --global --prefix "$HOME/.local" @akshar5/cohall
-npx -y @akshar5/cohall doctor
+cohall doctor
 ```
 
-Copy the service shipped in the globally installed package, then start it:
+Install and start the current user's service:
 
 ```bash
-package_root="$(npm root --global --prefix "$HOME/.local")/@akshar5/cohall"
-install -Dm644 "$package_root/deploy/systemd/cohall-device.service" \
-  "$HOME/.config/systemd/user/cohall-device.service"
-systemctl --user daemon-reload
-systemctl --user enable --now cohall-device
+cohall service install
 journalctl --user -u cohall-device -f
+```
+
+The generated service uses the exact executable that ran the installer. Linger
+is optional. Without it, the user service starts after login and stops with the
+user's service manager. With it, the service starts at boot and remains after
+logout:
+
+```bash
 loginctl enable-linger "$USER"
 ```
 
-Linger is optional. Without it, the user service starts after login and stops
-with the user's service manager. With it, the service starts at boot and remains
-available after logout. Verify the configuration with:
+Verify the configuration with:
 
 ```bash
 systemctl --user is-enabled cohall-device
@@ -90,22 +92,14 @@ durable tasks resume after the replacement relay starts.
 
 ## macOS
 
-Run `npm install --global @akshar5/cohall`, copy the packaged launch agent, then
-update its executable path to match `command -v cohall`:
+Run `npm install --global @akshar5/cohall`, then install and start the
+LaunchAgent:
 
 ```bash
-package_root="$(npm root --global)/@akshar5/cohall"
-mkdir -p "$HOME/Library/LaunchAgents"
-cp "$package_root/deploy/launchd/com.cohall.device.plist" \
-  "$HOME/Library/LaunchAgents/com.cohall.device.plist"
-cohall_path="$(command -v cohall)"
-/usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 $cohall_path" \
-  "$HOME/Library/LaunchAgents/com.cohall.device.plist"
-launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/com.cohall.device.plist
-launchctl kickstart -k gui/"$(id -u)"/com.cohall.device
+cohall service install
 ```
 
-The packaged LaunchAgent uses `RunAtLoad` and `KeepAlive`: it starts at login,
+The generated LaunchAgent uses `RunAtLoad` and `KeepAlive`: it starts at login,
 restarts after failure, and reconnects when the network returns. It cannot run
 before that user logs in. Check it with:
 
@@ -122,9 +116,7 @@ Run `npm install --global @akshar5/cohall`, pair and verify the machine from
 PowerShell, then run:
 
 ```powershell
-$packageRoot = Join-Path (npm root --global) "@akshar5/cohall"
-powershell -ExecutionPolicy Bypass -File `
-  (Join-Path $packageRoot "deploy/windows/install-device.ps1")
+cohall service install
 ```
 
 The script registers a per-user scheduled task that starts `cohall device` at

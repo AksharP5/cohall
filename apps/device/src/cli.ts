@@ -1,4 +1,4 @@
-import { RelayClient, exchangePairing } from "@cohall/client"
+import { RelayClient } from "@cohall/client"
 import {
   AuthSessionId,
   DeviceId,
@@ -34,6 +34,8 @@ import {
   threadContext,
   waitForTask,
 } from "./delegation.ts"
+import { guidedSetupInput, joinRelay, terminalPrompter, type Prompter } from "./setup.ts"
+import { installDeviceService } from "./service.ts"
 import { deviceVersionWarning, upgrade } from "./upgrade.ts"
 
 interface Arguments {
@@ -60,7 +62,14 @@ const valueOptions = new Set([
   "to",
   "workspace",
 ])
-const flagOptions = new Set(["client-only", "dry-run", "follow", "no-restart", "no-wait"])
+const flagOptions = new Set([
+  "client-only",
+  "dry-run",
+  "follow",
+  "no-restart",
+  "no-wait",
+  "service",
+])
 const aliases = new Map([
   ["-c", "context"],
   ["-p", "prompt"],
@@ -72,6 +81,7 @@ const aliases = new Map([
 const help = `Cohall connects agents running on your own devices.
 
 Usage:
+  cohall init [--relay url] [--workspace path] [--providers list] [--service]
   cohall join --relay <url> --workspace <path> [--providers list] [--token-file <path>]
   cohall configure [--relay url] [--name name] [--workspace path]
                    [--providers codex,opencode|auto] [--model id]
@@ -91,6 +101,7 @@ Usage:
   cohall forget <device-id>
   cohall doctor
   cohall upgrade [--to version|latest] [--no-restart] [--dry-run]
+  cohall service install
   cohall device
   cohall relay
   cohall mcp
@@ -300,6 +311,103 @@ export const printSkill = (): void => console.log(skill.trimEnd())
 export const runCli = async (command: string, raw: ReadonlyArray<string>): Promise<void> => {
   const arguments_ = parseArguments(raw)
 
+  if (command === "init") {
+    allowOptions(arguments_, [
+      "client-only",
+      "name",
+      "providers",
+      "relay",
+      "service",
+      "token-file",
+      "workspace",
+    ])
+    noPositionals(arguments_, command)
+    const token =
+      option(arguments_, "token-file") === undefined ? undefined : await pairingToken(arguments_)
+    const interactive = process.stdin.isTTY === true && process.stderr.isTTY === true
+    const relayUrl = option(arguments_, "relay")
+    const deviceName = option(arguments_, "name")
+    const providerInput = option(arguments_, "providers")
+    const prompter: Prompter = interactive
+      ? terminalPrompter()
+      : {
+          answer: (_label, fallback) => Promise.resolve(fallback),
+          secret: () => pairingToken(arguments_),
+          close: () => undefined,
+        }
+    try {
+      const input = await guidedSetupInput(
+        {
+          clientOnly: arguments_.options.has("client-only"),
+          workspaces: values(arguments_, "workspace"),
+          cwd: process.cwd(),
+          ...(relayUrl === undefined ? {} : { relayUrl }),
+          ...(token === undefined ? {} : { token }),
+          ...(deviceName === undefined ? {} : { deviceName }),
+          ...(providerInput === undefined ? {} : { providers: providerInput }),
+        },
+        prompter,
+      )
+      const providers = input.providers === "auto" ? "auto" : parseProviders(input.providers)
+      const existing = await readStoredConfiguration()
+      const result = input.reusedConfiguration
+        ? {
+            configuration: await makeStoredConfiguration({
+              relayUrl: input.relayUrl,
+              ...(input.deviceName === undefined ? {} : { deviceName: input.deviceName }),
+              workspaces: input.workspaces,
+              providers,
+            }),
+            roles: [
+              ...(existing?.clientToken === undefined ? [] : (["client"] as const)),
+              ...(arguments_.options.has("client-only") || existing?.deviceToken === undefined
+                ? []
+                : (["device"] as const)),
+            ],
+          }
+        : await joinRelay({
+            relayUrl: input.relayUrl,
+            token: input.token ?? "",
+            clientOnly: arguments_.options.has("client-only"),
+            ...(input.deviceName === undefined ? {} : { deviceName: input.deviceName }),
+            workspaces: input.workspaces,
+            providers,
+          })
+      if (input.reusedConfiguration) {
+        await writeStoredConfiguration(result.configuration)
+      }
+      const installedSkills = await installSkill("all")
+      const service = arguments_.options.has("service") ? await installDeviceService() : undefined
+      print({
+        initialized: true,
+        reused_configuration: input.reusedConfiguration,
+        config_path: configurationPath(),
+        relay_url: result.configuration.relayUrl,
+        device_id: result.configuration.deviceId,
+        roles: result.roles,
+        workspaces: result.configuration.workspaces,
+        skills: installedSkills,
+        ...(service === undefined ? {} : { service }),
+        next:
+          service === undefined && !arguments_.options.has("client-only")
+            ? "Run `cohall service install` for background availability, or `cohall device` now."
+            : "Run `cohall doctor` to verify this device.",
+      })
+    } finally {
+      prompter.close()
+    }
+    return
+  }
+
+  if (command === "service") {
+    allowOptions(arguments_, [])
+    if (arguments_.positionals.length !== 1 || arguments_.positionals[0] !== "install") {
+      throw new Error("Usage: cohall service install")
+    }
+    print(await installDeviceService())
+    return
+  }
+
   if (command === "upgrade") {
     allowOptions(arguments_, ["dry-run", "no-restart", "to"])
     noPositionals(arguments_, command)
@@ -342,52 +450,21 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     if (!arguments_.options.has("client-only") && (workspaces?.length ?? 0) === 0) {
       throw new Error("At least one --workspace is required when joining a device")
     }
-    const draft = await makeStoredConfiguration({
+    const clientOnly = arguments_.options.has("client-only")
+    const { configuration, roles } = await joinRelay({
       relayUrl,
+      token,
+      clientOnly,
       ...(deviceName === undefined ? {} : { deviceName }),
       ...(workspaces === undefined ? {} : { workspaces }),
       ...(providers === undefined ? {} : { providers }),
     })
-    const paired = await Effect.runPromise(exchangePairing(relayUrl, { token }))
-    const clientToken = paired.credentials.find(
-      (credential) => credential.session.role === "client",
-    )?.token
-    const deviceToken = paired.credentials.find(
-      (credential) => credential.session.role === "device",
-    )?.token
-    const deviceId = paired.credentials.find((credential) => credential.session.role === "device")
-      ?.session.deviceId
-    const clientOnly = arguments_.options.has("client-only")
-    if (clientOnly && clientToken === undefined) {
-      throw new Error("The pairing credential did not include client access")
-    }
-    if (!clientOnly && deviceToken === undefined) {
-      throw new Error("The pairing credential did not include device access")
-    }
-    const {
-      clientToken: _retainedClientToken,
-      deviceToken: _retainedDeviceToken,
-      ...configurationDraft
-    } = draft
-    const configuration = StoredConfiguration.make({
-      ...configurationDraft,
-      deviceId: clientOnly
-        ? configurationDraft.deviceId
-        : (deviceId ?? configurationDraft.deviceId),
-      ...(clientToken === undefined ? {} : { clientToken }),
-      ...(clientOnly || deviceToken === undefined ? {} : { deviceToken }),
-    })
-    await writeStoredConfiguration(configuration)
     print({
       configured: true,
       config_path: configurationPath(),
       relay_url: configuration.relayUrl,
       device_id: configuration.deviceId,
-      roles: clientOnly
-        ? paired.credentials
-            .map((credential) => credential.session.role)
-            .filter((role) => role === "client")
-        : paired.credentials.map((credential) => credential.session.role),
+      roles,
       workspaces: configuration.workspaces,
     })
     return
