@@ -11,9 +11,9 @@ bun run check
 npm pack --dry-run
 ```
 
-The Check workflow runs only when manually dispatched or when a non-draft pull
-request is opened or marked ready for review. Synchronizing commits does not
-automatically consume another private-repository runner allocation.
+The Check workflow runs when manually dispatched or when a non-draft pull
+request is opened or marked ready for review. Synchronizing later commits does
+not start another run automatically.
 
 After releasable conventional commits reach `main`, Release Please opens or
 updates one release pull request. Merging it creates the version tag and GitHub

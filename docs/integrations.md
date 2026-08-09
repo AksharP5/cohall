@@ -1,7 +1,8 @@
-# Agent harness integrations
+# Agent integrations
 
-CLI plus skill is the recommended integration. MCP is available for hosts that
-prefer native tool discovery. Both use the same relay and device protocol.
+CLI plus skill is the recommended integration. MCP is available for harnesses
+that prefer native tool discovery. Both create the same relay tasks; use one
+entry point per task.
 
 ## CLI plus skill
 
@@ -10,22 +11,20 @@ npx -y @akshar5/cohall skill install all
 npx -y @akshar5/cohall doctor
 ```
 
-This installs the same embedded `SKILL.md` into:
+This installs the embedded skill into:
 
 - `~/.agents/skills/cohall` for Codex-compatible skill loaders;
 - `~/.claude/skills/cohall` for Claude Code;
 - `~/.config/opencode/skills/cohall` for OpenCode.
 
-T3Code, Buzz, and other harnesses can run `npx -y @akshar5/cohall` from their
-normal shell/tool environment. `bunx @akshar5/cohall`, `pnpm dlx
-@akshar5/cohall`, and `yarn dlx @akshar5/cohall` are equivalent. No
-Cohall-specific UI extension is required.
+Any other harness with shell access can invoke the CLI directly. No Cohall UI
+extension is required.
 
-When delegating from a conversation, the invoking agent must distill the reason
-for the request, relevant facts and prior findings, constraints, and intended
+When delegating from a conversation, the sending agent must distill why the user
+is asking, relevant facts and prior findings, constraints, and the intended
 decision into Cohall's `context` field. Cohall cannot read the harness transcript
-itself. Send a focused brief rather than the raw chat; omit context only when the
-task is self-contained.
+itself. Send a focused brief rather than the raw chat; omit context only for a
+self-contained task.
 
 ## Codex MCP
 
@@ -33,7 +32,7 @@ task is self-contained.
 codex mcp add cohall -- npx -y @akshar5/cohall mcp
 ```
 
-Or configure `~/.codex/config.toml`:
+Equivalent `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.cohall]
@@ -48,7 +47,7 @@ claude mcp add --transport stdio --scope user cohall -- \
   npx -y @akshar5/cohall mcp
 ```
 
-Or use the standard JSON form in a project `.mcp.json`:
+Equivalent project `.mcp.json`:
 
 ```json
 {
@@ -63,7 +62,7 @@ Or use the standard JSON form in a project `.mcp.json`:
 
 ## OpenCode MCP
 
-Add this to `opencode.json`:
+Add to `opencode.json`:
 
 ```json
 {
@@ -78,19 +77,13 @@ Add this to `opencode.json`:
 }
 ```
 
-## Environment
+## Isolated environments
 
-The MCP subprocess reads the normal per-user Cohall configuration. If a harness
-uses an isolated environment, pass only:
+The MCP subprocess reads the current user's Cohall configuration. If a harness
+uses an isolated environment, pass `COHALL_CONFIG` with an absolute path to that
+configuration file. Alternatively pass `COHALL_RELAY_URL` and
+`COHALL_CLIENT_TOKEN` directly.
 
-```text
-COHALL_CONFIG=/absolute/path/to/config.json
-```
-
-Or pass `COHALL_RELAY_URL` and `COHALL_CLIENT_TOKEN` directly. Never place an
-owner or device token in an MCP client configuration.
-
-CLI and MCP are equivalent entry points. Use one per delegated task.
-Both expose redacted task tracing through `cohall trace <task-id>` and the
+Never place an owner or device token in an MCP configuration. Both integrations
+provide redacted task tracing through `cohall trace <task-id>` or the
 `task_trace` MCP tool.
-Use `bunx @akshar5/cohall` with Bun. Use `pnpm dlx @akshar5/cohall` with pnpm.

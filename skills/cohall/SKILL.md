@@ -1,6 +1,6 @@
 ---
 name: cohall
-description: Delegate work to an agent on another user-owned device through the Cohall CLI. Use when the user asks to run, research, or check something on another device, names a Cohall target such as @macbook or @devbox, or needs machine-local state or capabilities such as a signed-in browser, Xcode, Docker, deployment access, a repository checkout, or unavailable tools. Carry the relevant current-conversation context into the handoff automatically.
+description: Delegate work to an agent on another user-owned device through the Cohall CLI. Use when the user asks to run, research, or check something on another device, names a Cohall target such as @macbook or @server, or needs machine-local state or capabilities such as a signed-in browser, Xcode, Docker, deployment access, a repository checkout, or unavailable tools. Carry the relevant current-conversation context into the handoff automatically.
 ---
 
 # Cohall
@@ -15,7 +15,7 @@ Use the installed `cohall` executable when it is available. Fall back to
 
 ## Recognize cross-device requests
 
-Treat phrases such as “run this on my Mac,” “ask `@devbox`,” or “have the Linux
+Treat phrases such as “run this on my Mac,” “ask `@server`,” or “have the Linux
 machine check this” as target intent. The `@name` form is a Cohall device
 selector, not chat syntax supplied by the harness. Resolve it with `cohall
 devices`, then delegate the smallest useful outcome.
@@ -57,7 +57,7 @@ Do not delegate ordinary local work when the other device provides no advantage.
    cohall delegate \
      --target @macbook \
      --provider codex \
-     --workspace /Users/me/dev/project \
+     --workspace "$HOME/dev/project" \
      --prompt 'Research whether the deployment failure matches the reported provider outage.' \
      --context 'Why: deployment 184 failed after 15:00 UTC. Known: local checks passed and the provider status page reported elevated errors. Need: determine whether the outage explains our failure, with primary-source links and contrary evidence.'
    ```

@@ -31,6 +31,7 @@
     "deploy",
     "docs",
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "LICENSE",
     "README.md"
   ],
@@ -50,8 +51,8 @@
     "typecheck": "bunx tsc -b",
     "test": "bun run build:package && vitest run",
     "lint": "bunx oxlint . --deny-warnings",
-    "format": "bunx oxfmt .",
-    "format:check": "bunx oxfmt --check .",
+    "format": "bunx oxfmt . '!CHANGELOG.md'",
+    "format:check": "bunx oxfmt --check . '!CHANGELOG.md'",
     "package:check": "npm pack --dry-run --ignore-scripts",
     "check": "bun run typecheck && bun run lint && bun run test && bun run package:check",
     "prepack": "bun run build:package"
@@ -62,10 +63,6 @@
     "ws": "^8.21.2",
     "zod": "^4.4.3"
   },
-  "overrides": {
-    "fast-uri": "^3.1.5",
-    "hono": "^4.12.34"
-  },
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/ws": "^8.18.1",
@@ -73,6 +70,10 @@
     "oxlint": "^1.56.0",
     "typescript": "^6.0.0",
     "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "fast-uri": "^3.1.5",
+    "hono": "^4.12.34"
   },
   "engines": {
     "node": ">=24"
