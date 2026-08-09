@@ -147,6 +147,8 @@ cohall configure --providers auto
 changes the device name, workspace roots, providers, model, sandbox, or relay
 for a fresh pairing. Use `cohall relay use <url>` when moving an existing relay;
 it preserves credentials only after verifying them at the restored address.
+Non-loopback HTTP is refused unless `--allow-http` explicitly confirms that an
+independent private network such as Tailscale encrypts the connection.
 `cohall doctor` checks the effective configuration, relay connection, provider
 executables, authentication readiness, and versions.
 

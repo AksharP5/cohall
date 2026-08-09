@@ -2,13 +2,16 @@ import { RelayClient } from "@cohall/client"
 import { SocketEvent, Timestamp, version } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { createHash } from "node:crypto"
+import { createReadStream } from "node:fs"
 import {
   access,
   chmod,
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -44,10 +47,48 @@ const exists = (path: string): Promise<boolean> =>
     .then(() => true)
     .catch(() => false)
 
-const digest = async (path: string): Promise<string> =>
-  createHash("sha256")
-    .update(await readFile(path))
-    .digest("hex")
+const digest = async (path: string): Promise<string> => {
+  const hash = createHash("sha256")
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk)
+  }
+  return hash.digest("hex")
+}
+
+const verifyBackupMember = async (path: string, maximumBytes?: number): Promise<void> => {
+  const metadata = await lstat(path)
+  if (!metadata.isFile()) {
+    throw new Error(`Relay backup member must be a regular file: ${path}`)
+  }
+  if (maximumBytes !== undefined && metadata.size > maximumBytes) {
+    throw new Error(`Relay backup member exceeds ${maximumBytes} bytes: ${path}`)
+  }
+}
+
+const readManifest = async (path: string): Promise<RelayBackupManifest> => {
+  await verifyBackupMember(path, 16_384)
+  return Schema.decodeUnknownSync(RelayBackupManifest)(JSON.parse(await readFile(path, "utf8")))
+}
+
+const verifyBackupDestinationParent = async (path: string): Promise<void> => {
+  if (process.platform === "win32") {
+    return
+  }
+  for (let current = await realpath(path); ; current = dirname(current)) {
+    const metadata = await stat(current)
+    const writableByOthers = (metadata.mode & 0o022) !== 0
+    const sticky = (metadata.mode & 0o1000) !== 0
+    if (writableByOthers && !sticky) {
+      throw new Error(
+        `Backup destination ancestors must not be group- or world-writable unless they use the sticky bit: ${current}`,
+      )
+    }
+    const parent = dirname(current)
+    if (parent === current) {
+      return
+    }
+  }
+}
 
 const ownerToken = async (dataDirectory: string): Promise<string> => {
   const path = join(dataDirectory, "owner-token")
@@ -93,6 +134,7 @@ export const backupRelay = async (destinationInput: string): Promise<RelayBackup
   if (await exists(destination)) {
     throw new Error(`Backup destination already exists: ${destination}`)
   }
+  await verifyBackupDestinationParent(dirname(destination))
   await mkdir(destination, { mode: 0o700 })
   try {
     const databasePath = join(destination, "cohall.db")
@@ -143,28 +185,19 @@ export interface RelayRestoreResult {
 
 export const restoreRelay = async (sourceInput: string): Promise<RelayRestoreResult> => {
   const source = resolve(sourceInput)
-  const databasePath = join(source, "cohall.db")
-  const ownerTokenPath = join(source, "owner-token")
-  const manifestPath = join(source, "manifest.json")
-  for (const path of [databasePath, ownerTokenPath, manifestPath]) {
+  const sourceDatabase = join(source, "cohall.db")
+  const sourceOwnerToken = join(source, "owner-token")
+  const sourceManifest = join(source, "manifest.json")
+  for (const path of [sourceDatabase, sourceOwnerToken, sourceManifest]) {
     if (!(await exists(path))) {
       throw new Error(`Relay backup is missing ${basename(path)}`)
     }
   }
-  const manifest = Schema.decodeUnknownSync(RelayBackupManifest)(
-    JSON.parse(await readFile(manifestPath, "utf8")),
-  )
-  if (
-    (await digest(databasePath)) !== manifest.databaseSha256 ||
-    (await digest(ownerTokenPath)) !== manifest.ownerTokenSha256
-  ) {
-    throw new Error("Relay backup checksum verification failed")
-  }
-  verifyDatabase(databasePath)
-  const token = (await readFile(ownerTokenPath, "utf8")).trim()
-  if (token.length < 32 || new TextEncoder().encode(token).byteLength > 512) {
-    throw new Error("Relay backup contains an invalid owner token")
-  }
+  await Promise.all([
+    verifyBackupMember(sourceDatabase),
+    verifyBackupMember(sourceOwnerToken, 1_024),
+    verifyBackupMember(sourceManifest, 16_384),
+  ])
 
   const target = relayDataDirectory()
   if (await exists(target)) {
@@ -175,18 +208,35 @@ export const restoreRelay = async (sourceInput: string): Promise<RelayRestoreRes
   const parent = dirname(target)
   await mkdir(parent, { recursive: true, mode: 0o700 })
   const staging = await mkdtemp(join(parent, `.${basename(target)}.restore-`))
+  let backupVersion = ""
   try {
     await chmod(staging, 0o700)
+    const databasePath = join(staging, "cohall.db")
+    const ownerTokenPath = join(staging, "owner-token")
+    const manifestPath = join(staging, "migration-manifest.json")
     await Promise.all([
-      copyFile(databasePath, join(staging, "cohall.db")),
-      copyFile(ownerTokenPath, join(staging, "owner-token")),
-      copyFile(manifestPath, join(staging, "migration-manifest.json")),
+      copyFile(sourceDatabase, databasePath),
+      copyFile(sourceOwnerToken, ownerTokenPath),
+      copyFile(sourceManifest, manifestPath),
     ])
     await Promise.all([
-      chmod(join(staging, "cohall.db"), 0o600),
-      chmod(join(staging, "owner-token"), 0o600),
-      chmod(join(staging, "migration-manifest.json"), 0o600),
+      chmod(databasePath, 0o600),
+      chmod(ownerTokenPath, 0o600),
+      chmod(manifestPath, 0o600),
     ])
+    const manifest = await readManifest(manifestPath)
+    if (
+      (await digest(databasePath)) !== manifest.databaseSha256 ||
+      (await digest(ownerTokenPath)) !== manifest.ownerTokenSha256
+    ) {
+      throw new Error("Relay backup checksum verification failed")
+    }
+    verifyDatabase(databasePath)
+    const token = (await readFile(ownerTokenPath, "utf8")).trim()
+    if (token.length < 32 || new TextEncoder().encode(token).byteLength > 512) {
+      throw new Error("Relay backup contains an invalid owner token")
+    }
+    backupVersion = manifest.cohallVersion
     await rename(staging, target)
   } catch (cause) {
     await rm(staging, { recursive: true, force: true })
@@ -195,7 +245,7 @@ export const restoreRelay = async (sourceInput: string): Promise<RelayRestoreRes
   return {
     restored: true,
     data_directory: target,
-    backup_version: manifest.cohallVersion,
+    backup_version: backupVersion,
     next: "Start the relay at its new address, then run `cohall relay use <new-url>` on each client and device.",
   }
 }
@@ -203,9 +253,14 @@ export const restoreRelay = async (sourceInput: string): Promise<RelayRestoreRes
 const websocketUrl = (relayUrl: string): string => {
   const url = new URL(relayUrl)
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
-  url.pathname = "/ws"
+  url.pathname = "/ws/device"
   return url.toString()
 }
+
+const isLoopback = (url: URL): boolean =>
+  url.hostname === "localhost" ||
+  url.hostname === "[::1]" ||
+  /^127(?:\.\d{1,3}){3}$/.test(url.hostname)
 
 const verifyClientCredential = async (relayUrl: string, token: string): Promise<void> => {
   await Effect.runPromise(RelayClient.make({ baseUrl: relayUrl, token }).devices())
@@ -266,6 +321,7 @@ export interface RelaySwitchResult {
 export const switchRelay = async (options: {
   readonly relayUrl: string
   readonly restart: boolean
+  readonly allowHttp?: boolean
   readonly verifyClient?: (relayUrl: string, token: string) => Promise<void>
   readonly verifyDevice?: (relayUrl: string, token: string) => Promise<void>
   readonly restartService?: () => Promise<DeviceServiceRestart>
@@ -278,6 +334,16 @@ export const switchRelay = async (options: {
     throw new Error("This user has no stored Cohall configuration")
   }
   const relayUrl = normalizeRelayUrl(options.relayUrl)
+  const parsedRelayUrl = new URL(relayUrl)
+  if (
+    parsedRelayUrl.protocol === "http:" &&
+    !isLoopback(parsedRelayUrl) &&
+    options.allowHttp !== true
+  ) {
+    throw new Error(
+      "Refusing to send stored credentials over remote HTTP. Use HTTPS, or --allow-http only on an independently encrypted private network.",
+    )
+  }
   const clientTokens = [configuration.clientToken, process.env.COHALL_CLIENT_TOKEN].filter(
     (token): token is string => token !== undefined,
   )

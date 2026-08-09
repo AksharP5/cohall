@@ -66,6 +66,7 @@ const valueOptions = new Set([
 ])
 const flagOptions = new Set([
   "all",
+  "allow-http",
   "client-only",
   "dry-run",
   "follow",
@@ -113,7 +114,7 @@ Usage:
   cohall relay
   cohall relay backup <directory>
   cohall relay restore <directory>
-  cohall relay use <url> [--no-restart]
+  cohall relay use <url> [--no-restart] [--allow-http]
   cohall mcp
   cohall skill [install [agents|claude|opencode|all]]
   cohall integrations
@@ -437,20 +438,21 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       return
     }
     if (action === "use") {
-      allowOptions(arguments_, ["no-restart"])
+      allowOptions(arguments_, ["allow-http", "no-restart"])
       if (arguments_.positionals.length !== 2) {
-        throw new Error("Usage: cohall relay use <url> [--no-restart]")
+        throw new Error("Usage: cohall relay use <url> [--no-restart] [--allow-http]")
       }
       print(
         await switchRelay({
           relayUrl: arguments_.positionals[1] ?? "",
           restart: !arguments_.options.has("no-restart"),
+          allowHttp: arguments_.options.has("allow-http"),
         }),
       )
       return
     }
     throw new Error(
-      "Usage: cohall relay [backup <directory>|restore <directory>|use <url> [--no-restart]]",
+      "Usage: cohall relay [backup <directory>|restore <directory>|use <url> [--no-restart] [--allow-http]]",
     )
   }
 

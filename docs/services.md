@@ -92,17 +92,33 @@ durable tasks resume after the replacement relay starts.
 
 ## Move a relay
 
-A relay's SQLite database and owner credential are its portable state. Cohall
-can take a consistent backup while the old relay is running:
+A relay's SQLite database and owner credential are its portable state. Use the
+supported command instead of copying a live `cohall.db`: it uses SQLite's online
+backup API so the snapshot is consistent while the old relay is running.
 
 ```bash
 cohall relay backup ./cohall-relay-backup
 ```
 
 Run that command with the same `COHALL_DATA_DIR` and operating-system account
-as the relay service. Copy the resulting directory to the new host over a
-private channel. It contains credentials, pairings, task results, thread
-history, and provider session references.
+as the relay service. The destination must be new and its parent must be
+operator-owned or a sticky shared directory. Copy the resulting directory to
+the new host over a private channel.
+
+The backup contains exactly three files:
+
+- `cohall.db`: devices, workspaces advertised by those devices, threads,
+  prompts, context, results, trace history, provider-session references,
+  durable upgrades, pairings, and hashed client/device session credentials;
+- `owner-token`: the plaintext relay owner credential;
+- `manifest.json`: format/version metadata and SHA-256 checksums.
+
+It does not contain device-local Cohall configuration or bearer tokens,
+workspace files, provider logins, service definitions, logs, DNS, reverse-proxy
+configuration, or TLS keys. Back up those host-level pieces separately when
+they are part of the deployment. Anyone who obtains this directory gets the
+owner credential and sensitive task history, so encrypt it at rest when the
+storage or transfer channel is not already protected.
 
 On the new host, install Cohall and restore into the new service's data
 directory before starting it:
@@ -112,7 +128,8 @@ COHALL_DATA_DIR=/var/lib/cohall cohall relay restore ./cohall-relay-backup
 ```
 
 The target data directory must not already exist. Restore refuses to overwrite
-one, verifies file checksums and SQLite integrity, and publishes the restored
+one, rejects symlinked members, copies into a private staging directory, verifies
+the staged file checksums and SQLite integrity, and publishes the restored
 directory atomically. Run the command as the service account so the resulting
 files have the correct owner. The restored `owner-token` file supplies the
 owner credential when `COHALL_TOKEN` is unset; if the new service explicitly
@@ -131,6 +148,15 @@ against the new relay. Only then does it save the address. It restarts an
 active managed device service automatically; use `--no-restart` when another
 supervisor owns the process. Environment-based configurations must update
 `COHALL_RELAY_URL` in their service environment instead.
+
+HTTPS is required for non-loopback addresses because verification sends the
+stored credentials to the new endpoint. When a private network such as Tailscale
+provides the encrypted transport and the relay intentionally uses HTTP, make
+that assumption explicit:
+
+```bash
+cohall relay use http://cohall-vps.tailnet-name.ts.net:8787 --allow-http
+```
 
 Keeping the same stable DNS or Tailscale name avoids the final per-device step.
 Only change where that name resolves after the restored relay is healthy.
