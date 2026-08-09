@@ -276,3 +276,124 @@ it("prunes the oldest terminal task history", async () => {
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+it("summarizes retained work and runs typed upgrades across registered devices", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-store-operations-"))
+  const runtime = ManagedRuntime.make(RelayStore.layer(join(directory, "relay.db")))
+  const run = <A, E>(effect: Effect.Effect<A, E, RelayStore.Service>): Promise<A> =>
+    runtime.runPromise(effect)
+  try {
+    const serverId = DeviceId.make("44444444-4444-4444-8444-444444444444")
+    const laptopId = DeviceId.make("55555555-5555-4555-8555-555555555555")
+    await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        for (const [id, name] of [
+          [serverId, "server"],
+          [laptopId, "laptop"],
+        ] as const) {
+          yield* store.upsertDevice(
+            Device.make({
+              id,
+              name,
+              hostname: `${name}.local`,
+              platform: "linux",
+              architecture: "x64",
+              status: "online",
+              providers: ["codex"],
+              capabilities: [],
+              workspaces: [],
+              version,
+              lastSeenAt: now(),
+            }),
+          )
+        }
+      }),
+    )
+
+    const laptopTask = await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        const completed = yield* store.createDelegation(
+          { prompt: "completed", provider: "codex" },
+          serverId,
+        )
+        yield* store.assignTask(completed.id)
+        yield* store.acceptTask(completed.id, serverId)
+        yield* store.finishTask(completed.id, serverId, "done")
+        return yield* store.createDelegation(
+          { prompt: "queued", provider: "claude-code" },
+          laptopId,
+        )
+      }),
+    )
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.usage()
+        }),
+      ),
+    ).resolves.toMatchObject({
+      retainedTasks: 2,
+      byStatus: { completed: 1, queued: 1 },
+      byProvider: [
+        { provider: "codex", tasks: 1 },
+        { provider: "claude-code", tasks: 1 },
+      ],
+    })
+
+    await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        yield* store.assignTask(laptopTask.id)
+      }),
+    )
+
+    const operations = await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        return yield* store.createUpgradeOperations({ target: "1.2.3", restart: true })
+      }),
+    )
+    expect(operations).toHaveLength(2)
+    const serverOperation = operations.find((operation) => operation.targetDeviceId === serverId)
+    const laptopOperation = operations.find((operation) => operation.targetDeviceId === laptopId)
+    if (serverOperation === undefined || laptopOperation === undefined) {
+      throw new Error("Expected one upgrade operation per device")
+    }
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.assignOperation(laptopOperation.id)
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "queued" })
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          yield* store.assignOperation(serverOperation.id)
+          yield* store.acceptOperation(serverOperation.id, serverId)
+          return yield* store.finishOperation(serverOperation.id, serverId, '{"upgraded":true}')
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "completed", result: '{"upgraded":true}' })
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.createUpgradeOperations({ target: "latest", restart: true })
+        }),
+      ),
+    ).rejects.toMatchObject({ message: expect.stringContaining("already has") })
+  } finally {
+    await runtime.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})

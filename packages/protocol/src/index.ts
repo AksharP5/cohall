@@ -11,6 +11,7 @@ const bounded = (maxLength: number) =>
 const optionalText = (maxLength: number) => Schema.String.check(Schema.isMaxLength(maxLength))
 const boundedArray = <S extends Schema.Top>(schema: S, maxLength: number) =>
   Schema.Array(schema).check(Schema.isMaxLength(maxLength))
+const count = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }))
 const uuid = <Name extends string>(name: Name) =>
   Schema.String.check(Schema.isUUID(4)).pipe(Schema.brand(name))
 const isoTimestamp = <Name extends string>(name: Name) =>
@@ -30,6 +31,8 @@ export const TaskId = uuid("TaskId")
 export type TaskId = typeof TaskId.Type
 export const AuthSessionId = uuid("AuthSessionId")
 export type AuthSessionId = typeof AuthSessionId.Type
+export const OperationId = uuid("OperationId")
+export type OperationId = typeof OperationId.Type
 export const Timestamp = isoTimestamp("Timestamp")
 export type Timestamp = typeof Timestamp.Type
 
@@ -49,6 +52,14 @@ export const TaskStatus = Schema.Literals([
   "cancelled",
 ])
 export type TaskStatus = typeof TaskStatus.Type
+export const OperationStatus = Schema.Literals([
+  "queued",
+  "assigned",
+  "running",
+  "completed",
+  "failed",
+])
+export type OperationStatus = typeof OperationStatus.Type
 export const TaskTraceEventKind = Schema.Literals([...TaskStatus.literals, "requeued"])
 export type TaskTraceEventKind = typeof TaskTraceEventKind.Type
 export const MessageRole = Schema.Literals(["human", "agent", "system"])
@@ -167,6 +178,69 @@ export const Task = Schema.Struct({
 })
 export interface Task extends Schema.Schema.Type<typeof Task> {}
 
+const upgradeVersion = Schema.String.check(
+  Schema.isPattern(/^(?:latest|v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/, {
+    expected: "latest or an exact semantic version",
+  }),
+)
+
+export const CreateUpgradeOperationsInput = Schema.Struct({
+  target: upgradeVersion,
+  restart: Schema.Boolean,
+})
+export interface CreateUpgradeOperationsInput extends Schema.Schema.Type<
+  typeof CreateUpgradeOperationsInput
+> {}
+
+export const DeviceOperation = Schema.Struct({
+  id: OperationId,
+  kind: Schema.Literal("upgrade"),
+  status: OperationStatus,
+  targetDeviceId: DeviceId,
+  requestedVersion: upgradeVersion,
+  restart: Schema.Boolean,
+  result: Schema.optionalKey(optionalText(16_384)),
+  error: Schema.optionalKey(optionalText(16_384)),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+  completedAt: Schema.optionalKey(Timestamp),
+})
+export interface DeviceOperation extends Schema.Schema.Type<typeof DeviceOperation> {}
+
+export const TaskStatusCounts = Schema.Struct({
+  queued: count,
+  assigned: count,
+  running: count,
+  cancelling: count,
+  completed: count,
+  failed: count,
+  cancelled: count,
+})
+export interface TaskStatusCounts extends Schema.Schema.Type<typeof TaskStatusCounts> {}
+
+export const ProviderUsage = Schema.Struct({
+  provider: Provider,
+  tasks: count,
+})
+export interface ProviderUsage extends Schema.Schema.Type<typeof ProviderUsage> {}
+
+export const DeviceUsage = Schema.Struct({
+  deviceId: DeviceId,
+  deviceName: bounded(128),
+  tasks: count,
+  byStatus: TaskStatusCounts,
+  byProvider: boundedArray(ProviderUsage, 3),
+})
+export interface DeviceUsage extends Schema.Schema.Type<typeof DeviceUsage> {}
+
+export const UsageSummary = Schema.Struct({
+  retainedTasks: count,
+  byStatus: TaskStatusCounts,
+  byProvider: boundedArray(ProviderUsage, 3),
+  devices: boundedArray(DeviceUsage, 256),
+})
+export interface UsageSummary extends Schema.Schema.Type<typeof UsageSummary> {}
+
 export const TaskTraceEvent = Schema.Struct({
   kind: TaskTraceEventKind,
   at: Timestamp,
@@ -229,6 +303,11 @@ export const SocketEvent = Schema.TaggedUnion({
   TaskCancelled: { taskId: TaskId },
   TaskSettled: { taskId: TaskId },
   CancelTask: { taskId: TaskId },
+  OperationAssigned: { operation: DeviceOperation },
+  OperationAccepted: { operationId: OperationId },
+  OperationFinished: { operationId: OperationId, result: optionalText(16_384) },
+  OperationFailed: { operationId: OperationId, error: bounded(16_384) },
+  OperationSettled: { operationId: OperationId },
   Error: { code: bounded(64), message: bounded(2048) },
 })
 export type SocketEvent = typeof SocketEvent.Type
@@ -250,9 +329,13 @@ export const makeThreadId = (): ThreadId => ThreadId.make(crypto.randomUUID())
 export const makeMessageId = (): MessageId => MessageId.make(crypto.randomUUID())
 export const makeTaskId = (): TaskId => TaskId.make(crypto.randomUUID())
 export const makeAuthSessionId = (): AuthSessionId => AuthSessionId.make(crypto.randomUUID())
+export const makeOperationId = (): OperationId => OperationId.make(crypto.randomUUID())
 
 export const decodeCreatePairingInput = Schema.decodeUnknownEffect(CreatePairingInput)
 export const decodeExchangePairingInput = Schema.decodeUnknownEffect(ExchangePairingInput)
 export const decodeCreateTaskInput = Schema.decodeUnknownEffect(CreateTaskInput)
+export const decodeCreateUpgradeOperationsInput = Schema.decodeUnknownEffect(
+  CreateUpgradeOperationsInput,
+)
 export const decodeDevice = Schema.decodeUnknownEffect(Device)
 export const decodeSocketEvent = Schema.decodeUnknownEffect(SocketEvent)

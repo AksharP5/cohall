@@ -6,6 +6,8 @@ import {
   now,
   version,
   type Provider,
+  type DeviceOperation,
+  type OperationId,
   type Task,
   type TaskId,
 } from "@cohall/protocol"
@@ -17,6 +19,7 @@ import { arch, hostname, platform } from "node:os"
 import { basename, isAbsolute, relative } from "node:path"
 import { WebSocket, type RawData } from "ws"
 import type { DeviceConfiguration } from "./config.ts"
+import { upgrade, type UpgradeOptions, type UpgradeResult } from "./upgrade.ts"
 
 const maxQueuedRelayMessages = 8
 
@@ -33,6 +36,10 @@ interface State {
   readonly sessions: Map<string, string>
   readonly tasks: Map<TaskId, AbortController>
   readonly completed: Set<TaskId>
+  operation: DeviceOperation | undefined
+  readonly operationQueue: Array<DeviceOperation>
+  readonly operationTerminal: Map<OperationId, string>
+  readonly completedOperations: Set<OperationId>
 }
 
 const socketUrl = (configuration: DeviceConfiguration): string => {
@@ -204,6 +211,18 @@ const sendTerminal = (state: State, taskId: TaskId, event: SocketEvent): void =>
   }
 }
 
+const sendOperationTerminal = (
+  state: State,
+  operationId: OperationId,
+  event: SocketEvent,
+): void => {
+  const payload = JSON.stringify(event)
+  state.operationTerminal.set(operationId, payload)
+  if (state.socket?.readyState === WebSocket.OPEN) {
+    state.socket.send(payload)
+  }
+}
+
 const remember = (state: State, taskId: TaskId): void => {
   state.completed.add(taskId)
   if (state.completed.size <= 1_000) {
@@ -213,6 +232,18 @@ const remember = (state: State, taskId: TaskId): void => {
   if (!oldest.done) {
     state.completed.delete(oldest.value)
     state.terminal.delete(oldest.value)
+  }
+}
+
+const rememberOperation = (state: State, operationId: OperationId): void => {
+  state.completedOperations.add(operationId)
+  if (state.completedOperations.size <= 100) {
+    return
+  }
+  const oldest = state.completedOperations.values().next()
+  if (!oldest.done) {
+    state.completedOperations.delete(oldest.value)
+    state.operationTerminal.delete(oldest.value)
   }
 }
 
@@ -281,12 +312,102 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
     })
     .finally(() => {
       state.tasks.delete(task.id)
+      const operation = state.operationQueue.shift()
+      if (operation !== undefined) {
+        executeOperation(configuration, state, operation)
+        return
+      }
       const next = state.queue.shift()
-      if (next !== undefined) {
+      if (next !== undefined && state.operation === undefined) {
         execute(configuration, state, next)
       }
     })
 }
+
+const executeOperation = (
+  configuration: DeviceConfiguration,
+  state: State,
+  operation: DeviceOperation,
+): void => {
+  if (state.operation !== undefined || state.completedOperations.has(operation.id)) {
+    return
+  }
+  state.operation = operation
+  send(state, SocketEvent.make({ _tag: "OperationAccepted", operationId: operation.id }))
+  void performDeviceOperation(operation, version)
+    .then((result) => {
+      rememberOperation(state, operation.id)
+      sendOperationTerminal(
+        state,
+        operation.id,
+        SocketEvent.make({
+          _tag: "OperationFinished",
+          operationId: operation.id,
+          result,
+        }),
+      )
+    })
+    .catch((cause: unknown) => {
+      rememberOperation(state, operation.id)
+      sendOperationTerminal(
+        state,
+        operation.id,
+        SocketEvent.make({
+          _tag: "OperationFailed",
+          operationId: operation.id,
+          error: (cause instanceof Error ? cause.message : String(cause)).slice(0, 16_384),
+        }),
+      )
+    })
+    .finally(() => {
+      state.operation = undefined
+      const pending = state.operationQueue.shift()
+      if (pending !== undefined) {
+        executeOperation(configuration, state, pending)
+        return
+      }
+      const next = state.queue.shift()
+      if (next !== undefined && state.tasks.size === 0) {
+        execute(configuration, state, next)
+      }
+    })
+}
+
+const scheduleOperation = (
+  configuration: DeviceConfiguration,
+  state: State,
+  operation: DeviceOperation,
+): void => {
+  if (
+    state.completedOperations.has(operation.id) ||
+    state.operation?.id === operation.id ||
+    state.operationQueue.some((pending) => pending.id === operation.id)
+  ) {
+    return
+  }
+  if (state.tasks.size > 0 || state.operation !== undefined) {
+    if (state.operationQueue.length >= 10) {
+      state.socket?.close(4008, "Operation queue limit reached")
+      return
+    }
+    state.operationQueue.push(operation)
+    return
+  }
+  executeOperation(configuration, state, operation)
+}
+
+export const performDeviceOperation = (
+  operation: DeviceOperation,
+  currentVersion: string,
+  runUpgrade: (options: UpgradeOptions) => Promise<UpgradeResult> = upgrade,
+): Promise<string> =>
+  runUpgrade({
+    currentVersion,
+    target: operation.requestedVersion,
+    restart: operation.restart,
+    dryRun: false,
+    delegated: true,
+  }).then((result) => JSON.stringify(result))
 
 const schedule = (configuration: DeviceConfiguration, state: State, task: Task): void => {
   if (
@@ -299,7 +420,7 @@ const schedule = (configuration: DeviceConfiguration, state: State, task: Task):
   if (task.providerSessionId !== undefined) {
     state.sessions.set(sessionKey(task), task.providerSessionId)
   }
-  if (state.tasks.size > 0) {
+  if (state.tasks.size > 0 || state.operation !== undefined) {
     if (state.queue.length >= 100) {
       state.socket?.close(4008, "Task queue limit reached")
       return
@@ -341,7 +462,7 @@ const connect = (
             SocketEvent.make({
               _tag: "DeviceHeartbeat",
               deviceId: configuration.id,
-              status: state.tasks.size > 0 ? "busy" : "online",
+              status: state.tasks.size > 0 || state.operation !== undefined ? "busy" : "online",
             }),
           )
         }, 15_000)
@@ -403,12 +524,15 @@ const connect = (
                       _tag: "DeviceHello",
                       device: describeDevice(
                         configuration,
-                        state.tasks.size > 0 ? "busy" : "online",
+                        state.tasks.size > 0 || state.operation !== undefined ? "busy" : "online",
                       ),
                     }),
                   ),
                 )
                 for (const payload of state.terminal.values()) {
+                  socket.send(payload)
+                }
+                for (const payload of state.operationTerminal.values()) {
                   socket.send(payload)
                 }
                 return
@@ -423,6 +547,14 @@ const connect = (
               }
               if (event._tag === "TaskSettled") {
                 state.terminal.delete(event.taskId)
+                return
+              }
+              if (event._tag === "OperationAssigned") {
+                scheduleOperation(configuration, state, event.operation)
+                return
+              }
+              if (event._tag === "OperationSettled") {
+                state.operationTerminal.delete(event.operationId)
                 return
               }
               if (event._tag === "Error") {
@@ -458,6 +590,10 @@ export const runDaemon = (
     sessions: new Map(),
     tasks: new Map(),
     completed: new Set(),
+    operation: undefined,
+    operationQueue: [],
+    operationTerminal: new Map(),
+    completedOperations: new Set(),
   }
   return connect(configuration, state).pipe(
     Effect.repeat({ schedule: Schedule.spaced("2 seconds") }),

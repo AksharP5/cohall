@@ -203,3 +203,25 @@ Use `cohall upgrade --to 1.2.3` for an exact version, `--dry-run` to inspect the
 plan, or `--no-restart` to leave services pending a manual restart. Back up a
 production relay's data directory before an upgrade because SQLite migrations
 run in place.
+
+The relay owner can queue the same built-in upgrade across every registered
+device:
+
+```bash
+cohall upgrade --all --dry-run
+cohall upgrade --all --to 1.2.3
+cohall upgrades
+```
+
+All-device upgrades require the relay owner credential. They are stored by the
+relay, wait for offline devices, and run after active tasks. `cohall upgrades`
+shows each target's queued, running, completed, or failed result. The operation
+accepts only `latest` or an exact semantic version and invokes Cohall's existing
+package upgrade path; it cannot transport arbitrary commands. Devices running
+from a temporary package runner report a failure until Cohall is installed
+globally on that device.
+
+Use `cohall doctor --all` for device health and version drift, `cohall versions`
+for a compact version inventory, and `cohall usage` for retained task counts by
+device, status, and provider. Usage is Cohall task activity, not provider token
+or billing data.
