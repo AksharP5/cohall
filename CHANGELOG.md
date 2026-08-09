@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.8](https://github.com/AksharP5/cohall/compare/v0.4.7...v0.4.8) (2026-08-09)
+
+
+### Bug Fixes
+
+* **docs:** make public onboarding concise and private-safe ([#38](https://github.com/AksharP5/cohall/issues/38)) ([d9bdd8a](https://github.com/AksharP5/cohall/commit/d9bdd8a6b866e3cc659a71c464b3c0580d272dec))
+
 ## [0.4.7](https://github.com/AksharP5/cohall/compare/v0.4.6...v0.4.7) (2026-08-09)
 
 
