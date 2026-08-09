@@ -1,6 +1,6 @@
 ---
 name: cohall
-description: Delegate work to an agent on another user-owned device through the Cohall CLI. Use when a task needs machine-local state or capabilities such as a signed-in browser, Xcode, a simulator, Docker, deployment access, a repository checkout, or tools unavailable on the current device.
+description: Delegate work to an agent on another user-owned device through the Cohall CLI. Use when the user asks to run, research, or check something on another device, names a Cohall target such as @macbook or @devbox, or needs machine-local state or capabilities such as a signed-in browser, Xcode, Docker, deployment access, a repository checkout, or unavailable tools. Carry the relevant current-conversation context into the handoff automatically.
 ---
 
 # Cohall
@@ -40,25 +40,36 @@ Do not delegate ordinary local work when the other device provides no advantage.
 2. Choose a target whose provider, workspaces, platform, and capabilities fit
    the task. Stay local when another device offers no material advantage.
 
-3. Delegate one concrete outcome. Send only the context the target needs:
+3. Build the handoff from the current conversation. Do not ask the user to
+   repeat information already visible. Write:
+   - a concrete `--prompt` describing the target's task;
+   - a concise `--context` explaining why the user is asking, relevant facts and
+     prior findings, constraints, and the decision or evidence they need.
+
+   When a request depends on the conversation, including references such as
+   “this,” “that,” or “look into it,” always supply `--context`. Omit it only
+   when the prompt is genuinely self-contained. Distill the context; never
+   forward the raw transcript or unrelated private material.
+
+4. Delegate one concrete outcome:
 
    ```bash
    cohall delegate \
      --target @macbook \
      --provider codex \
      --workspace /Users/me/dev/project \
-     --prompt 'Inspect the authenticated dashboard and identify why deployment 184 failed.' \
-     --context 'Focus on events after 15:00 UTC. Return evidence and source URLs.'
+     --prompt 'Research whether the deployment failure matches the reported provider outage.' \
+     --context 'Why: deployment 184 failed after 15:00 UTC. Known: local checks passed and the provider status page reported elevated errors. Need: determine whether the outage explains our failure, with primary-source links and contrary evidence.'
    ```
 
    Providers are `codex`, `claude-code`, and `opencode`. Omit `--provider` to
    use Codex. Omit `--target` only when Cohall may choose a matching device.
 
-4. The command waits by default and returns JSON. Treat work as successful only
+5. The command waits by default and returns JSON. Treat work as successful only
    when `status` is `completed`; use `result` in the current task. Report a
    `failed`, `cancelled`, or `cancelling` state accurately.
 
-5. Reuse `thread_id` for related follow-ups so the target provider can resume
+6. Reuse `thread_id` for related follow-ups so the target provider can resume
    its local session:
 
    ```bash
@@ -74,8 +85,8 @@ ordinary shell or a separate agent turn.
 
 ## Context and safety
 
-- Include the goal, constraints, relevant prior findings, and expected evidence.
-- Do not paste a full private transcript when a short brief is sufficient.
+- Preserve the meaning and motivation of the current conversation, not its raw wording.
+- Add new relevant developments to `--context` when following up from another chat.
 - Never send provider credentials, Cohall tokens, cookies, or browser-profile data.
 - Request a path only when the target advertises a matching workspace root.
 - Use the same thread for clarification instead of creating duplicate tasks.
