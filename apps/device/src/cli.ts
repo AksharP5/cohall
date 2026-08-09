@@ -35,6 +35,7 @@ import {
   waitForTask,
 } from "./delegation.ts"
 import { guidedSetupInput, joinRelay, terminalPrompter, type Prompter } from "./setup.ts"
+import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 import { installDeviceService } from "./service.ts"
 import { deviceVersionWarning, upgrade } from "./upgrade.ts"
 
@@ -104,6 +105,9 @@ Usage:
   cohall service install
   cohall device
   cohall relay
+  cohall relay backup <directory>
+  cohall relay restore <directory>
+  cohall relay use <url> [--no-restart]
   cohall mcp
   cohall skill [install [agents|claude|opencode|all]]
   cohall integrations
@@ -406,6 +410,42 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     }
     print(await installDeviceService())
     return
+  }
+
+  if (command === "relay") {
+    const action = arguments_.positionals[0]
+    if (action === "backup") {
+      allowOptions(arguments_, [])
+      if (arguments_.positionals.length !== 2) {
+        throw new Error("Usage: cohall relay backup <directory>")
+      }
+      print(await backupRelay(arguments_.positionals[1] ?? ""))
+      return
+    }
+    if (action === "restore") {
+      allowOptions(arguments_, [])
+      if (arguments_.positionals.length !== 2) {
+        throw new Error("Usage: cohall relay restore <directory>")
+      }
+      print(await restoreRelay(arguments_.positionals[1] ?? ""))
+      return
+    }
+    if (action === "use") {
+      allowOptions(arguments_, ["no-restart"])
+      if (arguments_.positionals.length !== 2) {
+        throw new Error("Usage: cohall relay use <url> [--no-restart]")
+      }
+      print(
+        await switchRelay({
+          relayUrl: arguments_.positionals[1] ?? "",
+          restart: !arguments_.options.has("no-restart"),
+        }),
+      )
+      return
+    }
+    throw new Error(
+      "Usage: cohall relay [backup <directory>|restore <directory>|use <url> [--no-restart]]",
+    )
   }
 
   if (command === "upgrade") {

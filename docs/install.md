@@ -144,9 +144,11 @@ cohall configure --providers auto
 ## Configuration
 
 `cohall config` shows stored configuration without tokens. `cohall configure`
-changes the relay URL, device name, workspace roots, providers, model, or Codex
-sandbox. `cohall doctor` checks the effective configuration, relay connection,
-provider executables, authentication readiness, and versions.
+changes the device name, workspace roots, providers, model, sandbox, or relay
+for a fresh pairing. Use `cohall relay use <url>` when moving an existing relay;
+it preserves credentials only after verifying them at the restored address.
+`cohall doctor` checks the effective configuration, relay connection, provider
+executables, authentication readiness, and versions.
 
 Configuration locations:
 
