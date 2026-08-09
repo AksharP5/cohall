@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.10](https://github.com/AksharP5/cohall/compare/v0.4.9...v0.4.10) (2026-08-09)
+
+
+### Bug Fixes
+
+* **device:** preserve macOS provider startup ([#42](https://github.com/AksharP5/cohall/issues/42)) ([aef9f0d](https://github.com/AksharP5/cohall/commit/aef9f0db5ff2360e6bf38774d6b3350804b46f0e))
+
 ## [0.4.9](https://github.com/AksharP5/cohall/compare/v0.4.8...v0.4.9) (2026-08-09)
 
 
