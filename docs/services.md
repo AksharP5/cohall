@@ -131,16 +131,14 @@ logon and restarts it after failures. It does not run before that user logs on.
 
 Run `cohall upgrade` from a global npm, Bun, or pnpm installation. It updates
 that installation and restarts only active managed Cohall services, with relays
-restarted before device daemons. Active services restart even when the installed
-files already match the requested version. A systemd relay installed with the
-packaged socket unit keeps accepting new connections while its process restarts.
-A delegated upgrade can finish after
-restarting its own device daemon: a durable receipt records the restart attempt,
-and a delegated caller leaves that marker for the replacement task to consume
-after reconnecting, even when a service manager returns before ending the old process.
+restarted before device workers. Active services restart even when the installed
+files already match the requested version. Socket-activated relays keep accepting
+new connections while their process is replaced, and delegated upgrades finish
+through durable restart recovery.
+
 Before changing files, Cohall verifies that active systemd and launchd jobs use
-the same global installation as the invoked CLI. If they differ, run the
-executable named in the error or update the service definition first.
+the same global installation as the invoked CLI. If they differ, use the
+executable named in the error or update the service definition.
 
 Direct `npm install --global`, `bun add --global`, or `pnpm add --global`
 replaces files on disk but cannot replace code already loaded by a running Node
