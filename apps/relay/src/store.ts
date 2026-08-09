@@ -2,19 +2,27 @@ import {
   AuthSession,
   ConnectionRole,
   Device,
+  DeviceId,
+  DeviceOperation,
+  DeviceUsage,
   Message,
   PairingCredential,
   PairingResult,
+  Provider,
   Task,
   TaskId,
+  TaskStatus,
   TaskTrace,
   TaskTraceEvent,
+  TaskStatusCounts,
   Timestamp,
   Thread,
   ThreadContext,
+  UsageSummary,
   makeAuthSessionId,
   makeDeviceId,
   makeMessageId,
+  makeOperationId,
   makeTaskId,
   makeThreadId,
   now,
@@ -22,9 +30,9 @@ import {
   type ConnectionRole as ConnectionRoleName,
   type CreatePairingInput,
   type CreateTaskInput,
-  type DeviceId,
-  type Provider,
-  type TaskStatus,
+  type CreateUpgradeOperationsInput,
+  type OperationId,
+  type OperationStatus,
   type TaskTraceEventKind,
   type ThreadId,
 } from "@cohall/protocol"
@@ -98,6 +106,28 @@ interface TaskTraceEventRow {
   readonly detail: string | null
 }
 
+interface DeviceOperationRow {
+  readonly id: string
+  readonly kind: string
+  readonly status: string
+  readonly target_device_id: string
+  readonly requested_version: string
+  readonly restart: number
+  readonly result: string | null
+  readonly error: string | null
+  readonly created_at: string
+  readonly updated_at: string
+  readonly completed_at: string | null
+}
+
+interface UsageRow {
+  readonly device_id: string
+  readonly device_name: string
+  readonly status: string
+  readonly provider: string
+  readonly tasks: number
+}
+
 interface PairingRow {
   readonly token_hash: string
   readonly label: string
@@ -130,6 +160,7 @@ export interface TaskUpdate {
 export interface Interface {
   readonly recover: () => Effect.Effect<void, PersistenceError>
   readonly listDevices: () => Effect.Effect<ReadonlyArray<Device>, PersistenceError>
+  readonly usage: () => Effect.Effect<UsageSummary, PersistenceError>
   readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, PersistenceError>
   readonly upsertDevice: (device: Device) => Effect.Effect<Device, PersistenceError>
   readonly heartbeat: (
@@ -169,6 +200,34 @@ export interface Interface {
   ) => Effect.Effect<Task, PersistenceError>
   readonly requestCancellation: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
   readonly requeueTasksFor: (deviceId: DeviceId) => Effect.Effect<void, PersistenceError>
+  readonly createUpgradeOperations: (
+    input: CreateUpgradeOperationsInput,
+  ) => Effect.Effect<ReadonlyArray<DeviceOperation>, PersistenceError>
+  readonly listOperations: () => Effect.Effect<ReadonlyArray<DeviceOperation>, PersistenceError>
+  readonly pendingOperationsFor: (
+    deviceId: DeviceId,
+  ) => Effect.Effect<ReadonlyArray<DeviceOperation>, PersistenceError>
+  readonly assignOperation: (
+    operationId: OperationId,
+  ) => Effect.Effect<DeviceOperation, PersistenceError>
+  readonly rollbackOperation: (
+    operationId: OperationId,
+  ) => Effect.Effect<DeviceOperation, PersistenceError>
+  readonly acceptOperation: (
+    operationId: OperationId,
+    deviceId: DeviceId,
+  ) => Effect.Effect<DeviceOperation, PersistenceError>
+  readonly finishOperation: (
+    operationId: OperationId,
+    deviceId: DeviceId,
+    result: string,
+  ) => Effect.Effect<DeviceOperation, PersistenceError>
+  readonly failOperation: (
+    operationId: OperationId,
+    deviceId: DeviceId,
+    error: string,
+  ) => Effect.Effect<DeviceOperation, PersistenceError>
+  readonly requeueOperationsFor: (deviceId: DeviceId) => Effect.Effect<void, PersistenceError>
   readonly sessionFor: (
     threadId: ThreadId,
     deviceId: DeviceId,
@@ -262,6 +321,33 @@ const taskFromRow = (row: TaskRow): Effect.Effect<Task, PersistenceError> =>
     ...(row.started_at === null ? {} : { startedAt: row.started_at }),
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
   })
+
+const operationFromRow = (
+  row: DeviceOperationRow,
+): Effect.Effect<DeviceOperation, PersistenceError> =>
+  decode("RelayStore.decodeOperation", DeviceOperation, {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    targetDeviceId: row.target_device_id,
+    requestedVersion: row.requested_version,
+    restart: row.restart === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(row.result === null ? {} : { result: row.result }),
+    ...(row.error === null ? {} : { error: row.error }),
+    ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
+  })
+
+const emptyStatusCounts = (): Record<TaskStatus, number> => ({
+  queued: 0,
+  assigned: 0,
+  running: 0,
+  cancelling: 0,
+  completed: 0,
+  failed: 0,
+  cancelled: 0,
+})
 
 const taskTraceEventFromRow = (
   row: TaskTraceEventRow,
@@ -390,8 +476,29 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     ).run()
   }
 
+  const pruneTerminalOperations = (preserveOperationId?: OperationId): void => {
+    const exclusion = preserveOperationId === undefined ? "" : "AND id <> ?"
+    const offset =
+      preserveOperationId === undefined ? retainedTerminalTasks : retainedTerminalTasks - 1
+    const parameters = preserveOperationId === undefined ? [offset] : [preserveOperationId, offset]
+    db.query(
+      `DELETE FROM device_operations
+       WHERE id IN (
+         SELECT id FROM device_operations
+         WHERE status IN ('completed', 'failed') ${exclusion}
+         ORDER BY completed_at DESC, updated_at DESC, id DESC
+         LIMIT -1 OFFSET ?
+       )`,
+    ).run(...parameters)
+  }
+
   const queryTask = (taskId: TaskId): TaskRow | null =>
     db.query<TaskRow, [string]>("SELECT * FROM tasks WHERE id = ?").get(taskId)
+
+  const queryOperation = (operationId: OperationId): DeviceOperationRow | null =>
+    db
+      .query<DeviceOperationRow, [string]>("SELECT * FROM device_operations WHERE id = ?")
+      .get(operationId)
 
   const getTask = Effect.fn("RelayStore.getTask")(function* (taskId: TaskId) {
     const row = yield* Effect.try({
@@ -475,6 +582,299 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return yield* Effect.forEach(rows, deviceFromRow)
   })
 
+  const usage = Effect.fn("RelayStore.usage")(function* () {
+    const rows = yield* Effect.try({
+      try: () =>
+        db
+          .query<UsageRow, []>(
+            `SELECT tasks.target_device_id AS device_id, devices.name AS device_name,
+                    tasks.status, tasks.provider, COUNT(*) AS tasks
+             FROM tasks
+             JOIN devices ON devices.id = tasks.target_device_id
+             GROUP BY tasks.target_device_id, devices.name, tasks.status, tasks.provider
+             ORDER BY devices.name COLLATE NOCASE, tasks.target_device_id, tasks.provider`,
+          )
+          .all(),
+      catch: operationError("RelayStore.usage"),
+    })
+    const totalStatus = emptyStatusCounts()
+    const totalProviders = new Map<Provider, number>()
+    const devices = new Map<
+      DeviceId,
+      {
+        readonly name: string
+        readonly status: Record<TaskStatus, number>
+        readonly providers: Map<Provider, number>
+      }
+    >()
+    let retainedTasks = 0
+    for (const row of rows) {
+      const status = Schema.decodeUnknownSync(TaskStatus)(row.status)
+      const provider = Schema.decodeUnknownSync(Provider)(row.provider)
+      const deviceId = Schema.decodeUnknownSync(DeviceId)(row.device_id)
+      retainedTasks += row.tasks
+      totalStatus[status] += row.tasks
+      totalProviders.set(provider, (totalProviders.get(provider) ?? 0) + row.tasks)
+      const current = devices.get(deviceId) ?? {
+        name: row.device_name,
+        status: emptyStatusCounts(),
+        providers: new Map<Provider, number>(),
+      }
+      current.status[status] += row.tasks
+      current.providers.set(provider, (current.providers.get(provider) ?? 0) + row.tasks)
+      devices.set(deviceId, current)
+    }
+    const providerUsage = (providers: ReadonlyMap<Provider, number>) =>
+      Provider.literals.flatMap((provider) => {
+        const tasks = providers.get(provider)
+        return tasks === undefined ? [] : [{ provider, tasks }]
+      })
+    return UsageSummary.make({
+      retainedTasks,
+      byStatus: TaskStatusCounts.make(totalStatus),
+      byProvider: providerUsage(totalProviders),
+      devices: [...devices.entries()].map(([deviceId, device]) =>
+        DeviceUsage.make({
+          deviceId,
+          deviceName: device.name,
+          tasks: Object.values(device.status).reduce((sum, tasks) => sum + tasks, 0),
+          byStatus: TaskStatusCounts.make(device.status),
+          byProvider: providerUsage(device.providers),
+        }),
+      ),
+    })
+  })
+
+  const getOperation = Effect.fn("RelayStore.getOperation")(function* (operationId: OperationId) {
+    const row = yield* Effect.try({
+      try: () => queryOperation(operationId),
+      catch: operationError("RelayStore.getOperation"),
+    })
+    if (row === null) {
+      return yield* Effect.fail(
+        new PersistenceError({
+          operation: "RelayStore.getOperation",
+          message: `Unknown device operation ${operationId}`,
+        }),
+      )
+    }
+    return yield* operationFromRow(row)
+  })
+
+  const listOperations = Effect.fn("RelayStore.listOperations")(function* () {
+    const rows = yield* Effect.try({
+      try: () =>
+        db
+          .query<DeviceOperationRow, []>(
+            "SELECT * FROM device_operations ORDER BY created_at DESC, id DESC LIMIT 1000",
+          )
+          .all(),
+      catch: operationError("RelayStore.listOperations"),
+    })
+    return yield* Effect.forEach(rows, operationFromRow)
+  })
+
+  const createUpgradeOperations = Effect.fn("RelayStore.createUpgradeOperations")(function* (
+    input: CreateUpgradeOperationsInput,
+  ) {
+    const timestamp = now()
+    const operations = yield* Effect.try({
+      try: () =>
+        db.transaction(() => {
+          const devices = db
+            .query<DeviceRow, []>(
+              "SELECT * FROM devices WHERE forgotten_at IS NULL ORDER BY name COLLATE NOCASE, id",
+            )
+            .all()
+          if (devices.length === 0) {
+            throw new Error("No Cohall devices are registered")
+          }
+          if (devices.length > 256) {
+            throw new Error("All-device operations support at most 256 registered devices")
+          }
+          for (const device of devices) {
+            const outstanding = db
+              .query<{ readonly count: number }, [string]>(
+                `SELECT COUNT(*) AS count FROM device_operations
+                 WHERE target_device_id = ? AND status IN ('queued', 'assigned', 'running')`,
+              )
+              .get(device.id)
+            if ((outstanding?.count ?? 0) > 0) {
+              throw new Error(`${device.name} already has an upgrade operation in progress`)
+            }
+          }
+          pruneTerminalOperations()
+          return devices.map((device) => {
+            const operation = DeviceOperation.make({
+              id: makeOperationId(),
+              kind: "upgrade",
+              status: "queued",
+              targetDeviceId: DeviceId.make(device.id),
+              requestedVersion: input.target,
+              restart: input.restart,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            })
+            db.query(
+              `INSERT INTO device_operations (
+                 id, kind, status, target_device_id, requested_version, restart,
+                 created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            ).run(
+              operation.id,
+              operation.kind,
+              operation.status,
+              operation.targetDeviceId,
+              operation.requestedVersion,
+              operation.restart ? 1 : 0,
+              operation.createdAt,
+              operation.updatedAt,
+            )
+            return operation
+          })
+        })(),
+      catch: operationError("RelayStore.createUpgradeOperations"),
+    })
+    return operations
+  })
+
+  const pendingOperationsFor = Effect.fn("RelayStore.pendingOperationsFor")(function* (
+    deviceId: DeviceId,
+  ) {
+    const rows = yield* Effect.try({
+      try: () =>
+        db
+          .query<DeviceOperationRow, [string]>(
+            `SELECT * FROM device_operations WHERE target_device_id = ? AND status = 'queued'
+             ORDER BY created_at, id LIMIT 10`,
+          )
+          .all(deviceId),
+      catch: operationError("RelayStore.pendingOperationsFor"),
+    })
+    return yield* Effect.forEach(rows, operationFromRow)
+  })
+
+  const transitionOperation = Effect.fn("RelayStore.transitionOperation")(function* (
+    operationId: OperationId,
+    expected: ReadonlyArray<OperationStatus>,
+    status: OperationStatus,
+    result?: string,
+    error?: string,
+  ) {
+    const current = yield* getOperation(operationId)
+    if (!expected.includes(current.status)) {
+      return current
+    }
+    const timestamp = now()
+    const completed = status === "completed" || status === "failed" ? timestamp : undefined
+    const placeholders = expected.map(() => "?").join(", ")
+    yield* Effect.try({
+      try: () =>
+        db.transaction(() => {
+          const updated = db
+            .query(
+              `UPDATE device_operations
+               SET status = ?, result = ?, error = ?, updated_at = ?, completed_at = ?
+               WHERE id = ? AND status IN (${placeholders})`,
+            )
+            .run(
+              status,
+              result ?? current.result ?? null,
+              error ?? current.error ?? null,
+              timestamp,
+              completed ?? current.completedAt ?? null,
+              operationId,
+              ...expected,
+            )
+          if (updated.changes === 1 && completed !== undefined) {
+            pruneTerminalOperations(operationId)
+          }
+        })(),
+      catch: operationError("RelayStore.transitionOperation"),
+    })
+    return yield* getOperation(operationId)
+  })
+
+  const requireOperationTarget = Effect.fn("RelayStore.requireOperationTarget")(function* (
+    operationId: OperationId,
+    deviceId: DeviceId,
+  ) {
+    const operation = yield* getOperation(operationId)
+    if (operation.targetDeviceId !== deviceId) {
+      return yield* Effect.fail(
+        new PersistenceError({
+          operation: "RelayStore.requireOperationTarget",
+          message: `Device ${deviceId} cannot update operation ${operationId}`,
+        }),
+      )
+    }
+    return operation
+  })
+
+  const assignOperation = Effect.fn("RelayStore.assignOperation")(function* (
+    operationId: OperationId,
+  ) {
+    const current = yield* getOperation(operationId)
+    if (current.status !== "queued") {
+      return current
+    }
+    const timestamp = now()
+    yield* Effect.try({
+      try: () =>
+        db
+          .query(
+            `UPDATE device_operations SET status = 'assigned', updated_at = ?
+             WHERE id = ? AND status = 'queued'
+               AND NOT EXISTS (
+                 SELECT 1 FROM tasks WHERE target_device_id = ?
+                   AND status IN ('assigned', 'running', 'cancelling')
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM device_operations active
+                 WHERE active.target_device_id = ? AND active.id <> ?
+                   AND active.status IN ('assigned', 'running')
+               )`,
+          )
+          .run(timestamp, operationId, current.targetDeviceId, current.targetDeviceId, operationId),
+      catch: operationError("RelayStore.assignOperation"),
+    })
+    return yield* getOperation(operationId)
+  })
+
+  const acceptOperation = (operationId: OperationId, deviceId: DeviceId) =>
+    requireOperationTarget(operationId, deviceId).pipe(
+      Effect.flatMap(() => transitionOperation(operationId, ["assigned"], "running")),
+    )
+
+  const finishOperation = (operationId: OperationId, deviceId: DeviceId, result: string) =>
+    requireOperationTarget(operationId, deviceId).pipe(
+      Effect.flatMap(() =>
+        transitionOperation(operationId, ["assigned", "running"], "completed", result),
+      ),
+    )
+
+  const failOperation = (operationId: OperationId, deviceId: DeviceId, error: string) =>
+    requireOperationTarget(operationId, deviceId).pipe(
+      Effect.flatMap(() =>
+        transitionOperation(operationId, ["assigned", "running"], "failed", undefined, error),
+      ),
+    )
+
+  const requeueOperationsFor = Effect.fn("RelayStore.requeueOperationsFor")(function* (
+    deviceId: DeviceId,
+  ) {
+    yield* Effect.try({
+      try: () =>
+        db
+          .query(
+            `UPDATE device_operations SET status = 'queued', updated_at = ?
+             WHERE target_device_id = ? AND status IN ('assigned', 'running')`,
+          )
+          .run(now(), deviceId),
+      catch: operationError("RelayStore.requeueOperationsFor"),
+    })
+  })
+
   const forgetDevice = Effect.fn("RelayStore.forgetDevice")(function* (deviceId: DeviceId) {
     const row = yield* Effect.try({
       try: () =>
@@ -498,6 +898,15 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             .get(deviceId)
           if ((outstanding?.count ?? 0) > 0) {
             throw new Error(`Device ${deviceId} still has outstanding tasks`)
+          }
+          const operations = db
+            .query<{ readonly count: number }, [string]>(
+              `SELECT COUNT(*) AS count FROM device_operations
+               WHERE target_device_id = ? AND status IN ('queued', 'assigned', 'running')`,
+            )
+            .get(deviceId)
+          if ((operations?.count ?? 0) > 0) {
+            throw new Error(`Device ${deviceId} still has an upgrade operation in progress`)
           }
           const timestamp = now()
           db.query("UPDATE devices SET forgotten_at = ? WHERE id = ?").run(timestamp, deviceId)
@@ -525,6 +934,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           db.query(
             "UPDATE tasks SET status = 'queued', updated_at = ? WHERE status IN ('assigned', 'running')",
           ).run(timestamp)
+          db.query(
+            "UPDATE device_operations SET status = 'queued', updated_at = ? WHERE status IN ('assigned', 'running')",
+          ).run(timestamp)
           for (const task of interrupted) {
             recordTaskTraceEvent(
               TaskId.make(task.id),
@@ -540,6 +952,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             "UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL AND roles_json LIKE '%,%'",
           ).run(timestamp)
           pruneTerminalHistory()
+          pruneTerminalOperations()
         })(),
       catch: operationError("RelayStore.recover"),
     })
@@ -855,9 +1268,13 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                  SELECT 1 FROM tasks active
                  WHERE active.target_device_id = ? AND active.id <> ?
                    AND active.status IN ('assigned', 'running', 'cancelling')
+               ) AND NOT EXISTS (
+                 SELECT 1 FROM device_operations active
+                 WHERE active.target_device_id = ?
+                   AND active.status IN ('assigned', 'running')
                )`,
             )
-            .run(timestamp, taskId, current.targetDeviceId, taskId)
+            .run(timestamp, taskId, current.targetDeviceId, taskId, current.targetDeviceId)
           if (result.changes === 1) {
             recordTaskTraceEvent(
               taskId,
@@ -1213,6 +1630,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   return Service.of({
     recover,
     listDevices,
+    usage,
     forgetDevice,
     upsertDevice,
     heartbeat: (deviceId, status) => updateDeviceStatus(deviceId, status),
@@ -1247,6 +1665,15 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     acknowledgeCancellation: (taskId, deviceId) => terminal(taskId, deviceId, "cancelled"),
     requestCancellation,
     requeueTasksFor,
+    createUpgradeOperations,
+    listOperations,
+    pendingOperationsFor,
+    assignOperation,
+    rollbackOperation: (operationId) => transitionOperation(operationId, ["assigned"], "queued"),
+    acceptOperation,
+    finishOperation,
+    failOperation,
+    requeueOperationsFor,
     sessionFor,
     createPairing,
     exchangePairing,
@@ -1305,6 +1732,15 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           provider TEXT NOT NULL, session_id TEXT NOT NULL, updated_at TEXT NOT NULL,
           PRIMARY KEY(thread_id, device_id, provider)
         );
+        CREATE TABLE IF NOT EXISTS device_operations (
+          id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL,
+          target_device_id TEXT NOT NULL REFERENCES devices(id),
+          requested_version TEXT NOT NULL, restart INTEGER NOT NULL,
+          result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS device_operations_target_status
+          ON device_operations(target_device_id, status);
         CREATE TABLE IF NOT EXISTS auth_pairings (
           token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, roles_json TEXT NOT NULL,
           expires_at TEXT NOT NULL, created_at TEXT NOT NULL, used_at TEXT

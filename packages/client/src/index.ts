@@ -2,7 +2,9 @@ import {
   AuthSession,
   CreatePairingInput,
   CreateTaskInput,
+  CreateUpgradeOperationsInput,
   Device,
+  DeviceOperation,
   ErrorResponse,
   ExchangePairingInput,
   PairingCredential,
@@ -10,6 +12,7 @@ import {
   Task,
   TaskTrace,
   ThreadContext,
+  UsageSummary,
   type AuthSessionId,
   type DeviceId,
   type TaskId,
@@ -53,6 +56,11 @@ export interface Interface {
   readonly revokeAuthSession: (
     sessionId: AuthSessionId,
   ) => Effect.Effect<AuthSession, RelayClientError>
+  readonly usage: () => Effect.Effect<UsageSummary, RelayClientError>
+  readonly createUpgradeOperations: (
+    input: CreateUpgradeOperationsInput,
+  ) => Effect.Effect<ReadonlyArray<DeviceOperation>, RelayClientError>
+  readonly operations: () => Effect.Effect<ReadonlyArray<DeviceOperation>, RelayClientError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@cohall/RelayClient") {}
@@ -193,6 +201,16 @@ export const make = (options: RelayClientOptions): Interface => {
         AuthSession,
         { method: "POST" },
       ),
+    usage: () => request("RelayClient.usage", "/api/usage", UsageSummary),
+    createUpgradeOperations: (input) =>
+      request(
+        "RelayClient.createUpgradeOperations",
+        "/api/operations/upgrades",
+        Schema.Array(DeviceOperation),
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    operations: () =>
+      request("RelayClient.operations", "/api/operations", Schema.Array(DeviceOperation)),
   })
 }
 

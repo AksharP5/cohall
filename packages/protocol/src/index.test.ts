@@ -1,5 +1,7 @@
+import { Effect, Schema } from "effect"
 import { expect, it } from "vitest"
 import {
+  CreateUpgradeOperationsInput,
   SocketEvent,
   Task,
   makeDeviceId,
@@ -8,6 +10,25 @@ import {
   maxSocketPayloadBytes,
   now,
 } from "./index.ts"
+
+it("allows only explicit versions in all-device upgrades", async () => {
+  await expect(
+    Effect.runPromise(
+      Schema.decodeUnknownEffect(CreateUpgradeOperationsInput)({
+        target: "1.2.3",
+        restart: true,
+      }),
+    ),
+  ).resolves.toEqual({ target: "1.2.3", restart: true })
+  await expect(
+    Effect.runPromise(
+      Schema.decodeUnknownEffect(CreateUpgradeOperationsInput)({
+        target: "next; reboot",
+        restart: true,
+      }),
+    ),
+  ).rejects.toBeDefined()
+})
 
 const encodedBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value))
 

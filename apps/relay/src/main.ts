@@ -2,12 +2,14 @@ import {
   AuthSessionId,
   Device,
   DeviceId,
+  OperationId,
   SocketEvent,
   maxSocketPayloadBytes,
   TaskId,
   ThreadId,
   decodeCreatePairingInput,
   decodeCreateTaskInput,
+  decodeCreateUpgradeOperationsInput,
   decodeExchangePairingInput,
   decodeSocketEvent,
   now,
@@ -15,6 +17,7 @@ import {
   type AuthSession,
   type CreateTaskInput,
   type DeviceId as DeviceIdType,
+  type DeviceOperation,
   type Task,
 } from "@cohall/protocol"
 import { Effect, ManagedRuntime, Schema } from "effect"
@@ -318,6 +321,32 @@ export const runRelay = async (): Promise<void> => {
     )
   }
 
+  const dispatchOperation = async (operation: DeviceOperation): Promise<DeviceOperation> => {
+    const assigned = await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        return yield* store.assignOperation(operation.id)
+      }),
+    )
+    if (assigned.status !== "assigned") {
+      return assigned
+    }
+    if (
+      hub.sendToDevice(
+        assigned.targetDeviceId,
+        SocketEvent.make({ _tag: "OperationAssigned", operation: assigned }),
+      )
+    ) {
+      return assigned
+    }
+    return run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        return yield* store.rollbackOperation(operation.id)
+      }),
+    )
+  }
+
   const dispatchPending = async (deviceId: DeviceIdType): Promise<void> => {
     const tasks = await run(
       Effect.gen(function* () {
@@ -331,6 +360,15 @@ export const runRelay = async (): Promise<void> => {
       } else {
         await dispatch(task)
       }
+    }
+    const operations = await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        return yield* store.pendingOperationsFor(deviceId)
+      }),
+    )
+    for (const operation of operations) {
+      await dispatchOperation(operation)
     }
   }
 
@@ -436,6 +474,9 @@ export const runRelay = async (): Promise<void> => {
     const settle = (taskId: TaskId): void => {
       socket.send(JSON.stringify(SocketEvent.make({ _tag: "TaskSettled", taskId })))
     }
+    const settleOperation = (operationId: OperationId): void => {
+      socket.send(JSON.stringify(SocketEvent.make({ _tag: "OperationSettled", operationId })))
+    }
     const processed = await run(
       Effect.gen(function* () {
         const store = yield* RelayStore.Service
@@ -457,10 +498,21 @@ export const runRelay = async (): Promise<void> => {
           case "TaskCancelled":
             yield* store.acknowledgeCancellation(event.taskId, deviceId)
             return
+          case "OperationAccepted":
+            yield* store.acceptOperation(event.operationId, deviceId)
+            return
+          case "OperationFinished":
+            yield* store.finishOperation(event.operationId, deviceId, event.result)
+            return
+          case "OperationFailed":
+            yield* store.failOperation(event.operationId, deviceId, event.error)
+            return
           case "Connected":
           case "TaskAssigned":
           case "TaskSettled":
           case "CancelTask":
+          case "OperationAssigned":
+          case "OperationSettled":
           case "Error":
             return
         }
@@ -478,6 +530,10 @@ export const runRelay = async (): Promise<void> => {
         event._tag === "TaskCancelled")
     ) {
       settle(event.taskId)
+      await dispatchPending(deviceId)
+    }
+    if (processed && (event._tag === "OperationFinished" || event._tag === "OperationFailed")) {
+      settleOperation(event.operationId)
       await dispatchPending(deviceId)
     }
   }
@@ -504,7 +560,8 @@ export const runRelay = async (): Promise<void> => {
     if (principal === undefined) {
       return json({ error: "Unauthorized" }, 401)
     }
-    const ownerOnly = url.pathname.startsWith("/api/auth/")
+    const ownerOnly =
+      url.pathname.startsWith("/api/auth/") || url.pathname.startsWith("/api/operations")
     if (ownerOnly && principal !== "owner") {
       return json({ error: "Owner token required" }, 403)
     }
@@ -528,6 +585,20 @@ export const runRelay = async (): Promise<void> => {
       }
       if (url.pathname === "/api/devices" && request.method === "GET") {
         return json(yield* store.listDevices())
+      }
+      if (url.pathname === "/api/usage" && request.method === "GET") {
+        return json(yield* store.usage())
+      }
+      if (url.pathname === "/api/operations" && request.method === "GET") {
+        return json(yield* store.listOperations())
+      }
+      if (url.pathname === "/api/operations/upgrades" && request.method === "POST") {
+        const input = yield* body(request, decodeCreateUpgradeOperationsInput)
+        const operations = yield* store.createUpgradeOperations(input)
+        return json(
+          yield* Effect.tryPromise(() => Promise.all(operations.map(dispatchOperation))),
+          201,
+        )
       }
       const forgetDevice = url.pathname.match(/^\/api\/devices\/([^/]+)\/forget$/)
       if (request.method === "POST" && forgetDevice?.[1] !== undefined) {
@@ -593,7 +664,10 @@ export const runRelay = async (): Promise<void> => {
                     : cause.message.includes("outstanding task limit")
                       ? 429
                       : cause.message.includes("must be offline") ||
-                          cause.message.includes("still has outstanding tasks")
+                          cause.message.includes("still has outstanding tasks") ||
+                          cause.message.includes("upgrade operation in progress") ||
+                          cause.message === "No Cohall devices are registered" ||
+                          cause.message.startsWith("All-device operations support")
                         ? 409
                         : 500,
               message: cause.message,
@@ -687,6 +761,7 @@ export const runRelay = async (): Promise<void> => {
         Effect.gen(function* () {
           const store = yield* RelayStore.Service
           yield* store.requeueTasksFor(deviceId)
+          yield* store.requeueOperationsFor(deviceId)
           yield* store.markDeviceOffline(deviceId)
         }),
       ).catch((cause: unknown) => console.error(cause))

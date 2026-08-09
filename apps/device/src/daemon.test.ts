@@ -1,10 +1,18 @@
-import { DeviceId, SocketEvent, maxSocketPayloadBytes, now } from "@cohall/protocol"
+import {
+  DeviceId,
+  DeviceOperation,
+  OperationId,
+  SocketEvent,
+  maxSocketPayloadBytes,
+  now,
+} from "@cohall/protocol"
 import { Effect } from "effect"
 import { type AddressInfo } from "node:net"
 import { afterEach, describe, expect, it } from "vitest"
 import { WebSocketServer } from "ws"
 import { DeviceConfiguration } from "./config.ts"
-import { runDaemon } from "./daemon.ts"
+import { performDeviceOperation, runDaemon } from "./daemon.ts"
+import type { UpgradeOptions, UpgradeResult } from "./upgrade.ts"
 
 const servers: Array<WebSocketServer> = []
 const controllers: Array<AbortController> = []
@@ -84,5 +92,44 @@ describe("device relay connection", () => {
     void run(relayUrl)
 
     await expect(closed).resolves.toBe(1009)
+  })
+})
+
+it("maps a typed upgrade operation to the built-in upgrader", async () => {
+  let received: UpgradeOptions | undefined
+  const result: UpgradeResult = {
+    upgraded: true,
+    from_version: "1.2.2",
+    installed_version: "1.2.3",
+    requested_version: "1.2.3",
+    package_manager: "npm",
+    services_restarted: ["systemd-user:cohall-device.service"],
+    services_pending_restart: [],
+    resumed_after_restart: false,
+    dry_run: false,
+  }
+  const operation = DeviceOperation.make({
+    id: OperationId.make("66666666-6666-4666-8666-666666666666"),
+    kind: "upgrade",
+    status: "assigned",
+    targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+    requestedVersion: "1.2.3",
+    restart: true,
+    createdAt: now(),
+    updatedAt: now(),
+  })
+
+  await expect(
+    performDeviceOperation(operation, "1.2.2", (options) => {
+      received = options
+      return Promise.resolve(result)
+    }),
+  ).resolves.toBe(JSON.stringify(result))
+  expect(received).toEqual({
+    currentVersion: "1.2.2",
+    target: "1.2.3",
+    restart: true,
+    dryRun: false,
+    delegated: true,
   })
 })

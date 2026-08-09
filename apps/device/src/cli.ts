@@ -34,10 +34,11 @@ import {
   threadContext,
   waitForTask,
 } from "./delegation.ts"
+import { allDeviceHealth, deviceVersions } from "./device-overview.ts"
 import { guidedSetupInput, joinRelay, terminalPrompter, type Prompter } from "./setup.ts"
 import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 import { installDeviceService } from "./service.ts"
-import { deviceVersionWarning, upgrade } from "./upgrade.ts"
+import { deviceVersionWarning, normalizeUpgradeTarget, upgrade } from "./upgrade.ts"
 
 interface Arguments {
   readonly options: ReadonlyMap<string, ReadonlyArray<string> | true>
@@ -64,6 +65,7 @@ const valueOptions = new Set([
   "workspace",
 ])
 const flagOptions = new Set([
+  "all",
   "client-only",
   "dry-run",
   "follow",
@@ -100,8 +102,12 @@ Usage:
   cohall sessions
   cohall revoke <session-id>
   cohall forget <device-id>
-  cohall doctor
+  cohall doctor [--all]
+  cohall versions
+  cohall usage
   cohall upgrade [--to version|latest] [--no-restart] [--dry-run]
+  cohall upgrade --all [--to version|latest] [--no-restart] [--dry-run]
+  cohall upgrades
   cohall service install
   cohall device
   cohall relay
@@ -449,9 +455,35 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   }
 
   if (command === "upgrade") {
-    allowOptions(arguments_, ["dry-run", "no-restart", "to"])
+    allowOptions(arguments_, ["all", "dry-run", "no-restart", "to"])
     noPositionals(arguments_, command)
     const target = option(arguments_, "to")
+    if (arguments_.options.has("all")) {
+      const normalizedTarget = normalizeUpgradeTarget(target)
+      const { relay } = await ownerClient()
+      const restart = !arguments_.options.has("no-restart")
+      if (arguments_.options.has("dry-run")) {
+        const devices = await Effect.runPromise(relay.devices())
+        print({
+          dry_run: true,
+          requested_version: normalizedTarget,
+          restart,
+          devices: devices.map((device) => ({ id: device.id, name: device.name })),
+        })
+        return
+      }
+      const operations = await Effect.runPromise(
+        relay.createUpgradeOperations({ target: normalizedTarget, restart }),
+      )
+      print({
+        queued: operations.length,
+        requested_version: normalizedTarget,
+        restart,
+        operations,
+        next: "Run `cohall upgrades` to inspect progress.",
+      })
+      return
+    }
     print(
       await upgrade({
         currentVersion: version,
@@ -461,6 +493,14 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         delegated: process.env.COHALL_PROVIDER !== undefined,
       }),
     )
+    return
+  }
+
+  if (command === "upgrades") {
+    allowOptions(arguments_, [])
+    noPositionals(arguments_, command)
+    const { relay } = await ownerClient()
+    print(await Effect.runPromise(relay.operations()))
     return
   }
 
@@ -612,8 +652,13 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   }
 
   if (command === "doctor") {
-    allowOptions(arguments_, [])
+    allowOptions(arguments_, ["all"])
     noPositionals(arguments_, command)
+    if (arguments_.options.has("all")) {
+      const { relay } = await client()
+      print(allDeviceHealth(await Effect.runPromise(relay.devices()), version))
+      return
+    }
     const configuration = await readStoredConfiguration()
     const relayUrl = normalizeRelayUrl(
       process.env.COHALL_RELAY_URL ?? configuration?.relayUrl ?? "http://127.0.0.1:8787",
@@ -684,6 +729,25 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         hasDeviceCredential === false ? "not configured" : (currentDevice?.status ?? "unknown"),
       device_version: currentDevice?.version,
       warnings,
+    })
+    return
+  }
+
+  if (command === "versions") {
+    allowOptions(arguments_, [])
+    noPositionals(arguments_, command)
+    const { relay } = await client()
+    print(deviceVersions(await Effect.runPromise(relay.devices()), version))
+    return
+  }
+
+  if (command === "usage") {
+    allowOptions(arguments_, [])
+    noPositionals(arguments_, command)
+    const { relay } = await client()
+    print({
+      ...(await Effect.runPromise(relay.usage())),
+      scope: "Retained Cohall task activity; provider token and billing usage are not available.",
     })
     return
   }

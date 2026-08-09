@@ -186,6 +186,34 @@ npx -y @akshar5/cohall trace <task-id> --follow
 Reuse the returned `thread_id` for follow-ups so the target resumes its provider
 session.
 
+## Manage all devices
+
+Inspect the whole installation from any paired client:
+
+```bash
+cohall doctor --all
+cohall versions
+cohall usage
+```
+
+`doctor --all` reports connectivity, providers, workspaces, and version drift.
+`usage` reports retained Cohall task activity by device, status, and provider;
+provider token counts and billing are not available to the relay.
+
+From the relay owner account, queue a Cohall upgrade for every registered
+device and inspect progress:
+
+```bash
+cohall upgrade --all
+cohall upgrades
+```
+
+Upgrade requests are durable for offline devices and run after active delegated
+work. This is a typed owner-only maintenance operation, not remote shell access.
+Each target must use a global npm, Bun, or pnpm installation that can upgrade
+itself. Preview the targets with `cohall upgrade --all --dry-run`, or pin an
+exact release with `--to 1.2.3`.
+
 ## Optional MCP
 
 CLI plus skill is the recommended integration. For a client that accepts the
