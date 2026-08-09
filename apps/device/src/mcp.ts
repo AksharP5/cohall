@@ -34,12 +34,18 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     {
       title: "Delegate work to another device",
       description:
-        "Send focused work to another Cohall device. Include only relevant context; Cohall cannot read the host transcript. Reuse thread_id for related follow-ups.",
+        "Send focused work to another Cohall device. When the request depends on the current conversation, distill its motivation, relevant facts, prior findings, constraints, and desired decision into context; Cohall cannot read the host transcript. Never forward unrelated transcript content. Reuse thread_id for related follow-ups.",
       inputSchema: {
         prompt: z.string().min(1).max(131_072),
         target: z.string().optional().describe("Device name, @name, hostname, or ID"),
         provider: z.enum(["codex", "claude-code", "opencode"]).default("codex"),
-        context: z.string().max(131_072).optional(),
+        context: z
+          .string()
+          .max(131_072)
+          .optional()
+          .describe(
+            "Distilled context the target needs: why the user is asking, relevant facts and prior findings, constraints, and the intended decision. The calling agent must supply this when the prompt depends on its conversation; omit it only for a self-contained task.",
+          ),
         thread_id: z.string().uuid().optional(),
         workspace: z.string().max(4096).optional(),
         wait: z.boolean().default(true),

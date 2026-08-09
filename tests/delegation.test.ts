@@ -305,7 +305,8 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       stderr: "ignore",
     })
     await mcp.connect(transport)
-    expect((await mcp.listTools()).tools.map((tool) => tool.name)).toEqual([
+    const tools = (await mcp.listTools()).tools
+    expect(tools.map((tool) => tool.name)).toEqual([
       "list_devices",
       "delegate",
       "task_status",
@@ -314,6 +315,20 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       "cancel_task",
       "thread_context",
     ])
+    expect(tools.find((tool) => tool.name === "delegate")).toMatchObject({
+      description: expect.stringContaining(
+        "distill its motivation, relevant facts, prior findings, constraints, and desired decision into context",
+      ),
+      inputSchema: {
+        properties: {
+          context: {
+            description: expect.stringContaining(
+              "The calling agent must supply this when the prompt depends on its conversation",
+            ),
+          },
+        },
+      },
+    })
     await mcp.close()
 
     const rawQueued: unknown = JSON.parse(

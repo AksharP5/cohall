@@ -21,6 +21,12 @@ normal shell/tool environment. `bunx @akshar5/cohall`, `pnpm dlx
 @akshar5/cohall`, and `yarn dlx @akshar5/cohall` are equivalent. No
 Cohall-specific UI extension is required.
 
+When delegating from a conversation, the invoking agent must distill the reason
+for the request, relevant facts and prior findings, constraints, and intended
+decision into Cohall's `context` field. Cohall cannot read the harness transcript
+itself. Send a focused brief rather than the raw chat; omit context only when the
+task is self-contained.
+
 ## Codex MCP
 
 ```bash

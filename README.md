@@ -48,7 +48,11 @@ direct as:
 
 The current agent turns that request into a focused Cohall task and incorporates
 the result when it returns. `@macbook` is a device selector understood through
-the installed skill, not special chat syntax built into your harness.
+the installed skill, not special chat syntax built into your harness. When the
+request depends on the current conversation, the sending agent automatically
+distills why you are asking, relevant facts and prior findings, constraints, and
+the decision you need into the task's context. Cohall does not copy the raw chat
+or unrelated private material.
 
 T3 Connect is a remote interface to a T3 Code environment: use it when you want
 to browse that machine's projects, terminal, files, and diffs yourself. Cohall
