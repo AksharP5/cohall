@@ -134,6 +134,37 @@ The service installer uses the current user's systemd manager on Linux,
 launchd on macOS, and Task Scheduler on Windows. See
 [service setup](docs/services.md) for boot-before-login and relay-host details.
 
+## Move a relay
+
+Move an existing relay to an always-on machine without pairing everything
+again. On the current relay host:
+
+```bash
+cohall relay backup ./cohall-relay-backup
+```
+
+Copy that directory privately to the new host, install Cohall there, and restore
+it as the user and data directory that will run the relay:
+
+```bash
+cohall relay restore ./cohall-relay-backup
+cohall relay
+```
+
+After the new address is reachable, run this once on each configured client or
+device:
+
+```bash
+cohall relay use https://new-relay.example.com
+```
+
+The switch verifies the existing credentials against the restored relay before
+changing local configuration, then restarts an active device service. The
+backup contains credentials and task history; transfer and store it like a
+secret. If the new host keeps the same DNS or Tailscale address, clients need no
+configuration change. See [moving a relay](docs/services.md#move-a-relay) for
+service-host details.
+
 ## Delegate work
 
 ```bash

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { deviceServicePlan } from "./service.ts"
+import { deviceServicePlan, restartDeviceService } from "./service.ts"
+import type { CommandRunner } from "./upgrade.ts"
 
 describe("device service plans", () => {
   it("uses the exact global executable in a Linux user service", () => {
@@ -45,5 +46,36 @@ describe("device service plans", () => {
         home: "C:\\Users\\user",
       }),
     ).toThrow("supports Linux and macOS")
+  })
+
+  it("restarts an active Linux device service", async () => {
+    const invocations: Array<string> = []
+    const runner: CommandRunner = {
+      run: (command, arguments_) => {
+        invocations.push([command, ...arguments_].join(" "))
+        return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" })
+      },
+    }
+
+    await expect(restartDeviceService({ platform: "linux", runner })).resolves.toEqual({
+      running: true,
+      restarted: true,
+      service: "cohall-device.service",
+    })
+    expect(invocations).toEqual([
+      "systemctl --user is-active --quiet cohall-device.service",
+      "systemctl --user restart cohall-device.service",
+    ])
+  })
+
+  it("does not start a stopped device service while changing relays", async () => {
+    const runner: CommandRunner = {
+      run: () => Promise.resolve({ exitCode: 3, stdout: "", stderr: "" }),
+    }
+
+    await expect(restartDeviceService({ platform: "linux", runner })).resolves.toEqual({
+      running: false,
+      restarted: false,
+    })
   })
 })

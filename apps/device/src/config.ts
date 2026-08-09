@@ -63,6 +63,9 @@ const defaultRelayDataDirectory = (): string => {
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "cohall")
 }
 
+export const relayDataDirectory = (): string =>
+  resolve(process.env.COHALL_DATA_DIR ?? defaultRelayDataDirectory())
+
 export const configurationPath = (): string =>
   resolve(process.env.COHALL_CONFIG ?? join(defaultConfigDirectory(), "config.json"))
 
@@ -269,10 +272,7 @@ export const loadClientConfiguration = Effect.tryPromise({
 export const loadOwnerConfiguration = Effect.tryPromise({
   try: async () => {
     const stored = await storedOrDefaults()
-    const ownerTokenPath = join(
-      resolve(process.env.COHALL_DATA_DIR ?? defaultRelayDataDirectory()),
-      "owner-token",
-    )
+    const ownerTokenPath = join(relayDataDirectory(), "owner-token")
     const token =
       process.env.COHALL_TOKEN ??
       (await readFile(ownerTokenPath, "utf8")

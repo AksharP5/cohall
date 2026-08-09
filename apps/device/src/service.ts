@@ -146,3 +146,50 @@ export const installDeviceService = async (
     ...(plan.note === undefined ? {} : { note: plan.note }),
   }
 }
+
+export interface DeviceServiceRestart {
+  readonly running: boolean
+  readonly restarted: boolean
+  readonly service?: string
+}
+
+export const restartDeviceService = async (
+  options: {
+    readonly platform?: NodeJS.Platform
+    readonly uid?: number
+    readonly runner?: CommandRunner
+  } = {},
+): Promise<DeviceServiceRestart> => {
+  const platform = options.platform ?? process.platform
+  const runner = options.runner ?? defaultRunner
+  if (platform === "linux") {
+    const service = "cohall-device.service"
+    const check = await runner.run("systemctl", ["--user", "is-active", "--quiet", service], 10_000)
+    if (check.exitCode !== 0) {
+      return { running: false, restarted: false }
+    }
+    await checked(runner, "systemctl", ["--user", "restart", service])
+    return { running: true, restarted: true, service }
+  }
+  if (platform === "darwin") {
+    const service = "com.cohall.device"
+    const target = `gui/${options.uid ?? process.getuid?.() ?? 0}/${service}`
+    const check = await runner.run("launchctl", ["print", target], 10_000)
+    if (check.exitCode !== 0) {
+      return { running: false, restarted: false }
+    }
+    await checked(runner, "launchctl", ["kickstart", "-k", target])
+    return { running: true, restarted: true, service }
+  }
+  if (platform === "win32") {
+    const service = "Cohall Device"
+    const check = await runner.run("schtasks.exe", ["/Query", "/TN", service], 10_000)
+    if (check.exitCode !== 0) {
+      return { running: false, restarted: false }
+    }
+    await checked(runner, "schtasks.exe", ["/End", "/TN", service], true)
+    await checked(runner, "schtasks.exe", ["/Run", "/TN", service])
+    return { running: true, restarted: true, service }
+  }
+  return { running: false, restarted: false }
+}

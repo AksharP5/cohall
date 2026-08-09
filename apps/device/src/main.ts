@@ -25,10 +25,10 @@ const main = async (): Promise<void> => {
     printHelp()
     return
   }
-  if (["device", "relay", "mcp"].includes(command) && process.argv.length > 3) {
+  if (["device", "mcp"].includes(command) && process.argv.length > 3) {
     throw new Error(`${command} does not accept arguments`)
   }
-  if (command === "relay") {
+  if (command === "relay" && commandArguments.length === 0) {
     const { runRelay } = await import("@cohall/relay")
     await runRelay()
     return
