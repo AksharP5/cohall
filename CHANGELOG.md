@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/AksharP5/cohall/compare/v0.4.10...v0.5.0) (2026-08-10)
+
+
+### Features
+
+* add safe all-device operations ([#47](https://github.com/AksharP5/cohall/issues/47)) ([34da34f](https://github.com/AksharP5/cohall/commit/34da34fd57cbde624f6c9f2dc171a2644a84faf0))
+* **cli:** make device setup guided ([#44](https://github.com/AksharP5/cohall/issues/44)) ([0330094](https://github.com/AksharP5/cohall/commit/033009416a97d6158af978589de92f77b4d1c3b7))
+* **relay:** make relay moves recoverable ([#46](https://github.com/AksharP5/cohall/issues/46)) ([851ddff](https://github.com/AksharP5/cohall/commit/851ddff4dcd8545477b729c8f5509a3b145fd759))
+
+
+### Bug Fixes
+
+* **device:** trust service manager executables ([#50](https://github.com/AksharP5/cohall/issues/50)) ([f150574](https://github.com/AksharP5/cohall/commit/f1505743621647e3ff8f239f2ebd6b11c9a9c09a))
+* **relay:** harden relay moves ([#48](https://github.com/AksharP5/cohall/issues/48)) ([fd8c8f3](https://github.com/AksharP5/cohall/commit/fd8c8f3f5d4a14deace8c82e3bcb043f33968127))
+* **relay:** make all-device maintenance recoverable ([#49](https://github.com/AksharP5/cohall/issues/49)) ([63fd304](https://github.com/AksharP5/cohall/commit/63fd304fe6c81c4d71122afe2bc2ca8899b0e117))
+
 ## [0.4.10](https://github.com/AksharP5/cohall/compare/v0.4.9...v0.4.10) (2026-08-09)
 
 
