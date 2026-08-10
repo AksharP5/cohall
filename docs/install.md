@@ -219,7 +219,7 @@ cohall upgrades abandon <operation-id>
 All-device upgrades require the relay owner credential. They are stored by the
 relay, wait for offline devices, and run after active tasks. `cohall upgrades`
 shows the 50 newest queued, running, completed, or failed results. If a device is
-permanently lost, the owner can abandon its operation so later fleet upgrades
+permanently lost, the owner can abandon its operation so later all-device upgrades
 are not blocked. Abandonment records a failed terminal result; it does not stop
 an upgrade already executing on a reachable device. Forgetting an offline device
 also closes its outstanding maintenance operation. The operation accepts only
