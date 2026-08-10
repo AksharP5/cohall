@@ -213,13 +213,18 @@ device and inspect progress:
 ```bash
 cohall upgrade --all
 cohall upgrades
+# If a lost device can never finish its queued operation:
+cohall upgrades abandon <operation-id>
 ```
 
 Upgrade requests are durable for offline devices and run after active delegated
 work. This is a typed owner-only maintenance operation, not remote shell access.
 Each target must use a global npm, Bun, or pnpm installation that can upgrade
 itself. Preview the targets with `cohall upgrade --all --dry-run`, or pin an
-exact release with `--to 1.2.3`.
+exact release with `--to 1.2.3`. `cohall upgrades` returns the 50 newest results.
+Abandonment is an owner recovery action for a permanently unreachable target;
+it does not interrupt an upgrade that is already executing. Forgetting an
+offline device also closes its outstanding maintenance operation.
 
 ## Optional MCP
 

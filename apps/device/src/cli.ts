@@ -2,6 +2,7 @@ import { RelayClient } from "@cohall/client"
 import {
   AuthSessionId,
   DeviceId,
+  OperationId,
   Provider,
   TaskId,
   ThreadId,
@@ -108,7 +109,7 @@ Usage:
   cohall usage
   cohall upgrade [--to version|latest] [--no-restart] [--dry-run]
   cohall upgrade --all [--to version|latest] [--no-restart] [--dry-run]
-  cohall upgrades
+  cohall upgrades [abandon <operation-id>]
   cohall service install
   cohall device
   cohall relay
@@ -500,8 +501,18 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
 
   if (command === "upgrades") {
     allowOptions(arguments_, [])
-    noPositionals(arguments_, command)
     const { relay } = await ownerClient()
+    if (arguments_.positionals.length > 0) {
+      if (arguments_.positionals.length !== 2 || arguments_.positionals[0] !== "abandon") {
+        throw new Error("Usage: cohall upgrades [abandon <operation-id>]")
+      }
+      print(
+        await Effect.runPromise(
+          relay.abandonOperation(Schema.decodeUnknownSync(OperationId)(arguments_.positionals[1])),
+        ),
+      )
+      return
+    }
     print(await Effect.runPromise(relay.operations()))
     return
   }

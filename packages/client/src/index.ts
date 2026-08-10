@@ -15,6 +15,7 @@ import {
   UsageSummary,
   type AuthSessionId,
   type DeviceId,
+  type OperationId,
   type TaskId,
   type ThreadId,
 } from "@cohall/protocol"
@@ -61,6 +62,9 @@ export interface Interface {
     input: CreateUpgradeOperationsInput,
   ) => Effect.Effect<ReadonlyArray<DeviceOperation>, RelayClientError>
   readonly operations: () => Effect.Effect<ReadonlyArray<DeviceOperation>, RelayClientError>
+  readonly abandonOperation: (
+    operationId: OperationId,
+  ) => Effect.Effect<DeviceOperation, RelayClientError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@cohall/RelayClient") {}
@@ -211,6 +215,13 @@ export const make = (options: RelayClientOptions): Interface => {
       ),
     operations: () =>
       request("RelayClient.operations", "/api/operations", Schema.Array(DeviceOperation)),
+    abandonOperation: (operationId) =>
+      request(
+        "RelayClient.abandonOperation",
+        `/api/operations/${encodeURIComponent(operationId)}/abandon`,
+        DeviceOperation,
+        { method: "POST" },
+      ),
   })
 }
 
