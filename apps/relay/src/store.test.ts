@@ -444,3 +444,52 @@ it("summarizes retained work and runs typed upgrades across registered devices",
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+it("rejects all-device operations before every daemon supports them", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-store-legacy-operation-"))
+  const runtime = ManagedRuntime.make(RelayStore.layer(join(directory, "relay.db")))
+  const run = <A, E>(effect: Effect.Effect<A, E, RelayStore.Service>): Promise<A> =>
+    runtime.runPromise(effect)
+  try {
+    await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        yield* store.upsertDevice(
+          Device.make({
+            id: DeviceId.make("66666666-6666-4666-8666-666666666666"),
+            name: "legacy",
+            hostname: "legacy.local",
+            platform: "linux",
+            architecture: "x64",
+            status: "online",
+            providers: ["codex"],
+            capabilities: [],
+            workspaces: [],
+            version: "0.4.10",
+            lastSeenAt: now(),
+          }),
+        )
+      }),
+    )
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.createUpgradeOperations({ target: "latest", restart: true })
+        }),
+      ),
+    ).rejects.toMatchObject({ message: expect.stringContaining("Upgrade individually first") })
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.listOperations()
+        }),
+      ),
+    ).resolves.toEqual([])
+  } finally {
+    await runtime.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})

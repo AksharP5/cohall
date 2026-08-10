@@ -4,12 +4,28 @@ import {
   CreateUpgradeOperationsInput,
   SocketEvent,
   Task,
+  assertDeviceOperationSupport,
   makeDeviceId,
   makeTaskId,
   makeThreadId,
   maxSocketPayloadBytes,
   now,
+  supportsDeviceOperations,
 } from "./index.ts"
+
+it("requires the device-operation protocol before queuing all-device work", () => {
+  expect(supportsDeviceOperations("0.4.10")).toBe(false)
+  expect(supportsDeviceOperations("0.5.0-beta.1")).toBe(false)
+  expect(supportsDeviceOperations("0.5.0")).toBe(true)
+  expect(supportsDeviceOperations("0.6.0-beta.1")).toBe(true)
+  expect(supportsDeviceOperations("0.0.0-development")).toBe(true)
+  expect(() =>
+    assertDeviceOperationSupport([
+      { name: "current", version: "0.5.0" },
+      { name: "legacy", version: "0.4.10" },
+    ]),
+  ).toThrow("Upgrade individually first: legacy (0.4.10)")
+})
 
 it("allows only explicit versions in all-device upgrades", async () => {
   await expect(

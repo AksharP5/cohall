@@ -6,6 +6,7 @@ import {
   Provider,
   TaskId,
   ThreadId,
+  assertDeviceOperationSupport,
   makeDeviceId,
   version,
 } from "@cohall/protocol"
@@ -467,6 +468,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       const restart = !arguments_.options.has("no-restart")
       if (arguments_.options.has("dry-run")) {
         const devices = await Effect.runPromise(relay.devices())
+        assertDeviceOperationSupport(devices)
         print({
           dry_run: true,
           requested_version: normalizedTarget,
