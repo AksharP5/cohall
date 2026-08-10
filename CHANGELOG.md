@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/AksharP5/cohall/compare/v0.5.0...v0.5.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* **relay:** reject upgrades for legacy daemons ([#52](https://github.com/AksharP5/cohall/issues/52)) ([d4ab660](https://github.com/AksharP5/cohall/commit/d4ab660cce5489f6f572e221e71fc4ff6a412287))
+
 ## [0.5.0](https://github.com/AksharP5/cohall/compare/v0.4.10...v0.5.0) (2026-08-10)
 
 
