@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/AksharP5/cohall/compare/v0.5.2...v0.5.3) (2026-08-10)
+
+
+### Bug Fixes
+
+* **device:** trust distro-packaged npm ([#56](https://github.com/AksharP5/cohall/issues/56)) ([60de35d](https://github.com/AksharP5/cohall/commit/60de35dff54847b221f46cd89744cd0acef732a9))
+
 ## [0.5.2](https://github.com/AksharP5/cohall/compare/v0.5.1...v0.5.2) (2026-08-10)
 
 
