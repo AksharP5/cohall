@@ -12,7 +12,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises"
-import { delimiter, dirname, extname, isAbsolute, join } from "node:path"
+import { delimiter, dirname, extname, isAbsolute, join, relative } from "node:path"
 import { platform as operatingSystem } from "node:os"
 import { configurationPath } from "./config.ts"
 
@@ -190,7 +190,47 @@ const executableNames = (command: string): ReadonlyArray<string> => {
     .map((extension) => `${command}${extension.toLowerCase()}`)
 }
 
-export const trustedExecutable = async (command: string): Promise<string> => {
+const containsPath = (root: string, path: string): boolean => {
+  const child = relative(root, path)
+  return child === "" || (!child.startsWith("..") && !isAbsolute(child))
+}
+
+const linuxSystemExecutableRoots = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/nix/store"]
+const macosHomebrewRoots = ["/opt/homebrew", "/usr/local"]
+const macosAdminGroup = 80
+
+export const isTrustedSystemExecutablePath = (
+  platform: NodeJS.Platform,
+  canonical: string,
+): boolean =>
+  platform === "linux" && linuxSystemExecutableRoots.some((root) => containsPath(root, canonical))
+
+export const isTrustedGroupWritablePath = (options: {
+  readonly platform: NodeJS.Platform
+  readonly canonical: string
+  readonly writableRoot: string | undefined
+  readonly path: string
+  readonly uid: number | undefined
+  readonly ownerUid: number
+  readonly ownerGid: number
+}): boolean => {
+  const writableRoot = options.writableRoot
+  return (
+    options.platform === "darwin" &&
+    writableRoot !== undefined &&
+    options.uid !== undefined &&
+    options.ownerUid === options.uid &&
+    options.ownerGid === macosAdminGroup &&
+    macosHomebrewRoots.some((root) => containsPath(root, writableRoot)) &&
+    containsPath(writableRoot, options.canonical) &&
+    containsPath(writableRoot, options.path)
+  )
+}
+
+export const trustedExecutable = async (
+  command: string,
+  options: { readonly writableRoot?: string } = {},
+): Promise<string> => {
   const candidates = isAbsolute(command)
     ? [command]
     : (process.env.PATH ?? "")
@@ -218,12 +258,31 @@ export const trustedExecutable = async (command: string): Promise<string> => {
     return canonical
   }
   const uid = process.getuid?.()
+  const writableRoot =
+    options.writableRoot === undefined ? undefined : await realpath(options.writableRoot)
+  // Confined Linux services cannot always observe host-root ownership. Fixed OS roots are the
+  // trust anchor; their writable bits are still checked below.
+  const systemExecutable = isTrustedSystemExecutablePath(operatingSystem(), canonical)
   for (let path = canonical; ; path = dirname(path)) {
     const metadata = await stat(path)
-    if ((metadata.mode & 0o022) !== 0) {
+    // Homebrew's shared prefix is admin-group writable. Local administrators are already inside
+    // the OS trust boundary; arbitrary shared Unix groups remain rejected.
+    const trustedGroupWritablePath = isTrustedGroupWritablePath({
+      platform: operatingSystem(),
+      canonical,
+      writableRoot,
+      path,
+      uid,
+      ownerUid: metadata.uid,
+      ownerGid: metadata.gid,
+    })
+    if (
+      (metadata.mode & 0o002) !== 0 ||
+      ((metadata.mode & 0o020) !== 0 && !trustedGroupWritablePath)
+    ) {
       throw new Error(`Refusing executable beneath group- or world-writable path ${path}`)
     }
-    if (uid !== undefined && metadata.uid !== 0 && metadata.uid !== uid) {
+    if (uid !== undefined && metadata.uid !== 0 && metadata.uid !== uid && !systemExecutable) {
       throw new Error(`Refusing executable owned by another user at ${path}`)
     }
     const parent = dirname(path)
@@ -631,7 +690,14 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
   }
 
-  await checked(runner, { ...install, command: await resolveExecutable(install.command) })
+  const installExecutable =
+    options.resolveExecutable === undefined
+      ? await trustedExecutable(
+          install.command,
+          installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
+        )
+      : await resolveExecutable(install.command)
+  await checked(runner, { ...install, command: installExecutable })
   const nextVersion = await installedVersion(entrypoint)
   if (target !== "latest" && nextVersion !== target) {
     throw new Error(`Installed Cohall ${nextVersion}, expected ${target}`)

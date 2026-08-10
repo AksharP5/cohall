@@ -4,6 +4,8 @@ import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
   deviceVersionWarning,
+  isTrustedGroupWritablePath,
+  isTrustedSystemExecutablePath,
   normalizeUpgradeTarget,
   packageInstallCommand,
   packageInstallation,
@@ -50,6 +52,14 @@ describe("upgrade target", () => {
     expect(() => normalizeUpgradeTarget("next")).toThrow("exact semantic version")
     expect(() => normalizeUpgradeTarget("1.2.3; reboot")).toThrow("exact semantic version")
   })
+
+  it("recognizes only fixed Linux system executable roots", () => {
+    expect(isTrustedSystemExecutablePath("linux", "/usr/bin/systemctl")).toBe(true)
+    expect(isTrustedSystemExecutablePath("linux", "/nix/store/hash/bin/systemctl")).toBe(true)
+    expect(isTrustedSystemExecutablePath("linux", "/usr/bin-attacker/systemctl")).toBe(false)
+    expect(isTrustedSystemExecutablePath("linux", "/usr/local/bin/systemctl")).toBe(false)
+    expect(isTrustedSystemExecutablePath("darwin", "/usr/bin/systemctl")).toBe(false)
+  })
 })
 
 describe("package installation", () => {
@@ -62,8 +72,48 @@ describe("package installation", () => {
       await chmod(root, 0o777)
       await chmod(executable, 0o755)
       await expect(trustedExecutable(executable)).rejects.toThrow("group- or world-writable")
+      await expect(trustedExecutable(executable, { writableRoot: root })).rejects.toThrow(
+        "group- or world-writable",
+      )
     },
   )
+
+  it.skipIf(process.platform === "win32")(
+    "rejects arbitrary group-writable installation prefixes",
+    async () => {
+      const root = await mkdtemp(join(process.cwd(), ".cohall-upgrade-trusted-"))
+      temporaryDirectories.push(root)
+      const executable = join(root, "npm")
+      await writeFile(executable, "#!/bin/sh\nexit 0\n")
+      await chmod(root, 0o770)
+      await chmod(executable, 0o755)
+
+      await expect(trustedExecutable(executable)).rejects.toThrow("group- or world-writable")
+      await expect(trustedExecutable(executable, { writableRoot: root })).rejects.toThrow(
+        "group- or world-writable",
+      )
+    },
+  )
+
+  it("limits group-writable package paths to the macOS Homebrew admin group", () => {
+    const homebrew = {
+      platform: "darwin" as const,
+      canonical: "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js",
+      writableRoot: "/opt/homebrew",
+      path: "/opt/homebrew/lib",
+      uid: 501,
+      ownerUid: 501,
+      ownerGid: 80,
+    }
+
+    expect(isTrustedGroupWritablePath(homebrew)).toBe(true)
+    expect(isTrustedGroupWritablePath({ ...homebrew, platform: "linux" })).toBe(false)
+    expect(isTrustedGroupWritablePath({ ...homebrew, ownerGid: 20 })).toBe(false)
+    expect(isTrustedGroupWritablePath({ ...homebrew, ownerUid: 502 })).toBe(false)
+    expect(isTrustedGroupWritablePath({ ...homebrew, writableRoot: "/Users/user/.local" })).toBe(
+      false,
+    )
+  })
 
   it("preserves a custom npm prefix", () => {
     const installation = packageInstallation(
