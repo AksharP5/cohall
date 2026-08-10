@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/AksharP5/cohall/compare/v0.5.1...v0.5.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* **device:** support confined and Homebrew upgrades ([#54](https://github.com/AksharP5/cohall/issues/54)) ([80759fd](https://github.com/AksharP5/cohall/commit/80759fdaefa03fd8f6c7b6fd0a3f72b09c3b3d39))
+
 ## [0.5.1](https://github.com/AksharP5/cohall/compare/v0.5.0...v0.5.1) (2026-08-10)
 
 
