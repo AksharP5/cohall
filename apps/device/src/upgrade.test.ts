@@ -55,6 +55,12 @@ describe("upgrade target", () => {
 
   it("recognizes only fixed Linux system executable roots", () => {
     expect(isTrustedSystemExecutablePath("linux", "/usr/bin/systemctl")).toBe(true)
+    expect(isTrustedSystemExecutablePath("linux", "/usr/lib/node_modules/npm/bin/npm-cli.js")).toBe(
+      true,
+    )
+    expect(isTrustedSystemExecutablePath("linux", "/usr/share/nodejs/npm/bin/npm-cli.js")).toBe(
+      true,
+    )
     expect(isTrustedSystemExecutablePath("linux", "/nix/store/hash/bin/systemctl")).toBe(true)
     expect(isTrustedSystemExecutablePath("linux", "/usr/bin-attacker/systemctl")).toBe(false)
     expect(isTrustedSystemExecutablePath("linux", "/usr/local/bin/systemctl")).toBe(false)

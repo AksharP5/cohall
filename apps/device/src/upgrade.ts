@@ -195,7 +195,15 @@ const containsPath = (root: string, path: string): boolean => {
   return child === "" || (!child.startsWith("..") && !isAbsolute(child))
 }
 
-const linuxSystemExecutableRoots = ["/bin", "/sbin", "/usr/bin", "/usr/sbin", "/nix/store"]
+const linuxSystemExecutableRoots = [
+  "/bin",
+  "/sbin",
+  "/usr/bin",
+  "/usr/sbin",
+  "/usr/lib/node_modules",
+  "/usr/share/nodejs",
+  "/nix/store",
+]
 const macosHomebrewRoots = ["/opt/homebrew", "/usr/local"]
 const macosAdminGroup = 80
 
