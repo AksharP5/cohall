@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { deviceServicePlan, restartDeviceService } from "./service.ts"
 import type { CommandRunner } from "./upgrade.ts"
@@ -78,4 +81,25 @@ describe("device service plans", () => {
       restarted: false,
     })
   })
+
+  it.skipIf(process.platform === "win32")(
+    "rejects service managers found beneath writable directories",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "cohall-service-"))
+      const executable = join(directory, "systemctl")
+      const previousPath = process.env.PATH
+      try {
+        await writeFile(executable, "#!/bin/sh\nexit 0\n")
+        await chmod(executable, 0o755)
+        await chmod(directory, 0o777)
+        process.env.PATH = directory
+        await expect(restartDeviceService({ platform: "linux" })).rejects.toThrow(
+          "group- or world-writable",
+        )
+      } finally {
+        process.env.PATH = previousPath
+        await rm(directory, { recursive: true, force: true })
+      }
+    },
+  )
 })

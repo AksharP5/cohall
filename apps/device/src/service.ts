@@ -2,7 +2,12 @@ import { execFile, type ExecFileException } from "node:child_process"
 import { chmod, mkdir, realpath, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { packageInstallation, type CommandResult, type CommandRunner } from "./upgrade.ts"
+import {
+  packageInstallation,
+  trustedExecutable,
+  type CommandResult,
+  type CommandRunner,
+} from "./upgrade.ts"
 
 interface ServiceFile {
   readonly path: string
@@ -72,10 +77,11 @@ export const deviceServicePlan = (options: {
 }
 
 const defaultRunner: CommandRunner = {
-  run: (command, arguments_, timeoutMs = 60_000) =>
-    new Promise((resolve) => {
+  run: async (command, arguments_, timeoutMs = 60_000) => {
+    const executable = await trustedExecutable(command)
+    return new Promise((resolve) => {
       execFile(
-        command,
+        executable,
         [...arguments_],
         { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: timeoutMs, windowsHide: true },
         (error: ExecFileException | null, stdout, stderr) =>
@@ -86,7 +92,8 @@ const defaultRunner: CommandRunner = {
             ...(error === null ? {} : { error: error.message }),
           }),
       )
-    }),
+    })
+  },
 }
 
 const checked = async (
