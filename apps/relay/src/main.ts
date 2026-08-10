@@ -600,6 +600,17 @@ export const runRelay = async (): Promise<void> => {
           201,
         )
       }
+      const abandonOperation = url.pathname.match(/^\/api\/operations\/([^/]+)\/abandon$/)
+      if (request.method === "POST" && abandonOperation?.[1] !== undefined) {
+        const operation = yield* store.abandonOperation(
+          yield* pathId(OperationId, abandonOperation[1]),
+        )
+        hub.sendToDevice(
+          operation.targetDeviceId,
+          SocketEvent.make({ _tag: "OperationSettled", operationId: operation.id }),
+        )
+        return json(operation)
+      }
       const forgetDevice = url.pathname.match(/^\/api\/devices\/([^/]+)\/forget$/)
       if (request.method === "POST" && forgetDevice?.[1] !== undefined) {
         if (principal !== "owner") {

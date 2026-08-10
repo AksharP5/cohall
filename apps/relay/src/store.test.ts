@@ -165,11 +165,30 @@ it("forgets only offline devices and revokes their registration", async () => {
       lastSeenAt: now(),
     })
 
-    await run(
+    const abandoned = await run(
       Effect.gen(function* () {
         const store = yield* RelayStore.Service
         yield* store.upsertDevice(device)
+        const operations = yield* store.createUpgradeOperations({ target: "latest", restart: true })
         yield* store.forgetDevice(deviceId)
+        return operations[0]
+      }),
+    )
+    if (abandoned === undefined) {
+      throw new Error("Expected an abandoned operation")
+    }
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.listOperations()
+        }),
+      ),
+    ).resolves.toContainEqual(
+      expect.objectContaining({
+        id: abandoned.id,
+        status: "failed",
+        error: "Target device was forgotten by the relay owner",
       }),
     )
     expect(
@@ -379,10 +398,20 @@ it("summarizes retained work and runs typed upgrades across registered devices",
           const store = yield* RelayStore.Service
           yield* store.assignOperation(serverOperation.id)
           yield* store.acceptOperation(serverOperation.id, serverId)
-          return yield* store.finishOperation(serverOperation.id, serverId, '{"upgraded":true}')
+          yield* store.requeueOperationsFor(serverId)
+          const completed = yield* store.finishOperation(
+            serverOperation.id,
+            serverId,
+            '{"upgraded":true}',
+          )
+          const replayed = yield* store.assignOperation(serverOperation.id)
+          return { completed, replayed }
         }),
       ),
-    ).resolves.toMatchObject({ status: "completed", result: '{"upgraded":true}' })
+    ).resolves.toMatchObject({
+      completed: { status: "completed", result: '{"upgraded":true}' },
+      replayed: { status: "completed", result: '{"upgraded":true}' },
+    })
 
     await expect(
       run(
@@ -392,6 +421,24 @@ it("summarizes retained work and runs typed upgrades across registered devices",
         }),
       ),
     ).rejects.toMatchObject({ message: expect.stringContaining("already has") })
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.abandonOperation(laptopOperation.id)
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "failed", error: "Abandoned by the relay owner" })
+
+    await expect(
+      run(
+        Effect.gen(function* () {
+          const store = yield* RelayStore.Service
+          return yield* store.createUpgradeOperations({ target: "latest", restart: true })
+        }),
+      ),
+    ).resolves.toHaveLength(2)
   } finally {
     await runtime.dispose()
     await rm(directory, { recursive: true, force: true })

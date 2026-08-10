@@ -204,6 +204,9 @@ export interface Interface {
     input: CreateUpgradeOperationsInput,
   ) => Effect.Effect<ReadonlyArray<DeviceOperation>, PersistenceError>
   readonly listOperations: () => Effect.Effect<ReadonlyArray<DeviceOperation>, PersistenceError>
+  readonly abandonOperation: (
+    operationId: OperationId,
+  ) => Effect.Effect<DeviceOperation, PersistenceError>
   readonly pendingOperationsFor: (
     deviceId: DeviceId,
   ) => Effect.Effect<ReadonlyArray<DeviceOperation>, PersistenceError>
@@ -666,7 +669,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       try: () =>
         db
           .query<DeviceOperationRow, []>(
-            "SELECT * FROM device_operations ORDER BY created_at DESC, id DESC LIMIT 1000",
+            "SELECT * FROM device_operations ORDER BY created_at DESC, id DESC LIMIT 50",
           )
           .all(),
       catch: operationError("RelayStore.listOperations"),
@@ -849,15 +852,30 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   const finishOperation = (operationId: OperationId, deviceId: DeviceId, result: string) =>
     requireOperationTarget(operationId, deviceId).pipe(
       Effect.flatMap(() =>
-        transitionOperation(operationId, ["assigned", "running"], "completed", result),
+        transitionOperation(operationId, ["queued", "assigned", "running"], "completed", result),
       ),
     )
 
   const failOperation = (operationId: OperationId, deviceId: DeviceId, error: string) =>
     requireOperationTarget(operationId, deviceId).pipe(
       Effect.flatMap(() =>
-        transitionOperation(operationId, ["assigned", "running"], "failed", undefined, error),
+        transitionOperation(
+          operationId,
+          ["queued", "assigned", "running"],
+          "failed",
+          undefined,
+          error,
+        ),
       ),
+    )
+
+  const abandonOperation = (operationId: OperationId) =>
+    transitionOperation(
+      operationId,
+      ["queued", "assigned", "running"],
+      "failed",
+      undefined,
+      "Abandoned by the relay owner",
     )
 
   const requeueOperationsFor = Effect.fn("RelayStore.requeueOperationsFor")(function* (
@@ -899,16 +917,13 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           if ((outstanding?.count ?? 0) > 0) {
             throw new Error(`Device ${deviceId} still has outstanding tasks`)
           }
-          const operations = db
-            .query<{ readonly count: number }, [string]>(
-              `SELECT COUNT(*) AS count FROM device_operations
-               WHERE target_device_id = ? AND status IN ('queued', 'assigned', 'running')`,
-            )
-            .get(deviceId)
-          if ((operations?.count ?? 0) > 0) {
-            throw new Error(`Device ${deviceId} still has an upgrade operation in progress`)
-          }
           const timestamp = now()
+          db.query(
+            `UPDATE device_operations
+             SET status = 'failed', error = ?, updated_at = ?, completed_at = ?
+             WHERE target_device_id = ? AND status IN ('queued', 'assigned', 'running')`,
+          ).run("Target device was forgotten by the relay owner", timestamp, timestamp, deviceId)
+          pruneTerminalOperations()
           db.query("UPDATE devices SET forgotten_at = ? WHERE id = ?").run(timestamp, deviceId)
           db.query(
             "UPDATE auth_sessions SET revoked_at = ? WHERE bound_device_id = ? AND revoked_at IS NULL",
@@ -1667,6 +1682,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     requeueTasksFor,
     createUpgradeOperations,
     listOperations,
+    abandonOperation,
     pendingOperationsFor,
     assignOperation,
     rollbackOperation: (operationId) => transitionOperation(operationId, ["assigned"], "queued"),
