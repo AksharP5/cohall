@@ -219,6 +219,8 @@ cohall upgrades abandon <operation-id>
 
 Upgrade requests are durable for offline devices and run after active delegated
 work. This is a typed owner-only maintenance operation, not remote shell access.
+Every device must already run Cohall 0.5.0 or newer; upgrade older installations
+individually once before using all-device upgrades.
 Each target must use a global npm, Bun, or pnpm installation that can upgrade
 itself. Preview the targets with `cohall upgrade --all --dry-run`, or pin an
 exact release with `--to 1.2.3`. `cohall upgrades` returns the 50 newest results.

@@ -19,6 +19,7 @@ import {
   Thread,
   ThreadContext,
   UsageSummary,
+  assertDeviceOperationSupport,
   makeAuthSessionId,
   makeDeviceId,
   makeMessageId,
@@ -695,6 +696,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           if (devices.length > 256) {
             throw new Error("All-device operations support at most 256 registered devices")
           }
+          assertDeviceOperationSupport(devices)
           for (const device of devices) {
             const outstanding = db
               .query<{ readonly count: number }, [string]>(

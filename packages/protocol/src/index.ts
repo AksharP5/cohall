@@ -136,6 +136,49 @@ export const Device = Schema.Struct({
 })
 export interface Device extends Schema.Schema.Type<typeof Device> {}
 
+export const minimumDeviceOperationVersion = "0.5.0"
+
+const parsedVersion = (value: string): readonly [number, number, number, boolean] | undefined => {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(value)
+  if (match === null) {
+    return undefined
+  }
+  const core = match.slice(1, 4).map(Number)
+  if (core.length !== 3 || core.some((part) => !Number.isSafeInteger(part))) {
+    return undefined
+  }
+  return [core[0] ?? 0, core[1] ?? 0, core[2] ?? 0, match[4] !== undefined]
+}
+
+export const supportsDeviceOperations = (candidate: string): boolean => {
+  if (candidate === "0.0.0-development") {
+    return true
+  }
+  const current = parsedVersion(candidate)
+  const minimum = parsedVersion(minimumDeviceOperationVersion)
+  if (current === undefined || minimum === undefined) {
+    return false
+  }
+  for (let index = 0; index < 3; index += 1) {
+    if (current[index] !== minimum[index]) {
+      return (current[index] ?? 0) > (minimum[index] ?? 0)
+    }
+  }
+  return !current[3]
+}
+
+export const assertDeviceOperationSupport = (
+  devices: ReadonlyArray<{ readonly name: string; readonly version: string }>,
+): void => {
+  const unsupported = devices.filter((device) => !supportsDeviceOperations(device.version))
+  if (unsupported.length === 0) {
+    return
+  }
+  throw new Error(
+    `All-device upgrades require Cohall ${minimumDeviceOperationVersion} or newer on every device. Upgrade individually first: ${unsupported.map((device) => `${device.name} (${device.version})`).join(", ")}`,
+  )
+}
+
 export const Thread = Schema.Struct({
   id: ThreadId,
   title: bounded(256),

@@ -218,15 +218,16 @@ cohall upgrades abandon <operation-id>
 
 All-device upgrades require the relay owner credential. They are stored by the
 relay, wait for offline devices, and run after active tasks. `cohall upgrades`
-shows the 50 newest queued, running, completed, or failed results. If a device is
-permanently lost, the owner can abandon its operation so later all-device upgrades
-are not blocked. Abandonment records a failed terminal result; it does not stop
-an upgrade already executing on a reachable device. Forgetting an offline device
-also closes its outstanding maintenance operation. The operation accepts only
-`latest` or an exact semantic version and invokes Cohall's existing package
-upgrade path; it cannot transport arbitrary commands. Devices running from a
-temporary package runner report a failure until Cohall is installed globally on
-that device.
+shows the 50 newest queued, running, completed, or failed results. Upgrade devices
+older than Cohall 0.5.0 individually once before using all-device upgrades; the
+relay rejects work that their daemons cannot understand. If a device is permanently
+lost, the owner can abandon its operation so later all-device upgrades are not
+blocked. Abandonment records a failed terminal result; it does not stop an upgrade
+already executing on a reachable device. Forgetting an offline device also closes
+its outstanding maintenance operation. The operation accepts only `latest` or an
+exact semantic version and invokes Cohall's existing package upgrade path; it
+cannot transport arbitrary commands. Devices running from a temporary package
+runner report a failure until Cohall is installed globally on that device.
 
 Use `cohall doctor --all` for device health and version drift, `cohall versions`
 for a compact version inventory, and `cohall usage` for retained task counts by
