@@ -270,9 +270,16 @@ const forEachJsonEvent = async (
   const limit = 1024 * 1024
   let chunks: Array<Buffer> = []
   let size = 0
+  let oversized = false
   const append = (chunk: Buffer): void => {
+    if (oversized) {
+      return
+    }
     if (size + chunk.byteLength > limit) {
-      throw new Error("Provider event exceeded 1024 KiB")
+      chunks = []
+      size = 0
+      oversized = true
+      return
     }
     if (chunk.byteLength > 0) {
       chunks.push(chunk)
@@ -280,6 +287,10 @@ const forEachJsonEvent = async (
     }
   }
   const emit = (): void => {
+    if (oversized) {
+      oversized = false
+      return
+    }
     const line = Buffer.concat(chunks, size).toString("utf8")
     chunks = []
     size = 0
@@ -303,7 +314,7 @@ const forEachJsonEvent = async (
     }
     append(bytes.subarray(start))
   }
-  if (size > 0) {
+  if (size > 0 || oversized) {
     emit()
   }
 }

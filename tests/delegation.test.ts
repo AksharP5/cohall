@@ -106,7 +106,11 @@ printf 'codex thread=%s config=%s args=%s\n' "$COHALL_THREAD_ID" "$COHALL_CONFIG
 if [[ -n "$COHALL_TOKEN$COHALL_CLIENT_TOKEN$COHALL_DEVICE_TOKEN" ]]; then exit 86; fi
 if [[ "$prompt" == *LONG_RUNNING* ]]; then sleep 20; fi
 if [[ "$prompt" == *NOISY_STDERR* ]]; then head -c 70000 /dev/zero >&2; fi
-if [[ "$prompt" == *OVERSIZED_EVENT* ]]; then head -c 1048577 /dev/zero | tr '\\0' x; fi
+if [[ "$prompt" == *OVERSIZED_EVENT* ]]; then
+  printf '%s' '{"type":"item.completed","item":{"type":"command_execution","text":"'
+  head -c 1048576 /dev/zero | tr '\\0' x
+  printf '%s\n' '"}}'
+fi
 printf '%s\n' '{"type":"thread.started","thread_id":"22222222-2222-4222-8222-222222222222"}'
 if [[ "$prompt" == *NOISY_STDOUT* ]]; then
   printf -v padding '%0500d' 0
@@ -447,8 +451,9 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       client.createTask({ prompt: "OVERSIZED_EVENT", targetDeviceId: deviceId, workspace: root }),
     )
     expect(await Effect.runPromise(waitForTerminal(client, oversizedEvent))).toMatchObject({
-      status: "failed",
-      error: "Provider event exceeded 1024 KiB",
+      status: "completed",
+      result: "Codex completed the delegated work.",
+      providerSessionId: "22222222-2222-4222-8222-222222222222",
     })
 
     const long = await Effect.runPromise(
