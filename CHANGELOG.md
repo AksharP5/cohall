@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.4](https://github.com/AksharP5/cohall/compare/v0.5.3...v0.5.4) (2026-08-11)
+
+
+### Bug Fixes
+
+* **provider:** keep tasks alive after oversized events ([#58](https://github.com/AksharP5/cohall/issues/58)) ([ac401a2](https://github.com/AksharP5/cohall/commit/ac401a2c471d3addd1bbbbd0ff97a452990f7e02))
+
 ## [0.5.3](https://github.com/AksharP5/cohall/compare/v0.5.2...v0.5.3) (2026-08-10)
 
 
