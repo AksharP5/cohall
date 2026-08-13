@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.6](https://github.com/AksharP5/cohall/compare/v0.5.5...v0.5.6) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provider:** pass OpenCode prompt before files ([#62](https://github.com/AksharP5/cohall/issues/62)) ([d4a7cd7](https://github.com/AksharP5/cohall/commit/d4a7cd713ef1fb450967c6e746bb221d7edaf5a0))
+
 ## [0.5.5](https://github.com/AksharP5/cohall/compare/v0.5.4...v0.5.5) (2026-08-13)
 
 
