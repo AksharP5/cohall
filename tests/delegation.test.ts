@@ -134,6 +134,7 @@ printf '%s\n' '{"result":"Claude completed the delegated work.","session_id":"33
 if [[ -n "$(cat)" ]]; then exit 87; fi
 prompt_file=""
 for argument in "$@"; do
+  if [[ -n "$prompt_file" ]]; then exit 89; fi
   if [[ "$argument" == --file=* ]]; then
     prompt_file="\${argument#--file=}"
   fi
@@ -493,6 +494,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     for (const line of openCodeLines) {
       expect(line).toContain(" --file=")
       expect(line).not.toContain(" --file ")
+      expect(line).toMatch(/ --file=\S+$/)
       const promptPath = line.match(/prompt_file=([^ ]+)/)?.[1]
       expect(promptPath).toBeDefined()
       await expect(access(promptPath ?? "missing")).rejects.toMatchObject({ code: "ENOENT" })

@@ -218,8 +218,8 @@ const opencodeCommand = (options: RunOptions, promptPath: string): ReadonlyArray
   "json",
   ...(options.model === undefined ? [] : ["--model", options.model]),
   ...(options.sessionId === undefined ? [] : ["--session", options.sessionId]),
-  `--file=${promptPath}`,
   "Complete the task described in the attached Cohall prompt file.",
+  `--file=${promptPath}`,
 ]
 
 interface PreparedCommand {
