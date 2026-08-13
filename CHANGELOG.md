@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.5](https://github.com/AksharP5/cohall/compare/v0.5.4...v0.5.5) (2026-08-13)
+
+
+### Bug Fixes
+
+* **provider:** keep OpenCode delegation reliable ([#60](https://github.com/AksharP5/cohall/issues/60)) ([ebc1980](https://github.com/AksharP5/cohall/commit/ebc19801969472e10aa44e44205117b7e6088d57))
+
 ## [0.5.4](https://github.com/AksharP5/cohall/compare/v0.5.3...v0.5.4) (2026-08-11)
 
 
