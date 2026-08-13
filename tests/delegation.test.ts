@@ -133,10 +133,9 @@ printf '%s\n' '{"result":"Claude completed the delegated work.","session_id":"33
       `#!/usr/bin/env bash
 if [[ -n "$(cat)" ]]; then exit 87; fi
 prompt_file=""
-for ((index = 1; index <= $#; index += 1)); do
-  if [[ "\${!index}" == "--file" ]]; then
-    file_index=$((index + 1))
-    prompt_file="\${!file_index}"
+for argument in "$@"; do
+  if [[ "$argument" == --file=* ]]; then
+    prompt_file="\${argument#--file=}"
   fi
 done
 if [[ -z "$prompt_file" || ! -f "$prompt_file" ]]; then exit 88; fi
@@ -492,6 +491,8 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(openCodeLines.join("\n")).not.toContain("Use opencode")
     expect(openCodeLines.join("\n")).not.toContain("OPEN_CODE_ERROR")
     for (const line of openCodeLines) {
+      expect(line).toContain(" --file=")
+      expect(line).not.toContain(" --file ")
       const promptPath = line.match(/prompt_file=([^ ]+)/)?.[1]
       expect(promptPath).toBeDefined()
       await expect(access(promptPath ?? "missing")).rejects.toMatchObject({ code: "ENOENT" })

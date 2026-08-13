@@ -218,8 +218,7 @@ const opencodeCommand = (options: RunOptions, promptPath: string): ReadonlyArray
   "json",
   ...(options.model === undefined ? [] : ["--model", options.model]),
   ...(options.sessionId === undefined ? [] : ["--session", options.sessionId]),
-  "--file",
-  promptPath,
+  `--file=${promptPath}`,
   "Complete the task described in the attached Cohall prompt file.",
 ]
 
@@ -511,7 +510,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
           if (child.pid === undefined || termination !== undefined) {
             return
           }
-          termination = terminateProcessTree(child.pid)
+          termination = terminateProcessTree(child.pid).catch(() => undefined)
         }
         signal.addEventListener("abort", terminate, { once: true })
         if (signal.aborted) {
@@ -551,7 +550,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
             terminate()
             await exited.catch(() => undefined)
           }
-          await termination?.catch(() => undefined)
+          await termination
         }
       } finally {
         await prepared.cleanup()
