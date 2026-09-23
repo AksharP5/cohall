@@ -155,19 +155,13 @@ export const discoverGrokBots = async (path: string): Promise<ReadonlyArray<Bot>
   }))
 }
 
-const poll = async <A>(pass: () => Promise<A | undefined>, signal: AbortSignal): Promise<A> => {
-  const result = await Effect.runPromise(
-    Effect.tryPromise({ try: pass, catch: (cause) => cause }).pipe(
-      Effect.repeat({
-        schedule: Schedule.spaced("1 second"),
-        until: (value) => value !== undefined,
-      }),
-    ),
-    { signal },
+const poll = <A>(pass: (signal: AbortSignal) => Promise<A | undefined>, intervalMs = 1000) =>
+  Effect.tryPromise({ try: pass, catch: (cause) => cause }).pipe(
+    Effect.repeat({
+      schedule: Schedule.spaced(intervalMs),
+      until: (value) => value !== undefined,
+    }),
   )
-  if (result === undefined) throw new Error("Grok Bot polling ended before a result")
-  return result
-}
 
 const timeoutMessage =
   "Timed out waiting for the bot to reply through Cohall; the bot may still be running."
@@ -209,27 +203,41 @@ export const runGrokBot = async (
   if (existing !== undefined) return finishReply(existing)
   const { deadline, command, dispatched } = await prepareBotReply(task)
   requireTime(deadline)
-  const waitForReply = () =>
-    poll(async () => {
+  const agentId = task.botId
+  if (agentId === undefined) throw new Error("Select a Grok Bot for this task")
+  const lookup = async (lookupSignal = signal) => {
+    if (path === undefined)
+      throw new Error("Configure this device's Grok Bot gateway discovery file first")
+    return rpc(
+      await readConnection(path),
+      "promptAcceptanceStatus",
+      { accountSlot: "host", agentId, clientNonce: task.id },
+      Acceptance,
+      lookupSignal,
+    )
+  }
+  const waitForReply = (reconcile = false) => {
+    const receipt = poll(async () => {
       const receipt = await readBotReply(task.id)
       if (receipt !== undefined) return finishReply(receipt)
       requireTime(deadline)
       return undefined
-    }, signal)
-  if (dispatched) return waitForReply()
+    })
+    if (!reconcile || path === undefined) return Effect.runPromise(receipt, { signal })
+    // Acceptance ends reconciliation; only the local reply completes the task.
+    const acceptance = poll(async (lookupSignal) => {
+      const current = await lookup(lookupSignal).catch(() => undefined)
+      if (current?.outcome !== "found") return undefined
+      if (current.record.status === "rejected")
+        throw new Error("Grok Bot rejected this task; check its conversation")
+      return current.record.status === "accepted" ? true : undefined
+    }, 5000).pipe(Effect.andThen(Effect.never))
+    return Effect.runPromise(Effect.raceFirst(receipt, acceptance), { signal })
+  }
+  if (dispatched) return waitForReply(true)
   if (path === undefined)
     throw new Error("Configure this device's Grok Bot gateway discovery file first")
-  const agentId = task.botId
-  if (agentId === undefined) throw new Error("Select a Grok Bot for this task")
   const connection = await readConnection(path)
-  const lookup = () =>
-    rpc(
-      connection,
-      "promptAcceptanceStatus",
-      { accountSlot: "host", agentId, clientNonce: task.id },
-      Acceptance,
-      signal,
-    )
   let acceptance = await lookup()
   if (acceptance.outcome === "unknown-durability")
     throw new Error(
@@ -248,7 +256,7 @@ export const runGrokBot = async (
     if (acceptance.outcome === "not-found") {
       requireTime(deadline)
       if (!(await claimBotDispatch(task.id))) {
-        return waitForReply()
+        return waitForReply(true)
       }
       try {
         await rpc(
@@ -268,16 +276,14 @@ export const runGrokBot = async (
           throw new Error("Stopped waiting for Grok Bot; its run may still be active")
         const receipt = await readBotReply(task.id)
         if (receipt !== undefined) return finishReply(receipt)
-        const reconciled = await lookup().catch(() => undefined)
-        if (reconciled?.outcome === "found" && reconciled.record.status === "rejected")
-          throw new Error("Grok Bot rejected this task; check its conversation")
-        return waitForReply()
+        return waitForReply(true)
       }
+      return waitForReply()
     }
   }
   if (acceptance.outcome === "unknown-durability")
     throw new Error("Grok Bot cannot confirm task acceptance; the prompt was not resent")
   if (acceptance.outcome === "found" && acceptance.record.status === "rejected")
     throw new Error("Grok Bot rejected this task; check its conversation")
-  return waitForReply()
+  return waitForReply(acceptance.outcome === "found" && acceptance.record.status === "pending")
 }

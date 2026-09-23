@@ -230,6 +230,103 @@ describe("Grok Bot gateway", () => {
     expect(fixture.calls.filter((call) => call.method === "sendPrompt")).toHaveLength(1)
   })
 
+  it.each([false, true])(
+    "reports a delayed rejection after pending acceptance (resumed=%s)",
+    async (resumed) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+      const task = makeTask()
+      let sent = resumed
+      let pendingLookups = 0
+      if (resumed) replies.dispatched.add(task.id)
+      const fixture = await gateway(({ method }, response) => {
+        if (method === "listAgents") return [bot]
+        if (method === "promptAcceptanceStatus") {
+          if (!sent) return { outcome: "not-found" }
+          pendingLookups += 1
+          return {
+            outcome: "found",
+            record: { status: pendingLookups === 1 ? "pending" : "rejected" },
+          }
+        }
+        sent = true
+        response.statusCode = 502
+        return {}
+      })
+      const controller = new AbortController()
+      let failure: unknown
+      const running = runGrokBot(fixture.path, task, controller.signal).catch((cause: unknown) => {
+        failure = cause
+      })
+      try {
+        await vi.waitFor(
+          () => expect(failure).toMatchObject({ message: expect.stringContaining("rejected") }),
+          { timeout: 10_000 },
+        )
+        expect(fixture.calls.filter((call) => call.method === "sendPrompt")).toHaveLength(
+          resumed ? 0 : 1,
+        )
+      } finally {
+        controller.abort()
+        await running
+      }
+    },
+  )
+
+  it("receives a callback while resumed acceptance lookup is stalled and aborts the lookup", async () => {
+    const task = makeTask()
+    replies.dispatched.add(task.id)
+    let lookupClosed = false
+    const fixture = await gateway(async ({ method }, response) => {
+      expect(method).toBe("promptAcceptanceStatus")
+      replies.receipts.set(task.id, { result: "Completed while gateway stalled" })
+      await new Promise<void>((resolve) => {
+        response.once("close", () => {
+          lookupClosed = true
+          resolve()
+        })
+      })
+      return {}
+    })
+    await expect(runGrokBot(fixture.path, task, new AbortController().signal)).resolves.toEqual({
+      result: "Completed while gateway stalled",
+    })
+    await vi.waitFor(() => expect(lookupClosed).toBe(true))
+    expect(fixture.calls.map((call) => call.method)).toEqual(["promptAcceptanceStatus"])
+  })
+
+  it("stops acceptance checks once accepted and still waits for the callback", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const task = makeTask()
+    replies.dispatched.add(task.id)
+    let lookups = 0
+    const fixture = await gateway(() => {
+      lookups += 1
+      return accepted()
+    })
+    const controller = new AbortController()
+    let completed = false
+    const running = runGrokBot(fixture.path, task, controller.signal).then((result) => {
+      completed = true
+      return result
+    })
+    try {
+      await vi.waitFor(() => expect(lookups).toBe(1))
+      await vi.advanceTimersByTimeAsync(6000)
+      expect(lookups).toBe(1)
+      expect(completed).toBe(false)
+      replies.receipts.set(task.id, { result: "Completed after acceptance" })
+      await vi.advanceTimersByTimeAsync(1000)
+      await expect(running).resolves.toEqual({
+        result: "Completed after acceptance",
+      })
+      expect(lookups).toBe(1)
+      expect(fixture.calls.some((call) => call.method === "sendPrompt")).toBe(false)
+    } finally {
+      controller.abort()
+      await running.catch(() => undefined)
+    }
+  })
+
   it("awaits a delayed receipt after restart without requiring the unavailable gateway", async () => {
     const task = makeTask()
     replies.dispatched.add(task.id)

@@ -248,6 +248,11 @@ the Grok Bot chat alone does not complete it. If no callback arrives within six
 hours of the first dispatch, Cohall reports failure. That deadline does not
 stop the Bot's ongoing work.
 
+Pending or uncertain prompt acceptance is checked until the gateway confirms
+acceptance or rejection, including after a worker restart. A rejection fails
+the task promptly; gateway outages still allow the local callback to complete
+it. Cohall never resends an uncertain dispatch.
+
 Bots can delegate through the installed Cohall CLI, including to Codex on the
 same computer. Link child work to the parent task:
 
