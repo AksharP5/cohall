@@ -1,11 +1,11 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   deviceVersionWarning,
   isTrustedGroupWritablePath,
-  isTrustedSystemExecutablePath,
+  isTrustedSystemPath,
   normalizeUpgradeTarget,
   packageInstallCommand,
   packageInstallation,
@@ -25,6 +25,7 @@ const temporaryDirectory = async (): Promise<string> => {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })))
 })
 
@@ -53,22 +54,46 @@ describe("upgrade target", () => {
     expect(() => normalizeUpgradeTarget("1.2.3; reboot")).toThrow("exact semantic version")
   })
 
-  it("recognizes only fixed Linux system executable roots", () => {
-    expect(isTrustedSystemExecutablePath("linux", "/usr/bin/systemctl")).toBe(true)
-    expect(isTrustedSystemExecutablePath("linux", "/usr/lib/node_modules/npm/bin/npm-cli.js")).toBe(
-      true,
-    )
-    expect(isTrustedSystemExecutablePath("linux", "/usr/share/nodejs/npm/bin/npm-cli.js")).toBe(
-      true,
-    )
-    expect(isTrustedSystemExecutablePath("linux", "/nix/store/hash/bin/systemctl")).toBe(true)
-    expect(isTrustedSystemExecutablePath("linux", "/usr/bin-attacker/systemctl")).toBe(false)
-    expect(isTrustedSystemExecutablePath("linux", "/usr/local/bin/systemctl")).toBe(false)
-    expect(isTrustedSystemExecutablePath("darwin", "/usr/bin/systemctl")).toBe(false)
+  it("trusts fixed Linux OS paths without trusting other users' private paths", () => {
+    expect(isTrustedSystemPath("linux", "/usr/bin/systemctl")).toBe(true)
+    expect(isTrustedSystemPath("linux", "/usr/lib/node_modules/npm/bin/npm-cli.js")).toBe(true)
+    expect(isTrustedSystemPath("linux", "/usr/share/nodejs/npm/bin/npm-cli.js")).toBe(true)
+    expect(isTrustedSystemPath("linux", "/nix/store/hash/bin/systemctl")).toBe(true)
+    expect(isTrustedSystemPath("linux", "/usr/bin-attacker/systemctl")).toBe(false)
+    expect(isTrustedSystemPath("linux", "/usr/local/bin/systemctl")).toBe(false)
+    expect(isTrustedSystemPath("darwin", "/usr/bin/systemctl")).toBe(false)
+    expect(isTrustedSystemPath("linux", "/")).toBe(true)
+    expect(isTrustedSystemPath("linux", "/usr")).toBe(true)
+    expect(isTrustedSystemPath("linux", "/home")).toBe(true)
+    expect(isTrustedSystemPath("linux", "/home/other-user/bin/npm")).toBe(false)
+    expect(isTrustedSystemPath("linux", "/home-attacker")).toBe(false)
   })
 })
 
 describe("package installation", () => {
+  it.skipIf(process.platform === "win32")(
+    "uses a trusted PATH candidate when an earlier installation is unsafe",
+    async () => {
+      const root = await mkdtemp(join(process.cwd(), ".cohall-upgrade-path-"))
+      temporaryDirectories.push(root)
+      const unsafe = join(root, "unsafe")
+      const safe = join(root, "safe")
+      for (const directory of [unsafe, safe]) {
+        await mkdir(directory, { mode: 0o700 })
+        await writeFile(join(directory, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+      }
+      await chmod(unsafe, 0o770)
+      vi.stubEnv("PATH", `${unsafe}:${safe}`)
+
+      await expect(trustedExecutable("npm")).resolves.toBe(join(safe, "npm"))
+      await expect(trustedExecutable(join(unsafe, "npm"))).rejects.toThrow(
+        "group- or world-writable",
+      )
+      await chmod(safe, 0o770)
+      await expect(trustedExecutable("npm")).rejects.toThrow("group- or world-writable")
+    },
+  )
+
   it.skipIf(process.platform === "win32")(
     "rejects executables beneath writable directories",
     async () => {
@@ -179,7 +204,7 @@ describe("managed service upgrades", () => {
     await writeFile(entrypoint, "#!/usr/bin/env node\n")
     await writeFile(
       join(packageRoot, "package.json"),
-      JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
+      JSON.stringify({ name: "@akshar5/cohall", version: "1.2.2" }),
     )
 
     const invocations: Array<string> = []
@@ -189,6 +214,12 @@ describe("managed service upgrades", () => {
       run: async (command, arguments_) => {
         const invocation = [command, ...arguments_].join(" ")
         invocations.push(invocation)
+        if (command === "npm") {
+          await writeFile(
+            join(packageRoot, "package.json"),
+            JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
+          )
+        }
         if (invocation === "/usr/bin/systemctl is-active --quiet cohall-relay.service") {
           return { exitCode: 3, stdout: "", stderr: "" }
         }
@@ -289,6 +320,7 @@ describe("managed service upgrades", () => {
       "/usr/bin/systemctl --user restart cohall-relay.service",
       "/usr/bin/systemctl --user restart cohall-device.service",
     ])
+    expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
     await expect(readFile(join(root, "upgrade-restart.json"), "utf8")).resolves.toContain(
       '"restartingService": "systemd-user:cohall-device.service"',
     )
@@ -416,6 +448,135 @@ describe("managed service upgrades", () => {
     expect(invocations).toEqual([
       "/usr/bin/systemctl --user is-active --quiet cohall-device.service",
     ])
+    await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
+  it("preserves recovery state during a preview or failed installation", async () => {
+    const root = await temporaryDirectory()
+    const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "#!/usr/bin/env node\n")
+    await writeFile(
+      join(dirname(dirname(entrypoint)), "package.json"),
+      JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
+    )
+    const statePath = join(root, "upgrade-restart.json")
+    const receipt = JSON.stringify({
+      version: "1.2.2",
+      fromVersion: "1.2.1",
+      packageManager: "npm",
+      pendingServices: ["systemd-user:cohall-device.service"],
+      restartedServices: [],
+    })
+    await writeFile(statePath, receipt)
+    const invocations: Array<string> = []
+    const runner: CommandRunner = {
+      run: async (command, arguments_) => {
+        invocations.push([command, ...arguments_].join(" "))
+        return { exitCode: 1, stdout: "", stderr: "Installation unavailable" }
+      },
+    }
+    const options = {
+      currentVersion: "1.2.3",
+      target: "1.2.4",
+      restart: true,
+      entrypoint,
+      statePath,
+      runner,
+      resolveExecutable,
+    }
+
+    const preview = await upgrade({ ...options, dryRun: true })
+    expect(preview.requested_version).toBe("1.2.4")
+    expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
+    expect(await readFile(statePath, "utf8")).toBe(receipt)
+
+    await expect(upgrade({ ...options, dryRun: false })).rejects.toThrow("Installation unavailable")
+    expect(await readFile(statePath, "utf8")).toBe(receipt)
+  })
+
+  it.each([undefined, "incomplete JSON"])(
+    "repairs damaged package metadata during an upgrade: %s",
+    async (content) => {
+      const root = await temporaryDirectory()
+      const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+      const metadata = join(dirname(dirname(entrypoint)), "package.json")
+      await mkdir(dirname(entrypoint), { recursive: true })
+      await writeFile(entrypoint, "#!/usr/bin/env node\n")
+      if (content !== undefined) await writeFile(metadata, content)
+      const runner: CommandRunner = {
+        run: async (command) => {
+          if (command !== "npm") return { exitCode: 3, stdout: "", stderr: "" }
+          await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
+          return success()
+        },
+      }
+
+      const result = await upgrade({
+        currentVersion: "1.2.3",
+        target: "1.2.3",
+        restart: false,
+        dryRun: false,
+        entrypoint,
+        statePath: join(root, "upgrade-restart.json"),
+        runner,
+        resolveExecutable,
+      })
+
+      expect(result.installed_version).toBe("1.2.3")
+      expect(JSON.parse(await readFile(metadata, "utf8"))).toEqual({
+        name: "@akshar5/cohall",
+        version: "1.2.3",
+      })
+    },
+  )
+
+  it("validates and honors a new target when an older restart receipt exists", async () => {
+    const root = await temporaryDirectory()
+    const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+    const metadata = join(dirname(dirname(entrypoint)), "package.json")
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "#!/usr/bin/env node\n")
+    await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
+    const statePath = join(root, "upgrade-restart.json")
+    const receipt = JSON.stringify({
+      version: "1.2.3",
+      fromVersion: "1.2.2",
+      packageManager: "npm",
+      pendingServices: ["systemd-user:cohall-device.service"],
+      restartedServices: [],
+    })
+    await writeFile(statePath, receipt)
+    const invocations: Array<string> = []
+    const runner: CommandRunner = {
+      run: async (command, arguments_) => {
+        invocations.push([command, ...arguments_].join(" "))
+        if (command !== "npm") return { exitCode: 3, stdout: "", stderr: "" }
+        await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }))
+        return success()
+      },
+    }
+    const options = {
+      currentVersion: "1.2.3",
+      restart: true,
+      dryRun: false,
+      entrypoint,
+      statePath,
+      runner,
+      resolveExecutable,
+    }
+
+    await expect(upgrade({ ...options, target: "invalid" })).rejects.toThrow(
+      "exact semantic version",
+    )
+    expect(invocations).toEqual([])
+    expect(await readFile(statePath, "utf8")).toBe(receipt)
+
+    const result = await upgrade({ ...options, target: "1.2.4" })
+    expect(result.requested_version).toBe("1.2.4")
+    expect(result.installed_version).toBe("1.2.4")
+    expect(result.resumed_after_restart).toBe(false)
+    expect(invocations).toContain(`npm install --global --prefix ${root} @akshar5/cohall@1.2.4`)
     await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
   })
 })
