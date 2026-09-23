@@ -14,7 +14,7 @@ import * as Providers from "@cohall/providers"
 import { Effect, Schema } from "effect"
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import skill from "../../../skills/cohall/SKILL.md" with { type: "text" }
 import {
   StoredConfiguration,
@@ -32,11 +32,14 @@ import {
 import {
   createDelegation,
   followTaskTrace,
+  listBots,
   taskResult,
   threadContext,
   waitForTask,
 } from "./delegation.ts"
 import { allDeviceHealth, deviceVersions } from "./device-overview.ts"
+import { discoverGrokBots } from "./grok-bot.ts"
+import { writeBotReply } from "./bot-replies.ts"
 import { guidedSetupInput, joinRelay, terminalPrompter, type Prompter } from "./setup.ts"
 import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 import { installDeviceService } from "./service.ts"
@@ -50,9 +53,14 @@ interface Arguments {
 const valueOptions = new Set([
   "context",
   "context-file",
+  "grok-gateway",
+  "error",
   "label",
   "model",
+  "message",
+  "message-file",
   "name",
+  "parent",
   "prompt",
   "prompt-file",
   "provider",
@@ -91,15 +99,19 @@ Usage:
   cohall join --relay <url> --workspace <path> [--providers list] [--token-file <path>]
   cohall configure [--relay url] [--name name] [--workspace path]
                    [--providers codex,opencode|auto] [--model id]
+                   [--grok-gateway path]
   cohall config
   cohall devices
-  cohall delegate [prompt] [--target @device] [--provider provider]
-                  [--context text] [--thread uuid] [--workspace path]
+  cohall bots
+  cohall send [@device-or-bot] [prompt] [delegate options]
+  cohall delegate [prompt] [--target @device-or-bot] [--provider provider]
+                  [--context text] [--thread uuid] [--parent task-id] [--workspace path]
                   [--timeout seconds] [--no-wait]
   cohall status <task-id>
   cohall trace <task-id> [--follow]
   cohall wait <task-id> [--timeout seconds]
   cohall cancel <task-id>
+  cohall reply <task-id> --message-file path | --message text | --message - | --error text
   cohall thread <thread-id>
   cohall pair [--label name] [--client-only]
   cohall sessions
@@ -121,7 +133,7 @@ Usage:
   cohall skill [install [agents|claude|opencode|all]]
   cohall integrations
 
-Providers: codex, claude-code, opencode.
+Providers: codex, claude-code, opencode, grok-bot.
 Configuration is stored per user; environment variables override it.`
 
 const parseArguments = (values: ReadonlyArray<string>): Arguments => {
@@ -209,10 +221,11 @@ const printLine = (value: unknown): void => console.log(JSON.stringify(value))
 
 const readInput = async (
   arguments_: Arguments,
-  name: "prompt" | "context",
+  name: "prompt" | "context" | "message",
 ): Promise<string | undefined> => {
   const direct = option(arguments_, name)
   const path = option(arguments_, `${name}-file`)
+  const byteLimit = name === "message" ? 4 * 131_072 : 131_072
   if (direct !== undefined && path !== undefined) {
     throw new Error(`Use either --${name} or --${name}-file, not both`)
   }
@@ -224,14 +237,18 @@ const readInput = async (
     ) {
       throw new Error(`File does not exist: ${path}`)
     }
-    if ((await stat(path)).size > 131_072) {
-      throw new Error(`${name} file exceeds 128 KiB`)
+    if ((await stat(path)).size > byteLimit) {
+      throw new Error(`${name} file exceeds ${byteLimit / 1024} KiB`)
     }
-    return readFile(path, "utf8")
   }
-  const result = direct === "-" ? await readStdin(131_072, name) : direct
+  const result =
+    path === undefined
+      ? direct === "-"
+        ? await readStdin(byteLimit, name)
+        : direct
+      : await readFile(path, "utf8")
   if (result !== undefined && result.length > 131_072) {
-    throw new Error(`${name} exceeds 128 KiB`)
+    throw new Error(`${name} exceeds 131072 characters`)
   }
   return result
 }
@@ -323,6 +340,26 @@ export const printSkill = (): void => console.log(skill.trimEnd())
 
 export const runCli = async (command: string, raw: ReadonlyArray<string>): Promise<void> => {
   const arguments_ = parseArguments(raw)
+
+  if (command === "reply") {
+    allowOptions(arguments_, ["message", "message-file", "error"])
+    const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
+    const error = option(arguments_, "error")
+    if (
+      error !== undefined &&
+      (option(arguments_, "message") !== undefined ||
+        option(arguments_, "message-file") !== undefined)
+    ) {
+      throw new Error("Use either --error or --message/--message-file, not both")
+    }
+    const message = error === undefined ? await readInput(arguments_, "message") : undefined
+    if (error === undefined && message === undefined) {
+      throw new Error("A bot reply requires --message, --message-file, or --error")
+    }
+    await writeBotReply(id, error === undefined ? { result: message ?? "" } : { error })
+    print({ submitted: true, task_id: id })
+    return
+  }
 
   if (command === "init") {
     allowOptions(arguments_, [
@@ -584,13 +621,22 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
             providers: configuration.providers ?? "auto",
             model: configuration.model,
             sandbox: configuration.sandbox,
+            grok_gateway: configuration.grokGateway,
           }),
     })
     return
   }
 
   if (command === "configure") {
-    allowOptions(arguments_, ["model", "name", "providers", "relay", "sandbox", "workspace"])
+    allowOptions(arguments_, [
+      "grok-gateway",
+      "model",
+      "name",
+      "providers",
+      "relay",
+      "sandbox",
+      "workspace",
+    ])
     noPositionals(arguments_, command)
     const existing = await readStoredConfiguration()
     const relayUrl = normalizeRelayUrl(
@@ -603,6 +649,8 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         : await Effect.runPromise(parseWorkspaces("", JSON.stringify(supplied)))
     const sandbox = option(arguments_, "sandbox")
     const model = option(arguments_, "model") ?? existing?.model
+    const gatewayInput = option(arguments_, "grok-gateway") ?? existing?.grokGateway
+    const grokGateway = gatewayInput === undefined ? undefined : resolve(gatewayInput)
     const providerInput = option(arguments_, "providers")
     const providers =
       providerInput === undefined
@@ -619,6 +667,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       ...credentialsForRelay(existing, relayUrl),
       ...(providers === undefined ? {} : { providers }),
       ...(model === undefined ? {} : { model }),
+      ...(grokGateway === undefined ? {} : { grokGateway }),
       ...((sandbox ?? existing?.sandbox) === undefined
         ? {}
         : {
@@ -690,11 +739,18 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
           ? undefined
           : parseProviders(providerInput)
     const providerExecutables = Object.fromEntries(
-      Provider.literals.map((provider) => [
-        provider,
-        Providers.findExecutable(provider === "claude-code" ? "claude" : provider) ?? "not found",
-      ]),
+      Provider.literals
+        .filter((provider) => provider !== "grok-bot")
+        .map((provider) => [
+          provider,
+          Providers.findExecutable(provider === "claude-code" ? "claude" : provider) ?? "not found",
+        ]),
     )
+    const grokGateway = process.env.COHALL_GROK_GATEWAY ?? configuration?.grokGateway
+    const grokBots =
+      grokGateway === undefined
+        ? undefined
+        : await discoverGrokBots(grokGateway).catch(() => undefined)
     const clientToken = process.env.COHALL_CLIENT_TOKEN ?? storedCredentials.clientToken
     const hasDeviceCredential =
       process.env.COHALL_DEVICE_TOKEN !== undefined || storedCredentials.deviceToken !== undefined
@@ -722,9 +778,15 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
           ]
         : []),
       ...(selectedProviders?.flatMap((provider) =>
-        providerExecutables[provider] === "not found"
-          ? [`Configured provider ${provider} is not installed or not on PATH`]
-          : [],
+        provider === "grok-bot"
+          ? grokBots === undefined
+            ? [
+                "Configured Grok Bot gateway is unavailable; check its discovery file and host process",
+              ]
+            : []
+          : providerExecutables[provider] === "not found"
+            ? [`Configured provider ${provider} is not installed or not on PATH`]
+            : [],
       ) ?? []),
     ]
     print({
@@ -738,6 +800,15 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       device_credential: hasDeviceCredential,
       workspaces: configuration?.workspaces ?? [],
       providers: providerExecutables,
+      ...(grokGateway === undefined
+        ? {}
+        : {
+            grok_gateway: {
+              path: grokGateway,
+              reachable: grokBots !== undefined,
+              bots: grokBots?.length ?? 0,
+            },
+          }),
       provider_selection: selectedProviders ?? "auto",
       provider_authentication: "checked when delegated work starts",
       device_status:
@@ -826,11 +897,18 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     print(await Effect.runPromise(relay.devices()))
     return
   }
-  if (command === "delegate") {
+  if (command === "bots") {
+    allowOptions(arguments_, [])
+    noPositionals(arguments_, command)
+    print(listBots(await Effect.runPromise(relay.devices())))
+    return
+  }
+  if (command === "delegate" || command === "send") {
     allowOptions(arguments_, [
       "context",
       "context-file",
       "no-wait",
+      "parent",
       "prompt",
       "prompt-file",
       "provider",
@@ -839,28 +917,39 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       "timeout",
       "workspace",
     ])
+    const positionalTarget =
+      command === "send" && arguments_.positionals[0]?.startsWith("@")
+        ? arguments_.positionals[0]
+        : undefined
+    const positionals =
+      positionalTarget === undefined ? arguments_.positionals : arguments_.positionals.slice(1)
+    if (positionalTarget !== undefined && option(arguments_, "target") !== undefined) {
+      throw new Error("Use either a positional target or --target, not both")
+    }
     if (option(arguments_, "prompt") === "-" && option(arguments_, "context") === "-") {
       throw new Error("Only one of --prompt and --context may read from stdin")
     }
     const suppliedPrompt = await readInput(arguments_, "prompt")
-    const prompt = suppliedPrompt ?? arguments_.positionals.join(" ")
+    const prompt = suppliedPrompt ?? positionals.join(" ")
     if (prompt.trim().length === 0) {
       throw new Error("A prompt is required")
     }
-    if (suppliedPrompt !== undefined && arguments_.positionals.length > 0) {
+    if (suppliedPrompt !== undefined && positionals.length > 0) {
       throw new Error("Use either a positional prompt or --prompt, not both")
     }
     const context = await readInput(arguments_, "context")
-    const target = option(arguments_, "target")
+    const target = positionalTarget ?? option(arguments_, "target")
     const thread = option(arguments_, "thread")
     const workspace = option(arguments_, "workspace")
     const provider = option(arguments_, "provider")
+    const parent = option(arguments_, "parent")
     const task = await Effect.runPromise(
       createDelegation(relay, configuration, {
         prompt,
         ...(target === undefined ? {} : { target }),
         ...(context === undefined ? {} : { context }),
         ...(thread === undefined ? {} : { threadId: Schema.decodeUnknownSync(ThreadId)(thread) }),
+        ...(parent === undefined ? {} : { parentTaskId: Schema.decodeUnknownSync(TaskId)(parent) }),
         ...(workspace === undefined ? {} : { workspace }),
         ...(provider === undefined
           ? {}

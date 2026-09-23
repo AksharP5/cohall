@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 declare const __COHALL_VERSION__: string
 export const version =
@@ -21,6 +21,16 @@ const isoTimestamp = <Name extends string>(name: Name) =>
     }),
   ).pipe(Schema.brand(name))
 
+export const BotId = bounded(256).pipe(Schema.brand("BotId"))
+export type BotId = typeof BotId.Type
+
+export const Bot = Schema.Struct({
+  id: BotId,
+  name: bounded(128),
+  description: Schema.optionalKey(optionalText(512)),
+})
+export interface Bot extends Schema.Schema.Type<typeof Bot> {}
+
 export const DeviceId = uuid("DeviceId")
 export type DeviceId = typeof DeviceId.Type
 export const ThreadId = uuid("ThreadId")
@@ -38,7 +48,7 @@ export type Timestamp = typeof Timestamp.Type
 
 export const Platform = Schema.Literals(["darwin", "linux", "windows", "unknown"])
 export type Platform = typeof Platform.Type
-export const Provider = Schema.Literals(["codex", "claude-code", "opencode"])
+export const Provider = Schema.Literals(["codex", "claude-code", "opencode", "grok-bot"])
 export type Provider = typeof Provider.Type
 export const DeviceStatus = Schema.Literals(["online", "busy", "offline"])
 export type DeviceStatus = typeof DeviceStatus.Type
@@ -127,7 +137,8 @@ export const Device = Schema.Struct({
   platform: Platform,
   architecture: bounded(64),
   status: DeviceStatus,
-  providers: boundedArray(Provider, 3),
+  providers: boundedArray(Provider, Provider.literals.length),
+  bots: Schema.optionalKey(boundedArray(Bot, 256)),
   capabilities: boundedArray(Capability, 64),
   workspaces: boundedArray(Workspace, 64),
   version: bounded(32),
@@ -200,12 +211,27 @@ export const Message = Schema.Struct({
 })
 export interface Message extends Schema.Schema.Type<typeof Message> {}
 
+const validBotTarget = (input: {
+  readonly provider?: Provider
+  readonly botId?: BotId
+  readonly workspace?: string
+}) => {
+  const provider = input.provider ?? (input.botId === undefined ? "codex" : "grok-bot")
+  if (provider === "grok-bot" && input.workspace !== undefined) {
+    return "Grok Bots use their own computer context; omit workspace"
+  }
+  return (provider === "grok-bot") === (input.botId !== undefined)
+    ? undefined
+    : "The grok-bot provider requires botId; other providers cannot select a bot"
+}
+
 export const Task = Schema.Struct({
   id: TaskId,
   threadId: ThreadId,
   prompt: bounded(131_072),
   context: Schema.optionalKey(optionalText(131_072)),
   provider: Provider,
+  botId: Schema.optionalKey(BotId),
   status: TaskStatus,
   sourceDeviceId: Schema.optionalKey(DeviceId),
   targetDeviceId: DeviceId,
@@ -218,8 +244,11 @@ export const Task = Schema.Struct({
   updatedAt: Timestamp,
   startedAt: Schema.optionalKey(Timestamp),
   completedAt: Schema.optionalKey(Timestamp),
-})
+}).check(Schema.makeFilter(validBotTarget))
 export interface Task extends Schema.Schema.Type<typeof Task> {}
+
+export const taskSlot = (task: Pick<Task, "provider" | "botId">): string =>
+  task.provider === "grok-bot" ? `grok-bot:${task.botId}` : "cli"
 
 const upgradeVersion = Schema.String.check(
   Schema.isPattern(/^(?:latest|v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/, {
@@ -272,14 +301,14 @@ export const DeviceUsage = Schema.Struct({
   deviceName: bounded(128),
   tasks: count,
   byStatus: TaskStatusCounts,
-  byProvider: boundedArray(ProviderUsage, 3),
+  byProvider: boundedArray(ProviderUsage, Provider.literals.length),
 })
 export interface DeviceUsage extends Schema.Schema.Type<typeof DeviceUsage> {}
 
 export const UsageSummary = Schema.Struct({
   retainedTasks: count,
   byStatus: TaskStatusCounts,
-  byProvider: boundedArray(ProviderUsage, 3),
+  byProvider: boundedArray(ProviderUsage, Provider.literals.length),
   devices: boundedArray(DeviceUsage, 256),
 })
 export interface UsageSummary extends Schema.Schema.Type<typeof UsageSummary> {}
@@ -296,6 +325,7 @@ export const TaskTrace = Schema.Struct({
   threadId: ThreadId,
   status: TaskStatus,
   provider: Provider,
+  botId: Schema.optionalKey(BotId),
   sourceDeviceId: Schema.optionalKey(DeviceId),
   targetDevice: Device,
   parentTaskId: Schema.optionalKey(TaskId),
@@ -307,7 +337,7 @@ export const TaskTrace = Schema.Struct({
   events: boundedArray(TaskTraceEvent, 100),
   truncated: Schema.Boolean,
   error: Schema.optionalKey(optionalText(16_384)),
-})
+}).check(Schema.makeFilter(validBotTarget))
 export interface TaskTrace extends Schema.Schema.Type<typeof TaskTrace> {}
 
 export const ThreadContext = Schema.Struct({
@@ -324,17 +354,22 @@ export const CreateTaskInput = Schema.Struct({
   prompt: bounded(131_072),
   context: Schema.optionalKey(optionalText(131_072)),
   provider: Schema.optionalKey(Provider),
+  botId: Schema.optionalKey(BotId),
   targetDeviceId: Schema.optionalKey(DeviceId),
   parentTaskId: Schema.optionalKey(TaskId),
   workspace: Schema.optionalKey(bounded(4096)),
-})
+}).check(Schema.makeFilter(validBotTarget))
 export interface CreateTaskInput extends Schema.Schema.Type<typeof CreateTaskInput> {}
 
 export const SocketEvent = Schema.TaggedUnion({
   Authenticate: { token: bounded(256) },
   Connected: { serverVersion: bounded(32), connectedAt: Timestamp },
   DeviceHello: { device: Device },
-  DeviceHeartbeat: { deviceId: DeviceId, status: DeviceStatus },
+  DeviceHeartbeat: {
+    deviceId: DeviceId,
+    status: DeviceStatus,
+    bots: Schema.optionalKey(boundedArray(Bot, 256)),
+  },
   TaskAssigned: { task: Task },
   TaskAccepted: { taskId: TaskId },
   TaskFinished: {
@@ -376,7 +411,15 @@ export const makeOperationId = (): OperationId => OperationId.make(crypto.random
 
 export const decodeCreatePairingInput = Schema.decodeUnknownEffect(CreatePairingInput)
 export const decodeExchangePairingInput = Schema.decodeUnknownEffect(ExchangePairingInput)
-export const decodeCreateTaskInput = Schema.decodeUnknownEffect(CreateTaskInput)
+export const decodeCreateTaskInput = (input: unknown) =>
+  Schema.decodeUnknownEffect(CreateTaskInput)(input).pipe(
+    Effect.map(
+      (task): CreateTaskInput => ({
+        ...task,
+        provider: task.provider ?? (task.botId === undefined ? "codex" : "grok-bot"),
+      }),
+    ),
+  )
 export const decodeCreateUpgradeOperationsInput = Schema.decodeUnknownEffect(
   CreateUpgradeOperationsInput,
 )

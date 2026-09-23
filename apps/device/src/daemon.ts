@@ -4,7 +4,9 @@ import {
   decodeSocketEvent,
   maxSocketPayloadBytes,
   now,
+  taskSlot,
   version,
+  type Bot,
   type Provider,
   type DeviceOperation,
   type OperationId,
@@ -19,6 +21,8 @@ import { arch, hostname, platform } from "node:os"
 import { basename, isAbsolute, relative } from "node:path"
 import { WebSocket, type RawData } from "ws"
 import type { DeviceConfiguration } from "./config.ts"
+import { discoverGrokBots, runGrokBot } from "./grok-bot.ts"
+import { cleanupBotReply } from "./bot-replies.ts"
 import { upgrade, type UpgradeOptions, type UpgradeResult } from "./upgrade.ts"
 
 const maxQueuedRelayMessages = 8
@@ -34,7 +38,7 @@ interface State {
   readonly terminal: Map<TaskId, string>
   readonly queue: Array<Task>
   readonly sessions: Map<string, string>
-  readonly tasks: Map<TaskId, AbortController>
+  readonly tasks: Map<TaskId, { readonly task: Task; readonly controller: AbortController }>
   readonly completed: Set<TaskId>
   operation: DeviceOperation | undefined
   readonly operationQueue: Array<DeviceOperation>
@@ -57,6 +61,8 @@ const providerLabel = (provider: Provider): string => {
       return "Claude Code"
     case "opencode":
       return "OpenCode"
+    case "grok-bot":
+      return "Grok Bot"
   }
 }
 
@@ -64,7 +70,10 @@ const capabilities = (providers: ReadonlyArray<Provider>): Device["capabilities"
   const values: Array<Device["capabilities"][number]> = providers.map((provider) => ({
     id: provider,
     label: providerLabel(provider),
-    detail: `${providerLabel(provider)} executable detected; authentication is checked when work starts`,
+    detail:
+      provider === "grok-bot"
+        ? "Named bots through this computer's local Grok Bot gateway"
+        : `${providerLabel(provider)} executable detected; authentication is checked when work starts`,
   }))
   if (
     Providers.findExecutable("google-chrome") !== undefined ||
@@ -93,6 +102,7 @@ export const selectProviders = (
 const describeDevice = (
   configuration: DeviceConfiguration,
   status: "online" | "busy" = "online",
+  bots: ReadonlyArray<Bot> = [],
 ): Device => {
   const operatingSystem = platform()
   const platformName =
@@ -101,7 +111,10 @@ const describeDevice = (
       : operatingSystem === "win32"
         ? "windows"
         : "unknown"
-  const installed = Providers.availableProviders()
+  const installed: ReadonlyArray<Provider> = [
+    ...Providers.availableProviders(),
+    ...(configuration.grokGateway === undefined ? [] : ["grok-bot" as const]),
+  ]
   const providers = selectProviders(installed, configuration.providers)
   return Device.make({
     id: configuration.id,
@@ -111,6 +124,7 @@ const describeDevice = (
     architecture: arch(),
     status,
     providers,
+    ...(providers.includes("grok-bot") ? { bots } : {}),
     capabilities: capabilities(providers),
     workspaces: configuration.workspaces.map((path) => ({
       path,
@@ -249,35 +263,72 @@ const rememberOperation = (state: State, operationId: OperationId): void => {
 
 const sessionKey = (task: Task): string => `${task.threadId}:${task.provider}`
 
+const drain = (configuration: DeviceConfiguration, state: State): void => {
+  if (state.operation !== undefined) {
+    return
+  }
+  if (state.tasks.size === 0) {
+    const operation = state.operationQueue.shift()
+    if (operation !== undefined) {
+      executeOperation(configuration, state, operation)
+      return
+    }
+  }
+  const occupied = new Set([...state.tasks.values()].map(({ task }) => taskSlot(task)))
+  for (let index = 0; index < state.queue.length; ) {
+    const next = state.queue[index]
+    if (next === undefined || occupied.has(taskSlot(next))) {
+      index += 1
+      continue
+    }
+    state.queue.splice(index, 1)
+    occupied.add(taskSlot(next))
+    execute(configuration, state, next)
+  }
+}
+
 const execute = (configuration: DeviceConfiguration, state: State, task: Task): void => {
   if (state.tasks.has(task.id) || state.completed.has(task.id)) {
     return
   }
   const controller = new AbortController()
-  state.tasks.set(task.id, controller)
+  state.tasks.set(task.id, { task, controller })
   send(state, SocketEvent.make({ _tag: "TaskAccepted", taskId: task.id }))
 
-  const workflow = Effect.gen(function* () {
-    const workspace = yield* Effect.tryPromise({
-      try: () => openAllowedWorkspace(configuration, task.workspace),
-      catch: (cause) =>
-        new Providers.ProviderRunError({
-          provider: task.provider,
-          message: cause instanceof Error ? cause.message : String(cause),
-        }),
-    })
-    const sessionId = task.providerSessionId ?? state.sessions.get(sessionKey(task))
-    return yield* Providers.run({
-      provider: task.provider,
-      threadId: task.threadId,
-      prompt: promptFor(task, configuration.name),
-      cwd: workspace.cwd,
-      beforeSpawn: workspace.validate,
-      ...(sessionId === undefined ? {} : { sessionId }),
-      ...(configuration.model === undefined ? {} : { model: configuration.model }),
-      ...(configuration.sandbox === undefined ? {} : { sandbox: configuration.sandbox }),
-    }).pipe(Effect.ensuring(Effect.promise(() => workspace.close().catch(() => undefined))))
-  })
+  const workflow: Effect.Effect<Providers.RunResult, Providers.ProviderError> = Effect.gen(
+    function* () {
+      if (task.provider === "grok-bot") {
+        return yield* Effect.tryPromise({
+          try: (signal) => runGrokBot(configuration.grokGateway, task, signal),
+          catch: (cause) =>
+            new Providers.ProviderRunError({
+              provider: task.provider,
+              message: cause instanceof Error ? cause.message : String(cause),
+            }),
+        })
+      }
+      const workspace = yield* Effect.tryPromise({
+        try: () => openAllowedWorkspace(configuration, task.workspace),
+        catch: (cause) =>
+          new Providers.ProviderRunError({
+            provider: task.provider,
+            message: cause instanceof Error ? cause.message : String(cause),
+          }),
+      })
+      const sessionId = task.providerSessionId ?? state.sessions.get(sessionKey(task))
+      return yield* Providers.run({
+        provider: task.provider,
+        threadId: task.threadId,
+        taskId: task.id,
+        prompt: promptFor(task, configuration.name),
+        cwd: workspace.cwd,
+        beforeSpawn: workspace.validate,
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(configuration.model === undefined ? {} : { model: configuration.model }),
+        ...(configuration.sandbox === undefined ? {} : { sandbox: configuration.sandbox }),
+      }).pipe(Effect.ensuring(Effect.promise(() => workspace.close().catch(() => undefined))))
+    },
+  )
 
   void Effect.runPromise(workflow, { signal: controller.signal })
     .then((result) => {
@@ -312,15 +363,7 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
     })
     .finally(() => {
       state.tasks.delete(task.id)
-      const operation = state.operationQueue.shift()
-      if (operation !== undefined) {
-        executeOperation(configuration, state, operation)
-        return
-      }
-      const next = state.queue.shift()
-      if (next !== undefined && state.operation === undefined) {
-        execute(configuration, state, next)
-      }
+      drain(configuration, state)
     })
 }
 
@@ -361,15 +404,7 @@ const executeOperation = (
     })
     .finally(() => {
       state.operation = undefined
-      const pending = state.operationQueue.shift()
-      if (pending !== undefined) {
-        executeOperation(configuration, state, pending)
-        return
-      }
-      const next = state.queue.shift()
-      if (next !== undefined && state.tasks.size === 0) {
-        execute(configuration, state, next)
-      }
+      drain(configuration, state)
     })
 }
 
@@ -420,7 +455,10 @@ const schedule = (configuration: DeviceConfiguration, state: State, task: Task):
   if (task.providerSessionId !== undefined) {
     state.sessions.set(sessionKey(task), task.providerSessionId)
   }
-  if (state.tasks.size > 0 || state.operation !== undefined) {
+  if (
+    [...state.tasks.values()].some(({ task: active }) => taskSlot(active) === taskSlot(task)) ||
+    state.operation !== undefined
+  ) {
     if (state.queue.length >= 100) {
       state.socket?.close(4008, "Task queue limit reached")
       return
@@ -434,7 +472,9 @@ const schedule = (configuration: DeviceConfiguration, state: State, task: Task):
 const cancel = (state: State, taskId: TaskId): void => {
   const running = state.tasks.get(taskId)
   if (running !== undefined) {
-    running.abort()
+    if (running.task.provider !== "grok-bot") {
+      running.controller.abort()
+    }
     return
   }
   const index = state.queue.findIndex((task) => task.id === taskId)
@@ -455,7 +495,33 @@ const connect = (
         const socket = new WebSocket(socketUrl(configuration), {
           maxPayload: maxSocketPayloadBytes,
           perMessageDeflate: false,
+          allowSynchronousEvents: false,
         })
+        let bots: ReadonlyArray<Bot> = []
+        let refreshing = false
+        const refreshBots = async (): Promise<void> => {
+          if (
+            refreshing ||
+            configuration.grokGateway === undefined ||
+            (configuration.providers !== undefined && !configuration.providers.includes("grok-bot"))
+          ) {
+            return
+          }
+          refreshing = true
+          bots = await discoverGrokBots(configuration.grokGateway).catch(() => [])
+          refreshing = false
+          if (!closed) {
+            send(
+              state,
+              SocketEvent.make({
+                _tag: "DeviceHeartbeat",
+                deviceId: configuration.id,
+                status: state.tasks.size > 0 || state.operation !== undefined ? "busy" : "online",
+                bots,
+              }),
+            )
+          }
+        }
         const heartbeat = setInterval(() => {
           send(
             state,
@@ -463,8 +529,10 @@ const connect = (
               _tag: "DeviceHeartbeat",
               deviceId: configuration.id,
               status: state.tasks.size > 0 || state.operation !== undefined ? "busy" : "online",
+              ...(configuration.grokGateway === undefined ? {} : { bots }),
             }),
           )
+          void refreshBots()
         }, 15_000)
         let closed = false
         let queuedMessages = 0
@@ -525,6 +593,7 @@ const connect = (
                       device: describeDevice(
                         configuration,
                         state.tasks.size > 0 || state.operation !== undefined ? "busy" : "online",
+                        bots,
                       ),
                     }),
                   ),
@@ -535,6 +604,7 @@ const connect = (
                 for (const payload of state.operationTerminal.values()) {
                   socket.send(payload)
                 }
+                void refreshBots()
                 return
               }
               if (event._tag === "TaskAssigned") {
@@ -547,6 +617,9 @@ const connect = (
               }
               if (event._tag === "TaskSettled") {
                 state.terminal.delete(event.taskId)
+                void cleanupBotReply(event.taskId).catch(() => {
+                  console.error(`Could not remove local bot reply for settled task ${event.taskId}`)
+                })
                 return
               }
               if (event._tag === "OperationAssigned") {
@@ -600,7 +673,7 @@ export const runDaemon = (
     Effect.ensuring(
       Effect.sync(() => {
         state.socket?.close()
-        for (const controller of state.tasks.values()) {
+        for (const { controller } of state.tasks.values()) {
           controller.abort()
         }
       }),

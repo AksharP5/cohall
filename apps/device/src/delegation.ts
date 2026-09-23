@@ -1,5 +1,6 @@
 import type { Interface as RelayClient } from "@cohall/client"
 import {
+  BotId,
   DeviceId,
   Provider,
   TaskId,
@@ -33,6 +34,7 @@ export interface DelegateOptions {
   readonly threadId?: ThreadIdType
   readonly workspace?: string
   readonly provider?: ProviderName
+  readonly parentTaskId?: TaskId
 }
 
 export const TaskResult = Schema.Struct({
@@ -41,14 +43,16 @@ export const TaskResult = Schema.Struct({
   status: TaskStatus,
   provider: Provider,
   target_device_id: DeviceId,
+  bot_id: Schema.optionalKey(BotId),
   result: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
 })
 export interface TaskResult extends Schema.Schema.Type<typeof TaskResult> {}
 
 const matchingDevices = (devices: ReadonlyArray<Device>, target: string): ReadonlyArray<Device> => {
-  const normalized = target.replace(/^@/, "").toLowerCase()
-  const byId = devices.find((device) => device.id === target)
+  const value = target.replace(/^@/, "")
+  const normalized = value.toLowerCase()
+  const byId = devices.find((device) => device.id === value)
   return byId === undefined
     ? devices.filter(
         (device) =>
@@ -57,6 +61,57 @@ const matchingDevices = (devices: ReadonlyArray<Device>, target: string): Readon
     : [byId]
 }
 
+export const listBots = (devices: ReadonlyArray<Device>) =>
+  devices.flatMap((device) =>
+    (device.bots ?? []).map((bot) => ({
+      id: bot.id,
+      name: bot.name,
+      ...(bot.description === undefined ? {} : { description: bot.description }),
+      device_id: device.id,
+      device_name: device.name,
+      status: device.status,
+      target: `@${device.id}/${bot.id}`,
+    })),
+  )
+
+const selectTarget = Effect.fn("Cohall.selectTarget")(function* (
+  devices: ReadonlyArray<Device>,
+  target: string,
+) {
+  const value = target.replace(/^@/, "")
+  const separator = value.indexOf("/")
+  const qualified = separator !== -1
+  const deviceMatches = matchingDevices(devices, qualified ? value.slice(0, separator) : value)
+  const botValue = qualified ? value.slice(separator + 1) : value
+  const bots = listBots(qualified ? deviceMatches : devices)
+  const botsById = bots.filter((bot) => bot.id === botValue)
+  const botMatches =
+    botsById.length > 0
+      ? botsById
+      : bots.filter((bot) => bot.name.toLowerCase() === botValue.toLowerCase())
+  // An exact device ID remains a direct device target, even if a bot uses it as a name.
+  const exactDevice = qualified ? undefined : deviceMatches.find((device) => device.id === value)
+  if (exactDevice !== undefined) return { deviceId: exactDevice.id, botId: undefined }
+  const matches = [
+    ...(qualified
+      ? []
+      : deviceMatches.map((device) => ({ deviceId: device.id, botId: undefined }))),
+    ...botMatches.map((bot) => ({ deviceId: bot.device_id, botId: bot.id })),
+  ]
+  const selected = matches[0]
+  if (matches.length === 1 && selected !== undefined) return selected
+  return yield* new DeviceSelectionError({
+    message:
+      matches.length === 0
+        ? `No Cohall device or bot matches ${target}; use cohall devices or cohall bots`
+        : `${target} is ambiguous; use a device ID or @device-id/bot-id from cohall bots`,
+    devices: [
+      ...deviceMatches.map((device) => `${device.name} (@${device.id})`),
+      ...botMatches.map((bot) => `${bot.name} on ${bot.device_name} (${bot.target})`),
+    ],
+  })
+})
+
 export const taskResult = (task: Task): TaskResult =>
   TaskResult.make({
     task_id: task.id,
@@ -64,6 +119,7 @@ export const taskResult = (task: Task): TaskResult =>
     status: task.status,
     provider: task.provider,
     target_device_id: task.targetDeviceId,
+    ...(task.botId === undefined ? {} : { bot_id: task.botId }),
     ...(task.result === undefined ? {} : { result: task.result }),
     ...(task.error === undefined ? {} : { error: task.error }),
   })
@@ -74,30 +130,57 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
   options: DelegateOptions,
 ) {
   const devices = yield* client.devices()
-  const matches = options.target === undefined ? [] : matchingDevices(devices, options.target)
-  if (options.target !== undefined && matches.length !== 1) {
-    return yield* new DeviceSelectionError({
-      message:
-        matches.length === 0
-          ? `No Cohall device matches ${options.target}`
-          : `${options.target} is ambiguous; use a device ID`,
-      devices:
-        matches.length === 0
-          ? devices.map((device) => `${device.name} (${device.id})`)
-          : matches.map((device) => `${device.name} (${device.id})`),
-    })
-  }
   if (devices.length === 0) {
     return yield* new DeviceSelectionError({
       message: "No Cohall devices are registered",
       devices: [],
     })
   }
-  const target = matches[0]
+  let target =
+    options.target === undefined ? undefined : yield* selectTarget(devices, options.target)
+  if (
+    target === undefined &&
+    options.threadId !== undefined &&
+    options.provider === undefined &&
+    options.parentTaskId === undefined &&
+    configuration.mcpTaskId === undefined
+  ) {
+    const context = yield* client.threadContext(options.threadId)
+    const previous = context.tasks.findLast((task) => task.parentTaskId === undefined)
+    if (previous === undefined && context.truncated) {
+      return yield* new DeviceSelectionError({
+        message: "Earlier thread targets are no longer in the retained context; specify --target",
+        devices: [],
+      })
+    }
+    if (previous?.provider === "grok-bot" && previous.botId !== undefined) {
+      target = yield* selectTarget(devices, `@${previous.targetDeviceId}/${previous.botId}`)
+    }
+  }
+  const botId = target?.botId
+  if (botId !== undefined && options.provider !== undefined && options.provider !== "grok-bot") {
+    return yield* new DeviceSelectionError({
+      message: `A bot target requires provider grok-bot, not ${options.provider}`,
+      devices: [],
+    })
+  }
+  if (botId === undefined && options.provider === "grok-bot") {
+    return yield* new DeviceSelectionError({
+      message: "Select a bot with --target; use cohall bots to list available bots",
+      devices: [],
+    })
+  }
+  const provider = botId === undefined ? options.provider : "grok-bot"
   const inheritedThread = configuration.mcpThreadId
+  const parentTaskId =
+    options.parentTaskId ??
+    (configuration.mcpTaskId === undefined
+      ? undefined
+      : yield* Schema.decodeUnknownEffect(TaskId)(configuration.mcpTaskId))
   return yield* client.createTask({
     prompt: options.prompt,
-    ...(target === undefined ? {} : { targetDeviceId: target.id }),
+    ...(target === undefined ? {} : { targetDeviceId: target.deviceId }),
+    ...(botId === undefined ? {} : { botId }),
     ...(options.threadId !== undefined
       ? { threadId: options.threadId }
       : inheritedThread === undefined
@@ -105,7 +188,8 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
         : { threadId: ThreadId.make(inheritedThread) }),
     ...(options.context === undefined ? {} : { context: options.context }),
     ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
-    ...(options.provider === undefined ? {} : { provider: options.provider }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(parentTaskId === undefined ? {} : { parentTaskId }),
   })
 })
 

@@ -1,11 +1,11 @@
 import { RelayClient } from "@cohall/client"
-import { TaskId, ThreadId, version } from "@cohall/protocol"
+import { Provider, TaskId, ThreadId, version } from "@cohall/protocol"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { Effect } from "effect"
 import * as z from "zod/v4"
 import type { ClientConfiguration } from "./config.ts"
-import { createDelegation, taskResult, threadContext, waitForTask } from "./delegation.ts"
+import { createDelegation, listBots, taskResult, threadContext, waitForTask } from "./delegation.ts"
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -30,15 +30,34 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
   )
 
   server.registerTool(
+    "list_bots",
+    {
+      title: "List Cohall bots",
+      description:
+        "List named Grok Bots on paired devices, their host availability, and unambiguous targets for delegate. Bot names can also be used when unique.",
+      inputSchema: {},
+    },
+    async () => output(listBots(await Effect.runPromise(client.devices()))),
+  )
+
+  server.registerTool(
     "delegate",
     {
-      title: "Delegate work to another device",
+      title: "Send work to a device or bot",
       description:
-        "Send focused work to another Cohall device. When the request depends on the current conversation, distill its motivation, relevant facts, prior findings, constraints, and desired decision into context; Cohall cannot read the host transcript. Never forward unrelated transcript content. Reuse thread_id for related follow-ups.",
+        "Send focused work to a Cohall device or named Grok Bot. When the request depends on the current conversation, distill its motivation, relevant facts, prior findings, constraints, and desired decision into context; Cohall cannot read the host transcript. Never forward unrelated transcript content. Reuse thread_id for related follow-ups. Grok Bots use their existing conversation; a Cohall thread does not isolate it.",
       inputSchema: {
         prompt: z.string().min(1).max(131_072),
-        target: z.string().optional().describe("Device name, @name, hostname, or ID"),
-        provider: z.enum(["codex", "claude-code", "opencode"]).default("codex"),
+        target: z
+          .string()
+          .optional()
+          .describe(
+            "Device name, hostname or ID; @BotName; or @device/BotName. Use list_bots targets to disambiguate.",
+          ),
+        provider: z
+          .enum(Provider.literals)
+          .optional()
+          .describe("Inferred as grok-bot for a bot target; otherwise defaults to codex."),
         context: z
           .string()
           .max(131_072)
@@ -47,19 +66,39 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
             "Distilled context the target needs: why the user is asking, relevant facts and prior findings, constraints, and the intended decision. The calling agent must supply this when the prompt depends on its conversation; omit it only for a self-contained task.",
           ),
         thread_id: z.string().uuid().optional(),
-        workspace: z.string().max(4096).optional(),
+        parent_task_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe("The task delegating this work. Inherited from COHALL_TASK_ID when present."),
+        workspace: z
+          .string()
+          .max(4096)
+          .optional()
+          .describe("Coding provider workspace. Omit for named Grok Bots."),
         wait: z.boolean().default(true),
         timeout_seconds: z.number().int().min(5).max(86_400).default(900),
       },
     },
-    async ({ prompt, target, provider, context, thread_id, workspace, wait, timeout_seconds }) => {
+    async ({
+      prompt,
+      target,
+      provider,
+      context,
+      thread_id,
+      parent_task_id,
+      workspace,
+      wait,
+      timeout_seconds,
+    }) => {
       const task = await Effect.runPromise(
         createDelegation(client, configuration, {
           prompt,
-          provider,
+          ...(provider === undefined ? {} : { provider }),
           ...(target === undefined ? {} : { target }),
           ...(context === undefined ? {} : { context }),
           ...(thread_id === undefined ? {} : { threadId: ThreadId.make(thread_id) }),
+          ...(parent_task_id === undefined ? {} : { parentTaskId: TaskId.make(parent_task_id) }),
           ...(workspace === undefined ? {} : { workspace }),
         }),
       )
@@ -113,7 +152,8 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     "cancel_task",
     {
       title: "Cancel delegated work",
-      description: "Request cancellation and return its acknowledged or pending state.",
+      description:
+        "Request cancellation of coding work or a queued Bot task. Active Grok Bot tasks must be stopped in Grok Bot.",
       inputSchema: { task_id: z.string().uuid() },
     },
     async ({ task_id }) =>

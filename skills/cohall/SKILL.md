@@ -1,14 +1,13 @@
 ---
 name: cohall
-description: Delegate work to an agent on another user-owned device through the Cohall CLI. Use when the user asks to run, research, or check something on another device, names a Cohall target such as @macbook or @server, or needs machine-local state or capabilities such as a signed-in browser, Xcode, Docker, deployment access, a repository checkout, or unavailable tools. Carry the relevant current-conversation context into the handoff automatically.
+description: Delegate through Cohall to another user-owned device or an existing Grok Bot. Use when the user names a Cohall target, asks to message one of their bots, or needs another machine's tools, files, or signed-in services. Carry relevant conversation context into the handoff.
 ---
 
 # Cohall
 
-Cohall sends a focused task to an agent running on another device. The target
+Cohall sends a focused task to a coding agent or an existing named Grok Bot. The target
 keeps its local files, credentials, browser state, provider login, skills, and
-permissions. The relay carries prompts, final results, and task state; it is not
-a lead agent.
+permissions. The relay carries prompts, final results, and task state.
 
 Use the installed `cohall` executable when it is available. Fall back to
 `npx -y @akshar5/cohall` only when Cohall is not installed globally.
@@ -16,9 +15,8 @@ Use the installed `cohall` executable when it is available. Fall back to
 ## Recognize cross-device requests
 
 Treat phrases such as “run this on my Mac,” “ask `@server`,” or “have the Linux
-machine check this” as target intent. The `@name` form is a Cohall device
-selector, not chat syntax supplied by the harness. Resolve it with `cohall
-devices`, then delegate the smallest useful outcome.
+machine check this” as target intent. Resolve computers with `cohall devices`
+and named bots with `cohall bots`, then delegate the smallest useful outcome.
 
 Good reasons to delegate include:
 
@@ -62,8 +60,9 @@ Do not delegate ordinary local work when the other device provides no advantage.
      --context 'Why: deployment 184 failed after 15:00 UTC. Known: local checks passed and the provider status page reported elevated errors. Need: determine whether the outage explains our failure, with primary-source links and contrary evidence.'
    ```
 
-   Providers are `codex`, `claude-code`, and `opencode`. Omit `--provider` to
-   use Codex. Omit `--target` only when Cohall may choose a matching device.
+   Coding providers are `codex`, `claude-code`, and `opencode`. Omit `--provider`
+   to use Codex on a computer; selecting a named bot infers `grok-bot`.
+   Omit `--target` only when Cohall may choose a matching computer.
 
 5. The command waits by default and returns JSON. Treat work as successful only
    when `status` is `completed`; use `result` in the current task. Report a
@@ -79,9 +78,43 @@ Do not delegate ordinary local work when the other device provides no advantage.
      --prompt 'Check whether yesterday’s deployment failed for the same reason.'
    ```
 
-When an agent running as a Cohall task delegates again, `COHALL_THREAD_ID`
-automatically carries the current thread. Pass `--thread` explicitly from an
-ordinary shell or a separate agent turn.
+When a coding agent running as a Cohall task delegates again, `COHALL_THREAD_ID`
+and `COHALL_TASK_ID` carry its thread and parent task. Pass `--thread` and
+`--parent` explicitly from a Grok Bot using the IDs in its handoff.
+
+## Message named bots
+
+1. Run `cohall bots` and choose a listed target. Use its qualified target when
+   names collide; discovery includes every available bot on configured hosts.
+2. Send the prompt and relevant context:
+
+   ```bash
+   cohall send @Research --prompt 'Find three project ideas worth exploring.'
+   cohall send '@cloud/Video ideas' --prompt 'Suggest an opening for the video.'
+   ```
+
+   Named bots use their existing Grok conversation and permissions. Omit
+   `--workspace`. A Cohall thread records the exchange; it does not create an
+   isolated Grok conversation.
+
+3. Reuse `--thread <thread-id>` for follow-ups. With an explicit thread and no
+   target, Cohall resumes its most recent root bot task. Select a computer
+   explicitly when delegating a child coding task:
+
+   ```bash
+   cohall delegate --target @cloud --provider codex \
+     --thread <thread-id> --parent <task-id> --prompt 'Implement the selected idea.'
+   ```
+
+Different bots and the computer's coding agent can run concurrently. Each
+individual bot processes one Cohall request at a time.
+
+When receiving a Cohall request inside a Grok Bot, finish with the `cohall reply`
+command supplied in the handoff. Pass the final answer through `--message-file`
+or `--message -` on stdin, then reply normally in chat. Use `--error` if unable
+to finish. This local receipt is what returns the result to the sending device;
+a chat message alone does not complete the Cohall task. The receipt survives
+worker restarts and works while the relay is temporarily unreachable.
 
 ## Context and safety
 
@@ -117,8 +150,10 @@ unless cancelled:
 cohall cancel <task-id>
 ```
 
-Active cancellation is acknowledged by the target device; `cancelling` means
-the provider process has not confirmed termination yet.
+For coding agents, active cancellation is acknowledged by the target device;
+`cancelling` means the provider process has not confirmed termination yet.
+Queued bot tasks can be cancelled. Stop an active bot in Grok Bot; its gateway
+cannot safely cancel an individual Cohall request.
 
 ## Read shared context
 

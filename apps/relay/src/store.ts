@@ -27,6 +27,7 @@ import {
   makeTaskId,
   makeThreadId,
   now,
+  taskSlot,
   type AuthSessionId,
   type ConnectionRole as ConnectionRoleName,
   type CreatePairingInput,
@@ -73,6 +74,7 @@ interface DeviceRow {
   readonly architecture: string
   readonly status: string
   readonly providers_json: string
+  readonly bots_json: string | null
   readonly capabilities_json: string
   readonly workspaces_json: string
   readonly version: string
@@ -86,6 +88,7 @@ interface TaskRow {
   readonly prompt: string
   readonly context: string | null
   readonly provider: string
+  readonly bot_id: string | null
   readonly status: string
   readonly source_device_id: string | null
   readonly target_device_id: string
@@ -167,6 +170,7 @@ export interface Interface {
   readonly heartbeat: (
     deviceId: DeviceId,
     status: "online" | "busy",
+    bots?: Device["bots"],
   ) => Effect.Effect<Device, PersistenceError>
   readonly markDeviceOffline: (deviceId: DeviceId) => Effect.Effect<Device, PersistenceError>
   readonly createDelegation: (
@@ -298,6 +302,7 @@ const deviceFromRow = (row: DeviceRow): Effect.Effect<Device, PersistenceError> 
     architecture: row.architecture,
     status: row.status,
     providers: JSON.parse(row.providers_json) as unknown,
+    ...(row.bots_json === null ? {} : { bots: JSON.parse(row.bots_json) as unknown }),
     capabilities: JSON.parse(row.capabilities_json) as unknown,
     workspaces: JSON.parse(row.workspaces_json) as unknown,
     version: row.version,
@@ -311,6 +316,7 @@ const taskFromRow = (row: TaskRow): Effect.Effect<Task, PersistenceError> =>
     threadId: row.thread_id,
     prompt: row.prompt,
     provider: row.provider,
+    ...(row.bot_id === null ? {} : { botId: row.bot_id }),
     status: row.status,
     targetDeviceId: row.target_device_id,
     createdAt: row.created_at,
@@ -400,6 +406,8 @@ const providerName = (provider: Provider): string => {
       return "Claude Code"
     case "opencode":
       return "OpenCode"
+    case "grok-bot":
+      return "Grok Bot"
   }
 }
 
@@ -556,6 +564,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       threadId: task.threadId,
       status: task.status,
       provider: task.provider,
+      ...(task.botId === undefined ? {} : { botId: task.botId }),
       targetDevice,
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
@@ -982,12 +991,13 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           .query(
             `INSERT INTO devices (
             id, name, hostname, platform, architecture, status, providers_json,
-            capabilities_json, workspaces_json, version, last_seen_at, connected_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            capabilities_json, workspaces_json, version, last_seen_at, connected_at, bots_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             name = excluded.name, hostname = excluded.hostname, platform = excluded.platform,
             architecture = excluded.architecture, status = excluded.status,
-            providers_json = excluded.providers_json, capabilities_json = excluded.capabilities_json,
+            providers_json = excluded.providers_json, bots_json = excluded.bots_json,
+            capabilities_json = excluded.capabilities_json,
             workspaces_json = excluded.workspaces_json, version = excluded.version,
             last_seen_at = excluded.last_seen_at, connected_at = excluded.connected_at,
             forgotten_at = NULL`,
@@ -1005,6 +1015,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             device.version,
             device.lastSeenAt,
             device.connectedAt ?? null,
+            device.bots === undefined ? null : JSON.stringify(device.bots),
           ),
       catch: operationError("RelayStore.upsertDevice"),
     })
@@ -1014,13 +1025,16 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   const updateDeviceStatus = Effect.fn("RelayStore.updateDeviceStatus")(function* (
     deviceId: DeviceId,
     status: "online" | "busy" | "offline",
+    bots?: Device["bots"],
   ) {
     const timestamp = now()
     const result = yield* Effect.try({
       try: () =>
         db
-          .query("UPDATE devices SET status = ?, last_seen_at = ? WHERE id = ?")
-          .run(status, timestamp, deviceId),
+          .query(
+            "UPDATE devices SET status = ?, last_seen_at = ?, bots_json = COALESCE(?, bots_json) WHERE id = ?",
+          )
+          .run(status, timestamp, bots === undefined ? null : JSON.stringify(bots), deviceId),
       catch: operationError("RelayStore.updateDeviceStatus"),
     })
     if (result.changes !== 1) {
@@ -1055,7 +1069,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       id: makeTaskId(),
       threadId,
       prompt: input.prompt,
-      provider: input.provider ?? "codex",
+      provider: input.provider ?? (input.botId === undefined ? "codex" : "grok-bot"),
+      ...(input.botId === undefined ? {} : { botId: input.botId }),
       status: "queued",
       targetDeviceId,
       createdAt: timestamp,
@@ -1111,9 +1126,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           db.query(
             `INSERT INTO tasks (
               id, thread_id, prompt, context, provider, status, source_device_id,
-              target_device_id, parent_task_id, workspace, provider_session_id,
+              target_device_id, parent_task_id, workspace, provider_session_id, bot_id,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             task.id,
             task.threadId,
@@ -1126,6 +1141,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             task.parentTaskId ?? null,
             task.workspace ?? null,
             task.providerSessionId ?? null,
+            task.botId ?? null,
             task.createdAt,
             task.updatedAt,
           )
@@ -1284,6 +1300,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                WHERE id = ? AND status = 'queued' AND NOT EXISTS (
                  SELECT 1 FROM tasks active
                  WHERE active.target_device_id = ? AND active.id <> ?
+                   AND CASE WHEN active.provider = 'grok-bot'
+                     THEN 'grok-bot:' || active.bot_id ELSE 'cli' END = ?
                    AND active.status IN ('assigned', 'running', 'cancelling')
                ) AND NOT EXISTS (
                  SELECT 1 FROM device_operations active
@@ -1291,7 +1309,14 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                    AND active.status IN ('assigned', 'running')
                )`,
             )
-            .run(timestamp, taskId, current.targetDeviceId, taskId, current.targetDeviceId)
+            .run(
+              timestamp,
+              taskId,
+              current.targetDeviceId,
+              taskId,
+              taskSlot(current),
+              current.targetDeviceId,
+            )
           if (result.changes === 1) {
             recordTaskTraceEvent(
               taskId,
@@ -1348,7 +1373,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
               status,
               result ?? null,
               error ?? null,
-              providerSessionId ?? current.providerSessionId ?? null,
+              current.provider === "grok-bot"
+                ? null
+                : (providerSessionId ?? current.providerSessionId ?? null),
               timestamp,
               timestamp,
               taskId,
@@ -1366,7 +1393,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                 : "Target device acknowledged cancellation",
             timestamp,
           )
-          if (providerSessionId !== undefined) {
+          if (current.provider !== "grok-bot" && providerSessionId !== undefined) {
             db.query(
               `INSERT INTO provider_sessions (thread_id, device_id, provider, session_id, updated_at)
                VALUES (?, ?, ?, ?, ?)
@@ -1412,6 +1439,13 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     const current = yield* getTask(taskId)
     if (["completed", "failed", "cancelled"].includes(current.status)) {
       return current
+    }
+    if (current.provider === "grok-bot" && current.status !== "queued") {
+      return yield* new PersistenceError({
+        operation: "RelayStore.requestCancellation",
+        message:
+          "Stop this bot in Grok Bot; its gateway cannot cancel an individual Cohall request",
+      })
     }
     if (current.status === "cancelling") {
       return current
@@ -1650,7 +1684,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     usage,
     forgetDevice,
     upsertDevice,
-    heartbeat: (deviceId, status) => updateDeviceStatus(deviceId, status),
+    heartbeat: (deviceId, status, bots) => updateDeviceStatus(deviceId, status, bots),
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
     createDelegation,
     getTask,
@@ -1711,7 +1745,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         CREATE TABLE IF NOT EXISTS devices (
           id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL,
           platform TEXT NOT NULL, architecture TEXT NOT NULL, status TEXT NOT NULL,
-          providers_json TEXT NOT NULL, capabilities_json TEXT NOT NULL,
+          providers_json TEXT NOT NULL, bots_json TEXT, capabilities_json TEXT NOT NULL,
           workspaces_json TEXT NOT NULL, version TEXT NOT NULL, last_seen_at TEXT NOT NULL,
           connected_at TEXT, forgotten_at TEXT
         );
@@ -1729,7 +1763,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         CREATE INDEX IF NOT EXISTS messages_thread_created ON messages(thread_id, created_at);
         CREATE TABLE IF NOT EXISTS tasks (
           id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-          prompt TEXT NOT NULL, context TEXT, provider TEXT NOT NULL, status TEXT NOT NULL,
+          prompt TEXT NOT NULL, context TEXT, provider TEXT NOT NULL, bot_id TEXT, status TEXT NOT NULL,
           source_device_id TEXT REFERENCES devices(id),
           target_device_id TEXT NOT NULL REFERENCES devices(id), parent_task_id TEXT,
           workspace TEXT, provider_session_id TEXT, result TEXT, error TEXT,
@@ -1775,6 +1809,13 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         .all()
       if (!deviceColumns.some((column) => column.name === "forgotten_at")) {
         db.exec("ALTER TABLE devices ADD COLUMN forgotten_at TEXT")
+      }
+      if (!deviceColumns.some((column) => column.name === "bots_json")) {
+        db.exec("ALTER TABLE devices ADD COLUMN bots_json TEXT")
+      }
+      const taskColumns = db.query<{ readonly name: string }, []>("PRAGMA table_info(tasks)").all()
+      if (!taskColumns.some((column) => column.name === "bot_id")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN bot_id TEXT")
       }
     },
     catch: operationError("RelayStore.migrate"),

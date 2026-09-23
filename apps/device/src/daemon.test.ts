@@ -1,18 +1,24 @@
 import {
   DeviceId,
+  BotId,
   DeviceOperation,
   OperationId,
-  SocketEvent,
+  Task,
+  makeTaskId,
+  makeThreadId,
   maxSocketPayloadBytes,
   now,
 } from "@cohall/protocol"
 import { Effect } from "effect"
+import * as Providers from "@cohall/providers"
 import { type AddressInfo } from "node:net"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
 import { DeviceConfiguration } from "./config.ts"
 import { performDeviceOperation, runDaemon } from "./daemon.ts"
 import type { UpgradeOptions, UpgradeResult } from "./upgrade.ts"
+import * as Upgrades from "./upgrade.ts"
+import * as Grok from "./grok-bot.ts"
 
 const servers: Array<WebSocketServer> = []
 const controllers: Array<AbortController> = []
@@ -28,7 +34,7 @@ const startServer = async (): Promise<{
   return { server, relayUrl: `http://127.0.0.1:${address.port}` }
 }
 
-const run = (relayUrl: string): Promise<void> => {
+const run = (relayUrl: string, grokGateway?: string): Promise<void> => {
   const controller = new AbortController()
   controllers.push(controller)
   const configuration = DeviceConfiguration.make({
@@ -37,6 +43,7 @@ const run = (relayUrl: string): Promise<void> => {
     id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
     name: "test-device",
     workspaces: [process.cwd()],
+    ...(grokGateway === undefined ? {} : { grokGateway }),
   })
   return Effect.runPromise(runDaemon(configuration), { signal: controller.signal }).catch(() => {})
 }
@@ -56,28 +63,189 @@ afterEach(async () => {
         }),
     ),
   )
+  vi.restoreAllMocks()
 })
 
 describe("device relay connection", () => {
-  it("closes a relay connection that outruns its message processor", async () => {
+  it("registers before slow bot discovery and then publishes the roster", async () => {
     const { server, relayUrl } = await startServer()
-    const closed = new Promise<number>((resolve) => {
-      server.once("connection", (socket) => {
-        socket.once("message", () => {
-          const connected = JSON.stringify(
-            SocketEvent.make({ _tag: "Connected", serverVersion: "test", connectedAt: now() }),
-          )
-          for (let index = 0; index < 9; index += 1) {
-            socket.send(connected)
-          }
-        })
-        socket.once("close", resolve)
+    const bots = [{ id: BotId.make("bot-a"), name: "Research" }]
+    let finishDiscovery: ((value: typeof bots) => void) | undefined
+    vi.spyOn(Grok, "discoverGrokBots").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishDiscovery = resolve
+        }),
+    )
+    const events: Array<{ _tag: string; device?: { bots: unknown }; bots?: unknown }> = []
+    server.once("connection", (socket) => {
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({
+            _tag: "Connected",
+            serverVersion: "test",
+            connectedAt: now(),
+          }),
+        ),
+      )
+      socket.on("message", (message) => {
+        events.push(JSON.parse(message.toString()))
       })
     })
+    void run(relayUrl, "/fake/gateway.json")
+    await vi.waitFor(() => expect(events.some((event) => event._tag === "DeviceHello")).toBe(true))
+    expect(events.find((event) => event._tag === "DeviceHello")?.device?.bots).toEqual([])
+    finishDiscovery?.(bots)
+    await vi.waitFor(() =>
+      expect(events.find((event) => event._tag === "DeviceHeartbeat")?.bots).toEqual(bots),
+    )
+  })
 
-    void run(relayUrl)
+  it("lets bots delegate to the CLI while serializing each bot and waiting to upgrade", async () => {
+    const { server, relayUrl } = await startServer()
+    const started: Array<string> = []
+    const finish = new Map<string, () => void>()
+    const botA = BotId.make("bot-a")
+    const botB = BotId.make("bot-b")
+    vi.spyOn(Grok, "discoverGrokBots").mockResolvedValue([
+      { id: botA, name: "Research" },
+      { id: botB, name: "Video" },
+    ])
+    vi.spyOn(Grok, "runGrokBot").mockImplementation((_path, task) => {
+      started.push(task.prompt)
+      return new Promise((resolve) => finish.set(task.prompt, () => resolve({ result: "done" })))
+    })
+    vi.spyOn(Providers, "run").mockImplementation((options) =>
+      Effect.promise(() => {
+        const name = options.prompt.includes("cli-one") ? "cli-one" : "cli-two"
+        started.push(name)
+        return new Promise((resolve) => finish.set(name, () => resolve({ result: "done" })))
+      }),
+    )
+    const upgrade = vi.spyOn(Upgrades, "upgrade").mockRejectedValue(new Error("test upgrade"))
+    const makeTask = (prompt: string, botId?: typeof botA): Task =>
+      Task.make({
+        id: makeTaskId(),
+        threadId: makeThreadId(),
+        targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        prompt,
+        provider: botId === undefined ? "codex" : "grok-bot",
+        ...(botId === undefined ? {} : { botId }),
+        status: "assigned",
+        createdAt: now(),
+        updatedAt: now(),
+      })
+    const assigned = [
+      makeTask("bot-a-one", botA),
+      makeTask("bot-a-two", botA),
+      makeTask("bot-b-one", botB),
+      makeTask("cli-one"),
+      makeTask("cli-two"),
+    ]
+    server.once("connection", (socket) => {
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({ _tag: "Connected", serverVersion: "test", connectedAt: now() }),
+        ),
+      )
+      socket.on("message", (message) => {
+        const event = JSON.parse(message.toString()) as {
+          _tag: string
+          bots?: ReadonlyArray<unknown>
+        }
+        if (event._tag !== "DeviceHeartbeat" || event.bots?.length !== 2) {
+          return
+        }
+        for (const task of assigned) {
+          socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+        }
+        socket.send(
+          JSON.stringify({
+            _tag: "OperationAssigned",
+            operation: {
+              id: OperationId.make("66666666-6666-4666-8666-666666666666"),
+              kind: "upgrade",
+              status: "assigned",
+              targetDeviceId: assigned[0]?.targetDeviceId,
+              requestedVersion: "latest",
+              restart: true,
+              createdAt: now(),
+              updatedAt: now(),
+            },
+          }),
+        )
+      })
+    })
+    void run(relayUrl, "/fake/gateway.json")
+    await vi.waitFor(() => expect(started).toHaveLength(3))
+    expect(started).toEqual(expect.arrayContaining(["bot-a-one", "bot-b-one", "cli-one"]))
+    expect(upgrade).not.toHaveBeenCalled()
+    finish.get("cli-one")?.()
+    finish.get("bot-a-one")?.()
+    await vi.waitFor(() => expect(started).toHaveLength(5))
+    expect(upgrade).not.toHaveBeenCalled()
+    finish.get("cli-two")?.()
+    finish.get("bot-a-two")?.()
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(upgrade).not.toHaveBeenCalled()
+    finish.get("bot-b-one")?.()
+    await vi.waitFor(() => expect(upgrade).toHaveBeenCalledOnce())
+  })
 
-    await expect(closed).resolves.toBe(4008)
+  it("accepts a reconnect burst of distinct bots without closing the connection", async () => {
+    const { server, relayUrl } = await startServer()
+    const bots = Array.from({ length: 12 }, (_, index) => ({
+      id: BotId.make(`bot-${index}`),
+      name: `Bot ${index}`,
+    }))
+    vi.spyOn(Grok, "discoverGrokBots").mockResolvedValue(bots)
+    vi.spyOn(Grok, "runGrokBot").mockResolvedValue({ result: "ready" })
+    const finished: Array<string> = []
+    let disconnected = false
+    server.once("connection", (socket) => {
+      socket.once("close", () => {
+        disconnected = true
+      })
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({
+            _tag: "Connected",
+            serverVersion: "test",
+            connectedAt: now(),
+          }),
+        ),
+      )
+      socket.on("message", (message) => {
+        const event = JSON.parse(message.toString()) as { _tag: string; taskId?: string }
+        if (event._tag === "TaskFinished" && event.taskId !== undefined) {
+          finished.push(event.taskId)
+        }
+        if (event._tag !== "DeviceHello") {
+          return
+        }
+        for (const bot of bots) {
+          socket.send(
+            JSON.stringify({
+              _tag: "TaskAssigned",
+              task: Task.make({
+                id: makeTaskId(),
+                threadId: makeThreadId(),
+                targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+                prompt: "hello",
+                provider: "grok-bot",
+                botId: bot.id,
+                status: "assigned",
+                createdAt: now(),
+                updatedAt: now(),
+              }),
+            }),
+          )
+        }
+      })
+    })
+    void run(relayUrl, "/fake/gateway.json")
+    await vi.waitFor(() => expect(finished).toHaveLength(bots.length))
+    expect(disconnected).toBe(false)
   })
 
   it("rejects relay frames larger than the shared socket budget", async () => {

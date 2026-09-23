@@ -125,14 +125,21 @@ executable, so it refuses temporary package-runner and source-checkout paths.
 
 ## Providers
 
-Target devices advertise provider executables they can find. Authentication is
-checked when delegated work starts.
+Target devices advertise installed coding providers. Authentication is checked
+when delegated work starts.
 
 | Provider    | Required command | Session continuation     |
 | ----------- | ---------------- | ------------------------ |
 | Codex       | `codex`          | `codex exec resume`      |
 | Claude Code | `claude`         | `claude --resume`        |
 | OpenCode    | `opencode`       | `opencode run --session` |
+
+The experimental `grok-bot` provider connects to named Bots through their
+computer's local gateway. Configure it with `cohall configure --grok-gateway
+<absolute-path> --providers codex,grok-bot` and restart the worker. See
+[Grok Bot setup and messaging](../README.md#talk-to-your-grok-bots) for discovery,
+callbacks, and upgrade order. Bot model selection and permissions remain with
+Grok Bot.
 
 Limit a device to providers configured for that user:
 
@@ -144,7 +151,7 @@ cohall configure --providers auto
 ## Configuration
 
 `cohall config` shows stored configuration without tokens. `cohall configure`
-changes the device name, workspace roots, providers, model, sandbox, or relay
+changes the device name, workspace roots, providers, Grok gateway path, model, sandbox, or relay
 for a fresh pairing. Use `cohall relay use <url>` when moving an existing relay;
 it preserves credentials only after verifying them at the restored address.
 Non-loopback HTTP is refused unless `--allow-http` explicitly confirms that an
@@ -178,6 +185,8 @@ Environment variables override stored values:
 | `COHALL_MODEL`                            | Target provider model override                 |
 | `COHALL_SANDBOX`                          | Codex sandbox override                         |
 | `COHALL_THREAD_ID`                        | Inherited thread for nested delegation         |
+| `COHALL_TASK_ID`                          | Inherited parent task for nested delegation    |
+| `COHALL_GROK_GATEWAY`                     | Local Grok Bot gateway discovery file          |
 | `COHALL_DATA_DIR`                         | Relay database and owner-token directory       |
 | `COHALL_RELAY_HOST` / `COHALL_RELAY_PORT` | Relay listener                                 |
 | `COHALL_RELAY_ALLOW_REMOTE`               | Explicit non-loopback binding opt-in           |
