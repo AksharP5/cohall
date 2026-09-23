@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/AksharP5/cohall/compare/v0.6.0...v0.6.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **bot:** release rejected tasks without waiting six hours ([#67](https://github.com/AksharP5/cohall/issues/67)) ([e0d7a06](https://github.com/AksharP5/cohall/commit/e0d7a06545095c1fc52473b90cbff962dff2fd67))
+* **upgrade:** preserve recovery state and resolve trusted tools ([#66](https://github.com/AksharP5/cohall/issues/66)) ([bccfb18](https://github.com/AksharP5/cohall/commit/bccfb18ccc278fdbc1caede52bdeb70f56d16d81))
+
 ## [0.6.0](https://github.com/AksharP5/cohall/compare/v0.5.6...v0.6.0) (2026-09-23)
 
 
