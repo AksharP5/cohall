@@ -207,11 +207,10 @@ const linuxSystemExecutableRoots = [
 const macosHomebrewRoots = ["/opt/homebrew", "/usr/local"]
 const macosAdminGroup = 80
 
-export const isTrustedSystemExecutablePath = (
-  platform: NodeJS.Platform,
-  canonical: string,
-): boolean =>
-  platform === "linux" && linuxSystemExecutableRoots.some((root) => containsPath(root, canonical))
+export const isTrustedSystemPath = (platform: NodeJS.Platform, path: string): boolean =>
+  platform === "linux" &&
+  (path === "/home" ||
+    linuxSystemExecutableRoots.some((root) => containsPath(root, path) || containsPath(path, root)))
 
 export const isTrustedGroupWritablePath = (options: {
   readonly platform: NodeJS.Platform
@@ -235,42 +234,16 @@ export const isTrustedGroupWritablePath = (options: {
   )
 }
 
-export const trustedExecutable = async (
-  command: string,
-  options: { readonly writableRoot?: string } = {},
+const validateExecutable = async (
+  candidate: string,
+  installationRoot: string | undefined,
 ): Promise<string> => {
-  const candidates = isAbsolute(command)
-    ? [command]
-    : (process.env.PATH ?? "")
-        .split(delimiter)
-        .filter(Boolean)
-        .flatMap((directory) => executableNames(command).map((name) => join(directory, name)))
-  let selected: string | undefined
-  for (const path of candidates) {
-    const available = await access(
-      path,
-      operatingSystem() === "win32" ? constants.F_OK : constants.X_OK,
-    )
-      .then(() => true)
-      .catch(() => false)
-    if (available) {
-      selected = path
-      break
-    }
-  }
-  if (selected === undefined) {
-    throw new Error(`Could not find ${command} on PATH`)
-  }
-  const canonical = await realpath(selected)
+  const canonical = await realpath(candidate)
   if (operatingSystem() === "win32") {
     return canonical
   }
   const uid = process.getuid?.()
-  const writableRoot =
-    options.writableRoot === undefined ? undefined : await realpath(options.writableRoot)
-  // Confined Linux services cannot always observe host-root ownership. Fixed OS roots are the
-  // trust anchor; their writable bits are still checked below.
-  const systemExecutable = isTrustedSystemExecutablePath(operatingSystem(), canonical)
+  const writableRoot = installationRoot === undefined ? undefined : await realpath(installationRoot)
   for (let path = canonical; ; path = dirname(path)) {
     const metadata = await stat(path)
     // Homebrew's shared prefix is admin-group writable. Local administrators are already inside
@@ -290,7 +263,14 @@ export const trustedExecutable = async (
     ) {
       throw new Error(`Refusing executable beneath group- or world-writable path ${path}`)
     }
-    if (uid !== undefined && metadata.uid !== 0 && metadata.uid !== uid && !systemExecutable) {
+    // User namespaces can hide host-root ownership. Only fixed OS paths are trusted this way;
+    // user-installed executables and their private ancestors must still belong to this user.
+    if (
+      uid !== undefined &&
+      metadata.uid !== 0 &&
+      metadata.uid !== uid &&
+      !isTrustedSystemPath(operatingSystem(), path)
+    ) {
       throw new Error(`Refusing executable owned by another user at ${path}`)
     }
     const parent = dirname(path)
@@ -299,6 +279,34 @@ export const trustedExecutable = async (
     }
   }
   return canonical
+}
+
+export const trustedExecutable = async (
+  command: string,
+  options: { readonly writableRoot?: string } = {},
+): Promise<string> => {
+  const candidates = isAbsolute(command)
+    ? [command]
+    : (process.env.PATH ?? "")
+        .split(delimiter)
+        .filter(Boolean)
+        .flatMap((directory) => executableNames(command).map((name) => join(directory, name)))
+  let failure: unknown
+  for (const path of candidates) {
+    const available = await access(
+      path,
+      operatingSystem() === "win32" ? constants.F_OK : constants.X_OK,
+    )
+      .then(() => true)
+      .catch(() => false)
+    if (!available) continue
+    try {
+      return await validateExecutable(path, options.writableRoot)
+    } catch (cause) {
+      failure ??= cause
+    }
+  }
+  throw failure ?? new Error(`Could not find ${command} on PATH`)
 }
 
 const trustedServices = async (
@@ -597,6 +605,7 @@ const reportedRestartServices = (receipt: RestartReceipt): ReadonlyArray<string>
     : [...receipt.restartedServices, receipt.restartingService]
 
 export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> => {
+  const target = normalizeUpgradeTarget(options.target)
   const runner = options.runner ?? defaultRunner
   const resolveExecutable = options.resolveExecutable ?? trustedExecutable
   const runtimePlatform = options.platform ?? process.platform
@@ -608,7 +617,10 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   const statePath = options.statePath ?? restartReceiptPath()
   const previous = await readReceipt(statePath)
 
-  if (previous?.version === options.currentVersion) {
+  if (
+    previous?.version === options.currentVersion &&
+    (target === "latest" || target === previous.version)
+  ) {
     const byId = new Map(candidates.map((service) => [service.id, service]))
     const pending = previous.pendingServices.flatMap((id) => {
       const service = byId.get(id)
@@ -671,16 +683,12 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
   }
 
-  await rm(statePath, { force: true })
-
-  const target = normalizeUpgradeTarget(options.target)
   const entrypoint = options.entrypoint ?? process.argv[1]
   if (entrypoint === undefined) {
     throw new Error("Could not resolve the Cohall executable path")
   }
   const canonicalEntrypoint = await realpath(entrypoint)
   const installation = packageInstallation(canonicalEntrypoint, entrypoint)
-  const install = packageInstallCommand(installation, target)
   const services = await activeServices(runner, candidates)
   await assertServiceInstallations(runner, services, canonicalEntrypoint, entrypoint)
 
@@ -698,21 +706,26 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
   }
 
-  const installExecutable =
-    options.resolveExecutable === undefined
-      ? await trustedExecutable(
-          install.command,
-          installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
-        )
-      : await resolveExecutable(install.command)
-  await checked(runner, { ...install, command: installExecutable })
-  const nextVersion = await installedVersion(entrypoint)
+  let nextVersion = await installedVersion(entrypoint).catch(() => undefined)
+  if (nextVersion === undefined || target !== nextVersion) {
+    const install = packageInstallCommand(installation, target)
+    const installExecutable =
+      options.resolveExecutable === undefined
+        ? await trustedExecutable(
+            install.command,
+            installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
+          )
+        : await resolveExecutable(install.command)
+    await checked(runner, { ...install, command: installExecutable })
+    nextVersion = await installedVersion(entrypoint)
+  }
   if (target !== "latest" && nextVersion !== target) {
     throw new Error(`Installed Cohall ${nextVersion}, expected ${target}`)
   }
   const upgraded = nextVersion !== options.currentVersion
 
   if (!options.restart || services.length === 0) {
+    await rm(statePath, { force: true })
     return {
       upgraded,
       from_version: options.currentVersion,

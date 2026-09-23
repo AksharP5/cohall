@@ -215,6 +215,17 @@ plan, or `--no-restart` to leave services pending a manual restart. Back up a
 production relay's data directory before an upgrade because SQLite migrations
 run in place.
 
+An exact version already installed on disk skips package installation and still
+restarts active services. Dry runs and failed installations preserve restart
+recovery state. A new explicit version takes precedence over an older recovery
+record.
+
+Upgrade tools use the first PATH candidate that passes ownership and permission
+checks. Unsafe candidates are skipped; an explicit executable path must pass
+those checks itself. Linux user namespaces may hide root ownership of fixed OS
+directories, but user-installed executables still require trusted ownership and
+permissions.
+
 The relay owner can queue the same built-in upgrade across every registered
 device:
 
