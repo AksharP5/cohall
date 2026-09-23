@@ -199,7 +199,7 @@ const scoreDevice = (
   )
 }
 
-const chooseDevice = (
+export const chooseDevice = (
   input: CreateTaskInput,
   sourceDeviceId?: DeviceIdType,
 ): Effect.Effect<DeviceIdType, RequestError, RelayStore.Service> =>
@@ -208,7 +208,7 @@ const chooseDevice = (
     const devices = yield* store
       .listDevices()
       .pipe(Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })))
-    const provider = input.provider ?? "codex"
+    const provider = input.provider ?? (input.botId === undefined ? "codex" : "grok-bot")
     if (input.targetDeviceId !== undefined) {
       const target = devices.find((device) => device.id === input.targetDeviceId)
       if (target === undefined) {
@@ -223,18 +223,36 @@ const chooseDevice = (
           message: `${target.name} does not advertise the ${provider} provider`,
         })
       }
+      if (input.botId !== undefined && !target.bots?.some((bot) => bot.id === input.botId)) {
+        return yield* new RequestError({
+          status: 404,
+          message: `${target.name} does not advertise bot ${input.botId}; refresh the bot list`,
+        })
+      }
       return target.id
     }
-    const selected = devices
-      .filter((device) => device.providers.includes(provider))
-      .sort(
-        (left, right) =>
-          scoreDevice(right, input, sourceDeviceId) - scoreDevice(left, input, sourceDeviceId),
-      )[0]
+    const candidates = devices.filter(
+      (device) =>
+        device.providers.includes(provider) &&
+        (input.botId === undefined || device.bots?.some((bot) => bot.id === input.botId)),
+    )
+    if (input.botId !== undefined && candidates.length > 1) {
+      return yield* new RequestError({
+        status: 409,
+        message: `Bot ${input.botId} is advertised by more than one device; select a device`,
+      })
+    }
+    const selected = candidates.sort(
+      (left, right) =>
+        scoreDevice(right, input, sourceDeviceId) - scoreDevice(left, input, sourceDeviceId),
+    )[0]
     if (selected === undefined) {
       return yield* new RequestError({
         status: 409,
-        message: `No Cohall device advertises the ${provider} provider`,
+        message:
+          input.botId === undefined
+            ? `No Cohall device advertises the ${provider} provider`
+            : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,
       })
     }
     return selected.id
@@ -347,7 +365,19 @@ export const runRelay = async (): Promise<void> => {
     )
   }
 
-  const dispatchPending = async (deviceId: DeviceIdType): Promise<void> => {
+  const dispatchPendingOperations = async (deviceId: DeviceIdType): Promise<void> => {
+    const operations = await run(
+      Effect.gen(function* () {
+        const store = yield* RelayStore.Service
+        return yield* store.pendingOperationsFor(deviceId)
+      }),
+    )
+    for (const operation of operations) {
+      await dispatchOperation(operation)
+    }
+  }
+
+  const dispatchPendingTasks = async (deviceId: DeviceIdType): Promise<void> => {
     const tasks = await run(
       Effect.gen(function* () {
         const store = yield* RelayStore.Service
@@ -361,15 +391,11 @@ export const runRelay = async (): Promise<void> => {
         await dispatch(task)
       }
     }
-    const operations = await run(
-      Effect.gen(function* () {
-        const store = yield* RelayStore.Service
-        return yield* store.pendingOperationsFor(deviceId)
-      }),
-    )
-    for (const operation of operations) {
-      await dispatchOperation(operation)
-    }
+  }
+
+  const dispatchPending = async (deviceId: DeviceIdType): Promise<void> => {
+    await dispatchPendingOperations(deviceId)
+    await dispatchPendingTasks(deviceId)
   }
 
   const sendError = (socket: ConnectionSocket, code: string, message: string): void => {
@@ -461,7 +487,9 @@ export const runRelay = async (): Promise<void> => {
           yield* store.upsertDevice(device)
         }),
       )
-      await dispatchPending(device.id)
+      // Reconcile work the daemon may still be running before an upgrade can occupy the device.
+      await dispatchPendingTasks(device.id)
+      await dispatchPendingOperations(device.id)
       return
     }
 
@@ -483,7 +511,11 @@ export const runRelay = async (): Promise<void> => {
         switch (event._tag) {
           case "DeviceHeartbeat":
             if (event.deviceId === deviceId) {
-              yield* store.heartbeat(deviceId, event.status === "busy" ? "busy" : "online")
+              yield* store.heartbeat(
+                deviceId,
+                event.status === "busy" ? "busy" : "online",
+                event.bots,
+              )
             }
             return
           case "TaskAccepted":
@@ -631,7 +663,7 @@ export const runRelay = async (): Promise<void> => {
         const input = yield* body(request, decodeCreateTaskInput)
         const target = yield* chooseDevice(input, sourceDeviceId)
         const providerSessionId =
-          input.threadId === undefined
+          input.threadId === undefined || input.provider === "grok-bot"
             ? undefined
             : yield* store.sessionFor(input.threadId, target, input.provider ?? "codex")
         const task = yield* store.createDelegation(input, target, sourceDeviceId, providerSessionId)
@@ -672,15 +704,17 @@ export const runRelay = async (): Promise<void> => {
                   ? 500
                   : cause.message.startsWith("Unknown")
                     ? 404
-                    : cause.message.includes("outstanding task limit")
-                      ? 429
-                      : cause.message.includes("must be offline") ||
-                          cause.message.includes("still has outstanding tasks") ||
-                          cause.message.includes("upgrade operation in progress") ||
-                          cause.message === "No Cohall devices are registered" ||
-                          cause.message.startsWith("All-device operations support")
-                        ? 409
-                        : 500,
+                    : cause.message.includes("cannot cancel an individual Cohall request")
+                      ? 409
+                      : cause.message.includes("outstanding task limit")
+                        ? 429
+                        : cause.message.includes("must be offline") ||
+                            cause.message.includes("still has outstanding tasks") ||
+                            cause.message.includes("upgrade operation in progress") ||
+                            cause.message === "No Cohall devices are registered" ||
+                            cause.message.startsWith("All-device operations support")
+                          ? 409
+                          : 500,
               message: cause.message,
             }),
       ),
@@ -699,6 +733,7 @@ export const runRelay = async (): Promise<void> => {
     noServer: true,
     maxPayload: maxSocketPayloadBytes,
     perMessageDeflate: false,
+    allowSynchronousEvents: false,
   })
   websocketServer.on("connection", (rawSocket) => {
     const socket = rawSocket as ConnectionSocket

@@ -1,17 +1,68 @@
 import { Effect, Schema } from "effect"
 import { expect, it } from "vitest"
 import {
+  BotId,
+  CreateTaskInput,
   CreateUpgradeOperationsInput,
   SocketEvent,
   Task,
   assertDeviceOperationSupport,
+  decodeCreateTaskInput,
   makeDeviceId,
   makeTaskId,
   makeThreadId,
   maxSocketPayloadBytes,
   now,
   supportsDeviceOperations,
+  taskSlot,
 } from "./index.ts"
+
+it("infers the Grok provider from a bot and rejects incompatible task targets", async () => {
+  const botId = BotId.make("bot-reacher")
+  await expect(
+    Effect.runPromise(decodeCreateTaskInput({ prompt: "Hello", botId })),
+  ).resolves.toEqual({
+    prompt: "Hello",
+    botId,
+    provider: "grok-bot",
+  })
+  for (const input of [
+    { prompt: "Hello", provider: "grok-bot" },
+    { prompt: "Hello", provider: "codex", botId },
+    { prompt: "Hello", provider: "grok-bot", botId, workspace: "/workspace" },
+    { prompt: "Hello", botId: "" },
+    { prompt: "Hello", botId: "x".repeat(257) },
+  ]) {
+    expect(() => Schema.decodeUnknownSync(CreateTaskInput)(input)).toThrow()
+  }
+  expect(taskSlot({ provider: "grok-bot", botId })).toBe("grok-bot:bot-reacher")
+  expect(taskSlot({ provider: "codex" })).toBe(taskSlot({ provider: "claude-code" }))
+})
+
+it("keeps bot target invariants on assigned tasks and accepts roster-clearing heartbeats", () => {
+  const task = {
+    id: makeTaskId(),
+    threadId: makeThreadId(),
+    prompt: "Hello",
+    provider: "grok-bot",
+    status: "queued",
+    targetDeviceId: makeDeviceId(),
+    createdAt: now(),
+    updatedAt: now(),
+  }
+  expect(() => Schema.decodeUnknownSync(Task)(task)).toThrow()
+  expect(Schema.decodeUnknownSync(Task)({ ...task, botId: "bot-reacher" }).botId).toBe(
+    "bot-reacher",
+  )
+  expect(
+    Schema.decodeUnknownSync(SocketEvent)({
+      _tag: "DeviceHeartbeat",
+      deviceId: task.targetDeviceId,
+      status: "online",
+      bots: [],
+    }),
+  ).toHaveProperty("bots", [])
+})
 
 it("requires the device-operation protocol before queuing all-device work", () => {
   expect(supportsDeviceOperations("0.4.10")).toBe(false)

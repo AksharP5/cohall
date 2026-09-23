@@ -1,4 +1,4 @@
 interface:
   display_name: "Cohall"
-  short_description: "Delegate work across your Cohall devices"
-  default_prompt: "Use $cohall to delegate this task to the right device, include the relevant context from our conversation, and return the result."
+  short_description: "Delegate to your devices and named bots"
+  default_prompt: "Use $cohall to choose the right device or named bot, send this task with relevant conversation context, and return the result."

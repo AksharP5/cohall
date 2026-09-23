@@ -1,11 +1,17 @@
 import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
 import {
   Device,
+  BotId,
+  CreateTaskInput,
+  DeviceId,
   SocketEvent,
+  Task,
+  TaskId,
   TaskTrace,
+  ThreadId,
+  Timestamp,
   isTerminalTask,
   type AuthSession,
-  type Task,
 } from "../packages/protocol/src/index.ts"
 import { TaskResult } from "../apps/device/src/delegation.ts"
 import { Effect, Schedule, Schema } from "effect"
@@ -14,8 +20,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
+import { createServer as createHttpServer } from "node:http"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, relative } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 import { WebSocket } from "ws"
@@ -91,6 +98,177 @@ afterEach(async () => {
 })
 
 describe("headless Cohall", () => {
+  it("lists multiple bots and targets them through the CLI and MCP", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall-bots-"))
+    directories.push(directory)
+    const configPath = join(directory, "config.json")
+    const timestamp = Timestamp.make("2026-08-09T12:00:00.000Z")
+    const device = Device.make({
+      id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      name: "cloud",
+      hostname: "cloud.local",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex", "grok-bot"],
+      bots: [
+        { id: BotId.make("research-id"), name: "Research" },
+        { id: BotId.make("writer-id"), name: "Writer" },
+      ],
+      capabilities: [],
+      workspaces: [],
+      version: "1.0.0",
+      lastSeenAt: timestamp,
+    })
+    const requests: Array<CreateTaskInput> = []
+    const server = createHttpServer(async (request, response) => {
+      response.setHeader("content-type", "application/json")
+      if (request.url === "/api/devices") {
+        response.end(JSON.stringify([device]))
+        return
+      }
+      if (request.url !== "/api/tasks" || request.method !== "POST") {
+        response.writeHead(404).end()
+        return
+      }
+      let body = ""
+      for await (const chunk of request) body += String(chunk)
+      const input = Schema.decodeUnknownSync(CreateTaskInput)(JSON.parse(body))
+      requests.push(input)
+      response.end(
+        JSON.stringify(
+          Task.make({
+            id: TaskId.make("22222222-2222-4222-8222-222222222222"),
+            threadId: ThreadId.make("33333333-3333-4333-8333-333333333333"),
+            targetDeviceId: device.id,
+            provider: "codex",
+            status: "queued",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            ...input,
+          }),
+        ),
+      )
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const address = server.address()
+    if (address === null || typeof address === "string")
+      throw new Error("Missing HTTP test address")
+    const relayUrl = `http://127.0.0.1:${address.port}`
+    const environment = {
+      ...process.env,
+      COHALL_CONFIG: configPath,
+      COHALL_RELAY_URL: relayUrl,
+      COHALL_CLIENT_TOKEN: "bot-test-token",
+    }
+    const mcp = new McpClient({ name: "bot-test", version: "1.0.0" })
+    try {
+      const gatewayPath = join(directory, "gateway.json")
+      await runCohall(
+        process.cwd(),
+        [
+          "configure",
+          "--grok-gateway",
+          relative(process.cwd(), gatewayPath),
+          "--providers",
+          "codex,grok-bot",
+        ],
+        environment,
+      )
+      await runCohall(process.cwd(), ["configure", "--name", "cloud"], environment)
+      expect(JSON.parse(await runCohall(process.cwd(), ["config"], environment))).toMatchObject({
+        grok_gateway: gatewayPath,
+        providers: ["codex", "grok-bot"],
+        device_name: "cloud",
+      })
+      const bots: unknown = JSON.parse(await runCohall(process.cwd(), ["bots"], environment))
+      expect(bots).toEqual([
+        {
+          id: "research-id",
+          name: "Research",
+          device_id: device.id,
+          device_name: "cloud",
+          status: "online",
+          target: `@${device.id}/research-id`,
+        },
+        {
+          id: "writer-id",
+          name: "Writer",
+          device_id: device.id,
+          device_name: "cloud",
+          status: "online",
+          target: `@${device.id}/writer-id`,
+        },
+      ])
+      const sent = Schema.decodeUnknownSync(TaskResult)(
+        JSON.parse(
+          await runCohall(
+            process.cwd(),
+            ["send", "@Research", "Find a project", "--no-wait"],
+            environment,
+          ),
+        ),
+      )
+      expect(sent).toMatchObject({ provider: "grok-bot", bot_id: "research-id" })
+      expect(requests.at(-1)).toMatchObject({
+        provider: "grok-bot",
+        botId: "research-id",
+        targetDeviceId: device.id,
+      })
+      await expect(
+        runCohall(
+          process.cwd(),
+          ["send", "@Research", "--target", "@Writer", "Hello", "--no-wait"],
+          environment,
+        ),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("either a positional target or --target"),
+      })
+      await mcp.connect(
+        new StdioClientTransport({
+          command: "node",
+          args: ["bin/cohall.js", "mcp"],
+          cwd: process.cwd(),
+          env: {
+            PATH: process.env.PATH ?? "",
+            COHALL_CONFIG: configPath,
+            COHALL_RELAY_URL: relayUrl,
+            COHALL_CLIENT_TOKEN: "bot-test-token",
+          },
+          stderr: "ignore",
+        }),
+      )
+      expect(await mcp.callTool({ name: "list_bots", arguments: {} })).toMatchObject({
+        content: [{ type: "text", text: JSON.stringify(bots, null, 2) }],
+      })
+      const parent = "44444444-4444-4444-8444-444444444444"
+      const delegated = await mcp.callTool({
+        name: "delegate",
+        arguments: {
+          prompt: "Write an outline",
+          target: "@cloud/Writer",
+          parent_task_id: parent,
+          wait: false,
+        },
+      })
+      expect(delegated.isError).not.toBe(true)
+      expect(requests.at(-1)).toMatchObject({
+        provider: "grok-bot",
+        botId: "writer-id",
+        parentTaskId: parent,
+      })
+      const tools = (await mcp.listTools()).tools
+      expect(
+        tools.find((tool) => tool.name === "delegate")?.inputSchema.properties?.provider,
+      ).not.toHaveProperty("default")
+    } finally {
+      await mcp.close()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error === undefined ? resolve() : reject(error))),
+      )
+    }
+  })
+
   it("pairs, delegates through every provider, resumes, cancels, and revokes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "cohall-e2e-"))
     directories.push(directory)
@@ -326,6 +504,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     const tools = (await mcp.listTools()).tools
     expect(tools.map((tool) => tool.name)).toEqual([
       "list_devices",
+      "list_bots",
       "delegate",
       "task_status",
       "task_trace",

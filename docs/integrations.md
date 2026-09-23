@@ -20,6 +20,11 @@ This installs the embedded skill into:
 Any other harness with shell access can invoke the CLI directly. No Cohall UI
 extension is required.
 
+Use `cohall bots` to discover named Grok Bots and `cohall send @BotName` to
+message one. MCP exposes the same discovery through `list_bots`; `delegate`
+infers `grok-bot` from a Bot target. See [Grok Bot setup](../README.md#talk-to-your-grok-bots)
+for the required host gateway and local reply callback.
+
 When delegating from a conversation, the sending agent must distill why the user
 is asking, relevant facts and prior findings, constraints, and the intended
 decision into Cohall's `context` field. Cohall cannot read the harness transcript

@@ -22,10 +22,12 @@ export class ProviderRunError extends Schema.TaggedErrorClass<ProviderRunError>(
 ) {}
 
 export type ProviderError = ProviderUnavailableError | ProviderRunError
+export type CliProvider = Exclude<ProviderName, "grok-bot">
 
 export interface RunOptions {
-  readonly provider: ProviderName
+  readonly provider: CliProvider
   readonly threadId: string
+  readonly taskId?: string
   readonly prompt: string
   readonly cwd: string
   readonly beforeSpawn?: () => Promise<void>
@@ -45,7 +47,7 @@ const executables = {
   codex: "codex",
   "claude-code": "claude",
   opencode: "opencode",
-} as const satisfies Record<ProviderName, string>
+} as const satisfies Record<CliProvider, string>
 
 const providerEnvironment = (): NodeJS.ProcessEnv => ({
   ...Object.fromEntries(
@@ -115,9 +117,11 @@ export const findExecutable = (command: string): string | undefined => {
 }
 
 export const available = (provider: ProviderName): boolean =>
-  findExecutable(executables[provider]) !== undefined
-export const availableProviders = (): ReadonlyArray<ProviderName> =>
-  Provider.literals.filter(available)
+  provider !== "grok-bot" && findExecutable(executables[provider]) !== undefined
+export const availableProviders = (): ReadonlyArray<CliProvider> =>
+  Provider.literals
+    .filter((provider): provider is CliProvider => provider !== "grok-bot")
+    .filter(available)
 
 const boundedText = (stream: Readable, limit: number, onOverflow: () => void): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -497,6 +501,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
             ...providerEnvironment(),
             COHALL_PROVIDER: options.provider,
             COHALL_THREAD_ID: options.threadId,
+            ...(options.taskId === undefined ? {} : { COHALL_TASK_ID: options.taskId }),
           },
           detached: platform() !== "win32",
           stdio: ["pipe", "pipe", "pipe"],

@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path"
 const WorkspaceList = Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(64))
 const ProviderList = Schema.Array(Provider)
   .check(Schema.isMinLength(1))
-  .check(Schema.isMaxLength(3))
+  .check(Schema.isMaxLength(Provider.literals.length))
 const Sandbox = Schema.Literals(["read-only", "workspace-write", "danger-full-access"])
 
 export const StoredConfiguration = Schema.Struct({
@@ -21,6 +21,7 @@ export const StoredConfiguration = Schema.Struct({
   providers: Schema.optionalKey(ProviderList),
   model: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: Schema.optionalKey(Sandbox),
+  grokGateway: Schema.optionalKey(Schema.NonEmptyString),
 })
 export interface StoredConfiguration extends Schema.Schema.Type<typeof StoredConfiguration> {}
 
@@ -28,6 +29,7 @@ export const ClientConfiguration = Schema.Struct({
   relayUrl: Schema.NonEmptyString,
   token: Schema.NonEmptyString,
   mcpThreadId: Schema.optionalKey(Schema.String),
+  mcpTaskId: Schema.optionalKey(Schema.String),
 })
 export interface ClientConfiguration extends Schema.Schema.Type<typeof ClientConfiguration> {}
 
@@ -40,6 +42,7 @@ export const DeviceConfiguration = Schema.Struct({
   providers: Schema.optionalKey(ProviderList),
   model: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: Schema.optionalKey(Sandbox),
+  grokGateway: Schema.optionalKey(Schema.NonEmptyString),
 })
 export interface DeviceConfiguration extends Schema.Schema.Type<typeof DeviceConfiguration> {}
 
@@ -200,6 +203,7 @@ export const makeStoredConfiguration = async (input: {
     ...(providers === undefined ? {} : { providers }),
     ...(existing?.model === undefined ? {} : { model: existing.model }),
     ...(existing?.sandbox === undefined ? {} : { sandbox: existing.sandbox }),
+    ...(existing?.grokGateway === undefined ? {} : { grokGateway: existing.grokGateway }),
   })
 }
 
@@ -264,6 +268,9 @@ export const loadClientConfiguration = Effect.tryPromise({
       ...(process.env.COHALL_THREAD_ID === undefined
         ? {}
         : { mcpThreadId: process.env.COHALL_THREAD_ID }),
+      ...(process.env.COHALL_TASK_ID === undefined
+        ? {}
+        : { mcpTaskId: process.env.COHALL_TASK_ID }),
     })
   },
   catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
@@ -312,6 +319,7 @@ export const loadDeviceConfiguration = Effect.tryPromise({
     const model = environmentProvider() ?? stored.model
     const sandbox = environmentSandbox() ?? stored.sandbox
     const providers = environmentProviders(stored)
+    const grokGateway = process.env.COHALL_GROK_GATEWAY ?? stored.grokGateway
     return DeviceConfiguration.make({
       relayUrl,
       token,
@@ -324,6 +332,7 @@ export const loadDeviceConfiguration = Effect.tryPromise({
       ...(providers === undefined ? {} : { providers }),
       ...(model === undefined ? {} : { model }),
       ...(sandbox === undefined ? {} : { sandbox }),
+      ...(grokGateway === undefined ? {} : { grokGateway: resolve(grokGateway) }),
     })
   },
   catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),

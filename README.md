@@ -6,7 +6,7 @@ command or connect to a stdio MCP server.
 
 One npm package provides a durable self-hosted relay, outbound-only device
 workers, a CLI, an installable agent skill, an optional MCP server, and local
-Codex, Claude Code, and OpenCode adapters.
+Codex, Claude Code, and OpenCode adapters, plus an experimental Grok Bot adapter.
 
 ## How it works
 
@@ -192,6 +192,77 @@ npx -y @akshar5/cohall trace <task-id> --follow
 
 Reuse the returned `thread_id` for follow-ups so the target resumes its provider
 session.
+
+## Talk to your Grok Bots
+
+The experimental `grok-bot` provider sends messages to existing named Bots
+through the local Grok Bot gateway on their computer. It uses each Bot's current
+conversation, tools, and permissions. Grok Bot remains the agent responding;
+Codex is a separate provider that the Bot can delegate to.
+
+On the Grok Bot computer, configure its gateway file and restart the Cohall
+worker:
+
+```bash
+cohall configure --grok-gateway "$HOME/sand-data/gateway.json" --providers codex,grok-bot
+```
+
+The path can also be supplied as `COHALL_GROK_GATEWAY`. The gateway credential
+stays on that computer; clients discover Bots through the Cohall relay. Upgrade
+the relay, workers, and clients before enabling this provider. Restart
+long-running MCP servers after updating their clients. A worker launched by a
+custom supervisor needs an explicit restart after its package is upgraded.
+The local gateway is
+not a stable public Grok Bot API, so compatibility depends on the installed
+Grok Bot version.
+
+From any paired device:
+
+```bash
+cohall bots
+cohall send @Research 'Find three useful projects to build this week.'
+cohall send @Writer 'Draft a video outline for a small developer tool.'
+cohall send --thread <returned-thread-id> 'Expand the second idea.'
+```
+
+Discovery lists every advertised Bot with its ID, host availability, and a
+stable target. Names work when unique. For repeated names, use
+`@device-name/BotName` or the `@device-id/bot-id` target from `cohall bots`.
+Quote targets containing spaces. MCP clients have the equivalent `list_bots`
+and `delegate` tools; the Bot target selects the provider automatically.
+
+A Cohall thread records the exchange and lets follow-ups find the same Bot.
+It does not create an isolated Grok Bot conversation: messages sent in the
+Grok Bot app share that Bot's history. Bot tasks use the Bot's own permissions
+and computer context, so omit `--workspace`. Queued Bot tasks can be cancelled;
+active Bot turns must be stopped in Grok Bot because the gateway cannot safely
+cancel a specific Cohall turn.
+
+Cohall includes a local callback command in each Bot request. After finishing,
+the Bot hands its result back by running `cohall reply <task-id> --message-file
+<path>` on its computer. The callback also accepts `--message -` for stdin,
+`--message <text>`, or `--error <text>` when the Bot cannot complete the task.
+It records the result locally without relay credentials or transcript scraping.
+The task becomes completed when the worker receives this callback; a reply in
+the Grok Bot chat alone does not complete it. If no callback arrives within six
+hours of the first dispatch, Cohall reports failure. That deadline does not
+stop the Bot's ongoing work.
+
+Bots can delegate through the installed Cohall CLI, including to Codex on the
+same computer. Link child work to the parent task:
+
+```bash
+cohall delegate --target @cloud --provider codex \
+  --thread <thread-id> --parent <parent-task-id> \
+  --prompt 'Implement the agreed project in the local repository.'
+```
+
+Cohall passes the thread and parent task IDs to its spawned CLI agents, and
+includes them in instructions sent to Grok Bots. Tasks for different Bots and
+the computer's CLI worker can run concurrently; work for one Bot runs in order.
+The Grok Bot computer, gateway, and Cohall worker must be running. On computers
+without a startup service, arrange recovery using the host platform's routines;
+Cohall cannot keep a suspended computer awake or survive erased state by itself.
 
 ## Manage all devices
 
