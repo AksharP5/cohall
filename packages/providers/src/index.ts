@@ -482,8 +482,8 @@ const terminateProcessTree = async (pid: number): Promise<void> => {
 }
 
 export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError> =>
-  Effect.tryPromise({
-    try: async (signal) => {
+  Effect.callback((resume, signal) => {
+    const running = (async () => {
       const executable = findExecutable(executables[options.provider])
       if (executable === undefined) {
         throw new ProviderUnavailableError({
@@ -494,6 +494,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
       const prepared = await prepareCommand(options)
       try {
         await options.beforeSpawn?.()
+        signal.throwIfAborted()
         const [, ...arguments_] = prepared.command
         const child = spawn(executable, arguments_, {
           cwd: options.cwd,
@@ -521,13 +522,18 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
         if (signal.aborted) {
           terminate()
         }
-        child.stdin.end(prepared.input)
-
         try {
+          const written = new Promise<void>((resolve, reject) => {
+            child.stdin.once("error", reject)
+            child.stdin.end(prepared.input, (cause?: Error | null) =>
+              cause === undefined || cause === null ? resolve() : reject(cause),
+            )
+          })
           const [result, stderr, exitCode] = await Promise.all([
             parse(options, child.stdout, terminate),
             captureText(child.stderr, 64 * 1024),
             exited,
+            written,
           ])
           if (exitCode !== 0) {
             throw new ProviderRunError({
@@ -560,14 +566,29 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
       } finally {
         await prepared.cleanup()
       }
-    },
-    catch: (cause) => {
-      if (cause instanceof ProviderUnavailableError || cause instanceof ProviderRunError) {
-        return cause
-      }
-      return new ProviderRunError({
-        provider: options.provider,
-        message: (cause instanceof Error ? cause.message : String(cause)).slice(0, 16_384),
-      })
-    },
+    })()
+    void running.then(
+      (result) => resume(Effect.succeed(result)),
+      (cause: unknown) =>
+        resume(
+          Effect.fail(
+            cause instanceof ProviderUnavailableError || cause instanceof ProviderRunError
+              ? cause
+              : new ProviderRunError({
+                  provider: options.provider,
+                  message: (cause instanceof Error ? cause.message : String(cause)).slice(
+                    0,
+                    16_384,
+                  ),
+                }),
+          ),
+        ),
+    )
+    // Keep the device's task slot occupied until interruption has finished cleanup.
+    return Effect.promise(() =>
+      running.then(
+        () => undefined,
+        () => undefined,
+      ),
+    )
   })

@@ -36,7 +36,7 @@ const isRunning = (pid: number): boolean => {
 }
 
 it.skipIf(process.platform === "win32")(
-  "cancellation terminates the provider process tree",
+  "cancellation waits for the provider process tree to terminate",
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "cohall-provider-tree-"))
     directories.push(directory)
@@ -47,8 +47,9 @@ it.skipIf(process.platform === "win32")(
       `#!${process.execPath}
 const { spawn } = require("node:child_process")
 const { writeFileSync } = require("node:fs")
+process.on("SIGTERM", () => setTimeout(() => process.exit(0), 100))
 const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
-writeFileSync(process.env.PROVIDER_CHILD_PID, String(child.pid))
+writeFileSync(process.env.PROVIDER_CHILD_PID, JSON.stringify({ parent: process.pid, child: child.pid }))
 setInterval(() => {}, 1000)
 `,
     )
@@ -61,16 +62,83 @@ setInterval(() => {}, 1000)
       run({ provider: "codex", threadId: "test", prompt: "test", cwd: directory }),
       { signal: controller.signal },
     ).catch(() => undefined)
-    const childPid = await waitFor(() =>
+    const pids = await waitFor(() =>
       readFile(childPidPath, "utf8")
-        .then((value) => Number(value))
+        .then((value) => JSON.parse(value) as { parent: number; child: number })
         .catch(() => undefined),
     )
-    expect(isRunning(childPid)).toBe(true)
+    expect(isRunning(pids.child)).toBe(true)
     controller.abort()
     await running
-    await waitFor(() => Promise.resolve(isRunning(childPid) ? undefined : true))
-    expect(isRunning(childPid)).toBe(false)
+    expect(isRunning(pids.parent)).toBe(false)
+    expect(isRunning(pids.child)).toBe(false)
   },
   10_000,
+)
+
+it.skipIf(process.platform === "win32")(
+  "reports a failed prompt write without crashing the worker",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall-provider-input-"))
+    directories.push(directory)
+    const executable = join(directory, "codex")
+    await writeFile(
+      executable,
+      `#!${process.execPath}
+require("node:fs").closeSync(0)
+setInterval(() => {}, 1000)
+`,
+      { mode: 0o755 },
+    )
+    process.env.PATH = directory
+
+    await expect(
+      Effect.runPromise(
+        run({ provider: "codex", threadId: "test", prompt: "x".repeat(262_144), cwd: directory }),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "CohallProvider.RunError",
+      message: expect.stringMatching(/EPIPE|ECONNRESET/),
+    })
+  },
+)
+
+it.skipIf(process.platform === "win32")(
+  "waits for pending preparation before finishing cancellation",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall-provider-preparation-"))
+    directories.push(directory)
+    await writeFile(join(directory, "codex"), `#!${process.execPath}\nprocess.exit(0)\n`, {
+      mode: 0o755,
+    })
+    process.env.PATH = directory
+    const ready = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const controller = new AbortController()
+    let settled = false
+    const running = Effect.runPromise(
+      run({
+        provider: "codex",
+        threadId: "test",
+        prompt: "test",
+        cwd: directory,
+        beforeSpawn: () => {
+          ready.resolve()
+          return release.promise
+        },
+      }),
+      { signal: controller.signal },
+    )
+      .catch(() => undefined)
+      .finally(() => {
+        settled = true
+      })
+    await ready.promise
+    controller.abort()
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const settledBeforeRelease = settled
+    release.resolve()
+    await running
+    expect(settledBeforeRelease).toBe(false)
+  },
 )
