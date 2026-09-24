@@ -737,6 +737,7 @@ export const runRelay = async (): Promise<void> => {
   })
   websocketServer.on("connection", (rawSocket) => {
     const socket = rawSocket as ConnectionSocket
+    socket.on("error", () => socket.terminate())
     socket.data = {
       processing: Promise.resolve(),
       stageDeadline: undefined,
@@ -834,7 +835,11 @@ export const runRelay = async (): Promise<void> => {
       )
   })
   server.on("upgrade", (request, socket, head) => {
-    const url = new URL(request.url ?? "/", "http://cohall.local")
+    const url = URL.parse(request.url ?? "/", "http://cohall.local")
+    if (url === null) {
+      rejectUpgrade(socket, 400, "Bad Request")
+      return
+    }
     if (url.pathname !== "/ws/device") {
       rejectUpgrade(socket, 404, "Not Found")
       return
