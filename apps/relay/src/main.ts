@@ -13,6 +13,8 @@ import {
   decodeExchangePairingInput,
   decodeSocketEvent,
   now,
+  isTerminalTask,
+  taskSlot,
   version,
   type AuthSession,
   type CreateTaskInput,
@@ -199,16 +201,60 @@ const scoreDevice = (
   )
 }
 
-export const chooseDevice = (
+export const resolveDelegation = (
   input: CreateTaskInput,
   sourceDeviceId?: DeviceIdType,
-): Effect.Effect<DeviceIdType, RequestError, RelayStore.Service> =>
+): Effect.Effect<
+  { readonly input: CreateTaskInput; readonly targetDeviceId: DeviceIdType },
+  RequestError,
+  RelayStore.Service
+> =>
   Effect.gen(function* () {
     const store = yield* RelayStore.Service
+    const ancestors: Array<Task> = []
+    const seen = new Set<TaskId>()
+    let nextParentId = input.parentTaskId
+    while (nextParentId !== undefined && !seen.has(nextParentId)) {
+      const parentId = nextParentId
+      seen.add(parentId)
+      const parent = yield* store.getTask(parentId).pipe(
+        Effect.catch((cause) => {
+          const missing = cause.message === `Unknown task ${parentId}`
+          if (missing && ancestors.length > 0) return Effect.succeed(undefined)
+          return Effect.fail(
+            new RequestError({ status: missing ? 404 : 500, message: cause.message }),
+          )
+        }),
+      )
+      if (parent === undefined) break
+      ancestors.push(parent)
+      nextParentId = parent.parentTaskId
+    }
+    const parent = ancestors[0]
+    if (
+      parent !== undefined &&
+      input.threadId !== undefined &&
+      input.threadId !== parent.threadId
+    ) {
+      return yield* new RequestError({
+        status: 400,
+        message: "A child task must use its parent's thread",
+      })
+    }
+    const resolvedInput = parent === undefined ? input : { ...input, threadId: parent.threadId }
     const devices = yield* store
       .listDevices()
       .pipe(Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })))
     const provider = input.provider ?? (input.botId === undefined ? "codex" : "grok-bot")
+    const slot = taskSlot({
+      provider,
+      ...(input.botId === undefined ? {} : { botId: input.botId }),
+    })
+    const blocked = new Set(
+      ancestors
+        .filter((task) => !isTerminalTask(task) && taskSlot(task) === slot)
+        .map((task) => task.targetDeviceId),
+    )
     if (input.targetDeviceId !== undefined) {
       const target = devices.find((device) => device.id === input.targetDeviceId)
       if (target === undefined) {
@@ -229,7 +275,13 @@ export const chooseDevice = (
           message: `${target.name} does not advertise bot ${input.botId}; refresh the bot list`,
         })
       }
-      return target.id
+      if (blocked.has(target.id)) {
+        return yield* new RequestError({
+          status: 409,
+          message: `${target.name} cannot run this task while an unfinished parent occupies the same worker slot; select another device or bot`,
+        })
+      }
+      return { input: resolvedInput, targetDeviceId: target.id }
     }
     const candidates = devices.filter(
       (device) =>
@@ -242,20 +294,24 @@ export const chooseDevice = (
         message: `Bot ${input.botId} is advertised by more than one device; select a device`,
       })
     }
-    const selected = candidates.sort(
-      (left, right) =>
-        scoreDevice(right, input, sourceDeviceId) - scoreDevice(left, input, sourceDeviceId),
-    )[0]
+    const selected = candidates
+      .filter((device) => !blocked.has(device.id))
+      .sort(
+        (left, right) =>
+          scoreDevice(right, input, sourceDeviceId) - scoreDevice(left, input, sourceDeviceId),
+      )[0]
     if (selected === undefined) {
       return yield* new RequestError({
         status: 409,
         message:
-          input.botId === undefined
-            ? `No Cohall device advertises the ${provider} provider`
-            : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,
+          candidates.length > 0
+            ? "No available delegation target avoids an unfinished parent's worker slot; select another device or bot"
+            : input.botId === undefined
+              ? `No Cohall device advertises the ${provider} provider`
+              : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,
       })
     }
-    return selected.id
+    return { input: resolvedInput, targetDeviceId: selected.id }
   })
 
 type Principal = "owner" | AuthSession
@@ -660,8 +716,10 @@ export const runRelay = async (): Promise<void> => {
         return json(forgotten)
       }
       if (url.pathname === "/api/tasks" && request.method === "POST") {
-        const input = yield* body(request, decodeCreateTaskInput)
-        const target = yield* chooseDevice(input, sourceDeviceId)
+        const { input, targetDeviceId: target } = yield* resolveDelegation(
+          yield* body(request, decodeCreateTaskInput),
+          sourceDeviceId,
+        )
         const providerSessionId =
           input.threadId === undefined || input.provider === "grok-bot"
             ? undefined

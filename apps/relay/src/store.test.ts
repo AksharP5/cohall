@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, it } from "vitest"
 import { Database } from "./database.ts"
-import { chooseDevice } from "./main.ts"
+import { resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
 it("assigns queued followups with the session completed before a restart", async () => {
@@ -92,8 +92,8 @@ it("attributes full-worker clients after registration and prefers a peer for del
     await Effect.runPromise(
       store.upsertDevice({ ...peer, id: worker.session.deviceId, name: "a-source" }),
     )
-    const target = await runtime.runPromise(
-      chooseDevice({ prompt: "Work on a peer" }, principal?.deviceId),
+    const { targetDeviceId: target } = await runtime.runPromise(
+      resolveDelegation({ prompt: "Work on a peer" }, principal?.deviceId),
     )
     expect(target).toBe(peer.id)
     const task = await Effect.runPromise(
