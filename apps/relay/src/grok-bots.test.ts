@@ -175,6 +175,14 @@ it("cancels queued bot work without claiming to stop a running Grok Bot", async 
     expect((await Effect.runPromise(store.getTask(active.id))).status).toBe("assigned")
     await Effect.runPromise(store.acceptTask(active.id, device.id))
     await expect(Effect.runPromise(store.requestCancellation(active.id))).rejects.toBeDefined()
+    await Effect.runPromise(store.requeueTasksFor(device.id))
+    expect((await Effect.runPromise(store.getTask(active.id))).status).toBe("queued")
+    await expect(Effect.runPromise(store.requestCancellation(active.id))).rejects.toMatchObject({
+      message: "Stop this bot in Grok Bot; its gateway cannot cancel an individual Cohall request",
+    })
+    await Effect.runPromise(store.assignTask(active.id))
+    await Effect.runPromise(store.recover())
+    await expect(Effect.runPromise(store.requestCancellation(active.id))).rejects.toBeDefined()
     await Effect.runPromise(store.finishTask(active.id, device.id, "Answer"))
     expect((await Effect.runPromise(store.requestCancellation(active.id))).status).toBe("completed")
   })

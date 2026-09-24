@@ -195,7 +195,8 @@ the command waits; the task continues after that. Invalid timeout values are
 rejected before any work is sent, including with `--no-wait`.
 
 Reuse the returned `thread_id` for follow-ups so the target resumes its provider
-session.
+session. Queued follow-ups pick up the preceding turn's session when they start,
+including after a worker restart.
 
 ## Talk to your Grok Bots
 
@@ -238,9 +239,11 @@ and `delegate` tools; the Bot target selects the provider automatically.
 A Cohall thread records the exchange and lets follow-ups find the same Bot.
 It does not create an isolated Grok Bot conversation: messages sent in the
 Grok Bot app share that Bot's history. Bot tasks use the Bot's own permissions
-and computer context, so omit `--workspace`. Queued Bot tasks can be cancelled;
-active Bot turns must be stopped in Grok Bot because the gateway cannot safely
-cancel a specific Cohall turn.
+and computer context, so omit `--workspace`. Queued Bot tasks that have not
+started can be cancelled; active Bot turns must be stopped in Grok Bot because
+the gateway cannot safely cancel a specific Cohall turn.
+An accepted Bot request remains non-cancellable through Cohall if a disconnect
+or relay restart puts it back in the queue.
 
 Cohall includes a local callback command in each Bot request. After finishing,
 the Bot hands its result back by running `cohall reply <task-id> --message-file

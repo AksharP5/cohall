@@ -1296,7 +1296,15 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         db.transaction(() => {
           const result = db
             .query(
-              `UPDATE tasks SET status = 'assigned', updated_at = ?
+              `UPDATE tasks SET status = 'assigned', updated_at = ?,
+                 provider_session_id = CASE
+                   WHEN provider = 'grok-bot' THEN NULL
+                   WHEN started_at IS NULL THEN COALESCE((
+                     SELECT session_id FROM provider_sessions
+                     WHERE thread_id = tasks.thread_id AND device_id = tasks.target_device_id
+                       AND provider = tasks.provider
+                   ), provider_session_id)
+                   ELSE provider_session_id END
                WHERE id = ? AND status = 'queued' AND NOT EXISTS (
                  SELECT 1 FROM tasks active
                  WHERE active.target_device_id = ? AND active.id <> ?
@@ -1440,7 +1448,10 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     if (["completed", "failed", "cancelled"].includes(current.status)) {
       return current
     }
-    if (current.provider === "grok-bot" && current.status !== "queued") {
+    if (
+      current.provider === "grok-bot" &&
+      (current.status !== "queued" || current.startedAt !== undefined)
+    ) {
       return yield* new PersistenceError({
         operation: "RelayStore.requestCancellation",
         message:

@@ -1,4 +1,4 @@
-import { Device, DeviceId, now, version } from "@cohall/protocol"
+import { Device, DeviceId, makeDeviceId, now, version } from "@cohall/protocol"
 import { Effect, ManagedRuntime } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -6,6 +6,53 @@ import { join } from "node:path"
 import { expect, it } from "vitest"
 import { Database } from "./database.ts"
 import { RelayStore } from "./store.ts"
+
+it("assigns queued followups with the session completed before a restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-store-session-"))
+  const databasePath = join(directory, "relay.db")
+  const original = ManagedRuntime.make(RelayStore.layer(databasePath))
+  let restored:
+    | ManagedRuntime.ManagedRuntime<RelayStore.Service, RelayStore.PersistenceError>
+    | undefined
+  try {
+    const store = await original.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "session-device",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const first = await Effect.runPromise(store.createDelegation({ prompt: "Start" }, device.id))
+    await Effect.runPromise(store.assignTask(first.id))
+    await Effect.runPromise(store.acceptTask(first.id, device.id))
+    const followup = await Effect.runPromise(
+      store.createDelegation({ prompt: "Continue", threadId: first.threadId }, device.id),
+    )
+    expect((await Effect.runPromise(store.assignTask(followup.id))).status).toBe("queued")
+    await Effect.runPromise(store.finishTask(first.id, device.id, "Answer", "completed-session"))
+    await original.dispose()
+
+    restored = ManagedRuntime.make(RelayStore.layer(databasePath))
+    const recovered = await restored.runPromise(RelayStore.Service)
+    await Effect.runPromise(recovered.recover())
+    expect(await Effect.runPromise(recovered.assignTask(followup.id))).toMatchObject({
+      status: "assigned",
+      providerSessionId: "completed-session",
+    })
+  } finally {
+    await original.dispose()
+    await restored?.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 it("bounds outstanding work, serial assignment, and thread context", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-store-"))
