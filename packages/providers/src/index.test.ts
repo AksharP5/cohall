@@ -2,13 +2,14 @@ import { Effect } from "effect"
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, expect, it } from "vitest"
+import { afterEach, expect, it, vi } from "vitest"
 import { run } from "./index.ts"
 
 const directories: Array<string> = []
 const originalPath = process.env.PATH
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   process.env.PATH = originalPath
   delete process.env.PROVIDER_CHILD_PID
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
@@ -159,11 +160,14 @@ process.stdin.setEncoding("utf8")
 process.stdin.on("data", (chunk) => input += chunk)
 process.stdin.on("end", () => console.log(JSON.stringify({
   type: "item.completed",
-  item: {type: "agent_message", text: JSON.stringify({input, args: process.argv.slice(2)})}
+  item: {type: "agent_message", text: JSON.stringify({input, args: process.argv.slice(2), hasToken: process.env.COHALL_TOKEN !== undefined})}
 })))
 `,
     )
     process.env.PATH = directory
+    vi.stubEnv("cohall_token", "fixture token")
+    expect(Object.keys(process.env)).toContain("cohall_token")
+    expect(process.env.COHALL_TOKEN).toBe("fixture token")
     const model = 'model with spaces & echo injected > injected.txt | ^% ! "quoted"'
     const prompt = "Review this literally:\n& echo not-a-command > untouched.txt\nUnicode: café"
     const response = await Effect.runPromise(
@@ -171,6 +175,7 @@ process.stdin.on("end", () => console.log(JSON.stringify({
     )
     expect(JSON.parse(response.result)).toEqual({
       input: prompt,
+      hasToken: false,
       args: [
         "exec",
         "--json",
