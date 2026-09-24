@@ -63,7 +63,7 @@ export const deviceServicePlan = (options: {
       file: {
         path,
         mode: 0o600,
-        content: `[Unit]\nDescription=Cohall device agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdArgument(`PATH=${servicePath}`)}\nEnvironment=${systemdArgument(`COHALL_CONFIG=${options.configPath}`)}\nExecStart=${systemdArgument(options.entrypoint.replaceAll("$", () => "$$"))} device\nRestart=always\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`,
+        content: `[Unit]\nDescription=Cohall device agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdArgument(`PATH=${servicePath}`)}\nEnvironment=${systemdArgument(`COHALL_CONFIG=${options.configPath}`)}\nExecStart=${systemdArgument(options.entrypoint)} device\nRestart=always\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`,
       },
       commands: [
         { command: "systemctl", arguments: ["--user", "daemon-reload"] },

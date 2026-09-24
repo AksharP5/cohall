@@ -187,7 +187,7 @@ $global:CohallTestAction | ConvertTo-Json -Compress
     expect(plan.file.content).toContain(
       'Environment="COHALL_CONFIG=/home/100%%/config \\"chosen\\"\\nname.json"',
     )
-    expect(plan.file.content).toContain('ExecStart="/home/100%%/bin/$$cohall \\"cli\\"" device')
+    expect(plan.file.content).toContain('ExecStart="/home/100%%/bin/$cohall \\"cli\\"" device')
   })
 
   it("rejects unsupported automatic service targets", () => {
