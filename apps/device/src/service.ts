@@ -149,6 +149,12 @@ export const installDeviceService = async (
       "Bypass",
       "-File",
       script,
+      "-NodeExecutable",
+      process.execPath,
+      "-Entrypoint",
+      entrypoint,
+      "-ConfigurationPath",
+      configurationPath(),
     ])
     return { installed: "scheduled-task:Cohall Device" }
   }

@@ -201,7 +201,10 @@ cohall service install
 ```
 
 The script registers a per-user scheduled task that starts `cohall device` at
-logon and restarts it after failures. It does not run before that user logs on.
+logon and restarts it after failures. The task uses PowerShell to set the selected
+configuration file and start the exact Node.js and Cohall executables, without
+depending on a `cohall.cmd` or `cohall.ps1` shim. Reinstall the task if these paths
+change. It does not run before that user logs on.
 
 ## Upgrade running services
 

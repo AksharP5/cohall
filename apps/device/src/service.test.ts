@@ -1,11 +1,108 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { execFile, type ExecFileException } from "node:child_process"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
+import { promisify } from "node:util"
 import { describe, expect, it } from "vitest"
 import { deviceServicePlan, installDeviceService, restartDeviceService } from "./service.ts"
 import type { CommandRunner } from "./upgrade.ts"
 
 describe("device service plans", () => {
+  it.skipIf(process.platform !== "win32")(
+    "installs a Windows task with the selected runtime and configuration",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "cohall Windows ' & 100%-"))
+      const entrypoint = join(directory, "cohall.cjs")
+      const config = join(directory, "chosen config.json")
+      const harness = join(directory, "scheduler-fixture.ps1")
+      const powerShell = join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      )
+      try {
+        await writeFile(
+          entrypoint,
+          `process.stdout.write(JSON.stringify({ config: process.env.COHALL_CONFIG, args: process.argv.slice(2), node: process.execPath, unrelated: process.env.COHALL_UNRELATED_SECRET })); process.exit(7)`,
+        )
+        await writeFile(
+          harness,
+          `param($Installer, $NodeExecutable, $Entrypoint, $Config)
+$ErrorActionPreference = 'Stop'
+function New-ScheduledTaskAction { param($Execute, $Argument) return @{ Execute = $Execute; Argument = $Argument } }
+function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) return @{} }
+function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit, $RestartCount, $RestartInterval, $MultipleInstances) return @{} }
+function Register-ScheduledTask { param($TaskName, $Description, $Action, $Trigger, $Settings, [switch]$Force) $global:CohallTestAction = $Action }
+function Stop-ScheduledTask { param($TaskName, $ErrorAction) $global:CohallTestStopped = $true }
+function Start-ScheduledTask { param($TaskName) if (-not $global:CohallTestStopped) { throw 'Existing task was not stopped before restarting' } }
+& $Installer -NodeExecutable $NodeExecutable -Entrypoint $Entrypoint -ConfigurationPath $Config | Out-Null
+$global:CohallTestAction | ConvertTo-Json -Compress
+`,
+        )
+        const installed = await promisify(execFile)(
+          powerShell,
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            harness,
+            "-Installer",
+            resolve("deploy/windows/install-device.ps1"),
+            "-NodeExecutable",
+            process.execPath,
+            "-Entrypoint",
+            entrypoint,
+            "-Config",
+            config,
+          ],
+          { env: { ...process.env, COHALL_UNRELATED_SECRET: "not-service-state" } },
+        )
+        const action: unknown = JSON.parse(installed.stdout)
+        if (
+          typeof action !== "object" ||
+          action === null ||
+          !("Execute" in action) ||
+          typeof action.Execute !== "string" ||
+          !("Argument" in action) ||
+          typeof action.Argument !== "string"
+        ) {
+          throw new Error("Installer did not register a runnable task")
+        }
+        expect(action.Execute.toLowerCase()).toBe(powerShell.toLowerCase())
+        const executable = action.Execute
+        const arguments_ = action.Argument.split(" ")
+        const encoded = arguments_.at(-1)
+        expect(encoded).toBeDefined()
+        expect(Buffer.from(encoded ?? "", "base64").toString("utf16le")).not.toContain(
+          "not-service-state",
+        )
+        const executed = await new Promise<{ exitCode: number; stdout: string; stderr: string }>(
+          (resolveResult) => {
+            execFile(executable, arguments_, (error: ExecFileException | null, stdout, stderr) => {
+              resolveResult({
+                exitCode: typeof error?.code === "number" ? error.code : error === null ? 0 : 1,
+                stdout,
+                stderr,
+              })
+            })
+          },
+        )
+        expect(executed.stderr).toBe("")
+        expect(executed.exitCode).toBe(7)
+        expect(JSON.parse(executed.stdout)).toEqual({
+          config,
+          args: ["device"],
+          node: process.execPath,
+        })
+      } finally {
+        await rm(directory, { recursive: true, force: true })
+      }
+    },
+    30_000,
+  )
+
   it.each(["linux", "darwin"] as const)(
     "keeps the selected configuration and Node runtime in an installed %s service",
     async (platform) => {
