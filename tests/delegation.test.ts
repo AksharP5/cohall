@@ -414,6 +414,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       throw new Error("Device credential is not bound to a device")
     }
     expect(clientCredential.token).not.toBe(deviceCredential.token)
+    expect(clientCredential.session.deviceId).toBe(deviceId)
     await expect(
       Effect.runPromise(
         RelayClient.make({ baseUrl: relayUrl, token: deviceCredential.token }).devices(),
@@ -563,6 +564,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     const completed = await Effect.runPromise(
       waitForTerminal(client, await Effect.runPromise(client.getTask(queued.task_id))),
     )
+    expect(completed.sourceDeviceId).toBe(deviceId)
     expect(completed.result).toBe("Codex completed the delegated work.")
     expect(completed.providerSessionId).toBe("22222222-2222-4222-8222-222222222222")
     const rawTrace: unknown = JSON.parse(
@@ -714,8 +716,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       JSON.parse(await runCohall(root, ["forget", deviceId], ownerEnvironment)),
     )
     expect(forgotten.id).toBe(deviceId)
-    expect(await Effect.runPromise(client.devices())).toEqual([])
-    await Effect.runPromise(owner.revokeAuthSession(clientCredential.session.id))
+    expect(await Effect.runPromise(owner.devices())).toEqual([])
     await expect(Effect.runPromise(client.devices())).rejects.toMatchObject({ status: 401 })
 
     const sessions: ReadonlyArray<AuthSession> = await Effect.runPromise(owner.authSessions())

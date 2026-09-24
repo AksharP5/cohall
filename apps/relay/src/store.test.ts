@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, it } from "vitest"
 import { Database } from "./database.ts"
+import { chooseDevice } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
 it("assigns queued followups with the session completed before a restart", async () => {
@@ -51,6 +52,68 @@ it("assigns queued followups with the session completed before a restart", async
     await original.dispose()
     await restored?.dispose()
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it("attributes full-worker clients after registration and prefers a peer for delegation", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const pairing = await Effect.runPromise(
+      store.createPairing({ label: "Worker", roles: ["client", "device"] }),
+    )
+    const paired = await Effect.runPromise(store.exchangePairing(pairing.token))
+    const client = paired.credentials.find(({ session }) => session.role === "client")
+    const worker = paired.credentials.find(({ session }) => session.role === "device")
+    if (client === undefined || worker?.session.deviceId === undefined) {
+      throw new Error("Expected full-worker credentials")
+    }
+    expect(client.session.deviceId).toBe(worker.session.deviceId)
+    const principal = await Effect.runPromise(store.authenticateSession(client.token, "client"))
+    expect(principal?.deviceId).toBe(worker.session.deviceId)
+    const peer = Device.make({
+      id: makeDeviceId(),
+      name: "b-peer",
+      hostname: "peer.local",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(peer))
+    const early = await Effect.runPromise(
+      store.createDelegation({ prompt: "Before registration" }, peer.id, principal?.deviceId),
+    )
+    expect(early.sourceDeviceId).toBeUndefined()
+    await Effect.runPromise(
+      store.upsertDevice({ ...peer, id: worker.session.deviceId, name: "a-source" }),
+    )
+    const target = await runtime.runPromise(
+      chooseDevice({ prompt: "Work on a peer" }, principal?.deviceId),
+    )
+    expect(target).toBe(peer.id)
+    const task = await Effect.runPromise(
+      store.createDelegation({ prompt: "After registration" }, target, principal?.deviceId),
+    )
+    expect(task.sourceDeviceId).toBe(worker.session.deviceId)
+    expect((await Effect.runPromise(store.threadContext(task.threadId))).messages[0]).toMatchObject(
+      {
+        authorName: "Remote agent",
+        deviceId: worker.session.deviceId,
+      },
+    )
+
+    const clientOnlyPairing = await Effect.runPromise(
+      store.createPairing({ label: "Client", roles: ["client"] }),
+    )
+    const clientOnly = await Effect.runPromise(store.exchangePairing(clientOnlyPairing.token))
+    expect(clientOnly.credentials[0]?.session.deviceId).toBeUndefined()
+  } finally {
+    await runtime.dispose()
   }
 })
 
@@ -189,11 +252,14 @@ it("forgets only offline devices and revokes their registration", async () => {
     const paired = await run(
       Effect.gen(function* () {
         const store = yield* RelayStore.Service
-        const pairing = yield* store.createPairing({ label: "stale device", roles: ["device"] })
+        const pairing = yield* store.createPairing({
+          label: "stale device",
+          roles: ["client", "device"],
+        })
         return yield* store.exchangePairing(pairing.token)
       }),
     )
-    const credential = paired.credentials[0]
+    const credential = paired.credentials.find(({ session }) => session.role === "device")
     const deviceId = credential?.session.deviceId
     if (credential === undefined || deviceId === undefined) {
       throw new Error("Expected a device credential")
@@ -246,14 +312,19 @@ it("forgets only offline devices and revokes their registration", async () => {
         }),
       ),
     ).toEqual([])
-    expect(
-      await run(
-        Effect.gen(function* () {
-          const store = yield* RelayStore.Service
-          return yield* store.authenticateSession(credential.token, "device")
-        }),
-      ),
-    ).toBeUndefined()
+    for (const pairedCredential of paired.credentials) {
+      expect(
+        await run(
+          Effect.gen(function* () {
+            const store = yield* RelayStore.Service
+            return yield* store.authenticateSession(
+              pairedCredential.token,
+              pairedCredential.session.role,
+            )
+          }),
+        ),
+      ).toBeUndefined()
+    }
 
     await run(
       Effect.gen(function* () {
