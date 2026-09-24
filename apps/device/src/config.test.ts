@@ -159,6 +159,19 @@ describe("device workspace configuration", () => {
     ).toEqual([first, second])
   })
 
+  it("rejects a regular file as a workspace root before saving configuration", async () => {
+    const directory = await temporary()
+    const file = join(directory, "project.txt")
+    await writeFile(file, "a file cannot be a provider working directory")
+
+    await expect(Effect.runPromise(parseWorkspaces(file))).rejects.toThrow(
+      "Workspace roots must be existing directories",
+    )
+    await expect(Effect.runPromise(parseWorkspaces("", JSON.stringify([file])))).rejects.toThrow(
+      "Workspace roots must be existing directories",
+    )
+  })
+
   it("rejects a symlink that escapes an allowed workspace", async () => {
     const directory = await temporary()
     const root = join(directory, "root")
