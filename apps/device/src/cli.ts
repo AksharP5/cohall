@@ -917,6 +917,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       "timeout",
       "workspace",
     ])
+    const waitSeconds = timeout(arguments_)
     const positionalTarget =
       command === "send" && arguments_.positionals[0]?.startsWith("@")
         ? arguments_.positionals[0]
@@ -960,7 +961,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       taskResult(
         arguments_.options.has("no-wait")
           ? task
-          : await Effect.runPromise(waitForTask(relay, task, timeout(arguments_))),
+          : await Effect.runPromise(waitForTask(relay, task, waitSeconds)),
       ),
     )
     return

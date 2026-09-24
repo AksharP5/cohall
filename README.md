@@ -190,6 +190,10 @@ npx -y @akshar5/cohall wait <task-id> --timeout 1800
 npx -y @akshar5/cohall trace <task-id> --follow
 ```
 
+`--timeout` accepts 5 to 86400 seconds and defaults to 900. It limits how long
+the command waits; the task continues after that. Invalid timeout values are
+rejected before any work is sent, including with `--no-wait`.
+
 Reuse the returned `thread_id` for follow-ups so the target resumes its provider
 session.
 

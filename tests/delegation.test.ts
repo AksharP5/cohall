@@ -215,6 +215,21 @@ describe("headless Cohall", () => {
         botId: "research-id",
         targetDeviceId: device.id,
       })
+      for (const command of ["send", "delegate"]) {
+        for (const flags of [[], ["--no-wait"]]) {
+          const before = requests.length
+          await expect(
+            runCohall(
+              process.cwd(),
+              [command, "--target", "@Research", "Hello", "--timeout", "oops", ...flags],
+              environment,
+            ),
+          ).rejects.toMatchObject({
+            stderr: expect.stringContaining("--timeout must be an integer between 5 and 86400"),
+          })
+          expect(requests).toHaveLength(before)
+        }
+      }
       await expect(
         runCohall(
           process.cwd(),
