@@ -1,10 +1,11 @@
 import { Provider, type Provider as ProviderName } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
+import { execa } from "execa"
 import { accessSync, constants } from "node:fs"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
 import { delimiter, extname, isAbsolute, join } from "node:path"
-import { execFile, spawn } from "node:child_process"
+import { execFile } from "node:child_process"
 import type { Readable } from "node:stream"
 
 export class ProviderUnavailableError extends Schema.TaggedErrorClass<ProviderUnavailableError>()(
@@ -51,9 +52,10 @@ const executables = {
 
 const providerEnvironment = (): NodeJS.ProcessEnv => ({
   ...Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([name]) => !name.startsWith("COHALL_") || name === "COHALL_CONFIG",
-    ),
+    Object.entries(process.env).filter(([name]) => {
+      const key = platform() === "win32" ? name.toUpperCase() : name
+      return !key.startsWith("COHALL_") || key === "COHALL_CONFIG"
+    }),
   ),
   PATH: executableDirectories().join(delimiter),
 })
@@ -496,7 +498,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
         await options.beforeSpawn?.()
         signal.throwIfAborted()
         const [, ...arguments_] = prepared.command
-        const child = spawn(executable, arguments_, {
+        const child = execa(executable, arguments_, {
           cwd: options.cwd,
           env: {
             ...providerEnvironment(),
@@ -504,12 +506,22 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
             COHALL_THREAD_ID: options.threadId,
             ...(options.taskId === undefined ? {} : { COHALL_TASK_ID: options.taskId }),
           },
+          extendEnv: false,
           detached: platform() !== "win32",
-          stdio: ["pipe", "pipe", "pipe"],
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+          buffer: false,
+          reject: false,
+          cleanup: false,
         })
-        const exited = new Promise<number>((resolve, reject) => {
-          child.once("error", reject)
-          child.once("exit", (code) => resolve(code ?? 1))
+        let finished = false
+        const exited = child.then(({ exitCode, failed, originalMessage, shortMessage }) => {
+          finished = true
+          if (failed && exitCode === undefined) {
+            throw new Error(originalMessage ?? shortMessage ?? "Provider failed to start")
+          }
+          return exitCode ?? 1
         })
         let termination: Promise<void> | undefined
         const terminate = (): void => {
@@ -557,7 +569,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
           return result
         } finally {
           signal.removeEventListener("abort", terminate)
-          if (child.exitCode === null) {
+          if (!finished) {
             terminate()
             await exited.catch(() => undefined)
           }

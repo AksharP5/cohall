@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -32,6 +32,55 @@ afterEach(async () => {
 const success = (): CommandResult => ({ exitCode: 0, stdout: "", stderr: "" })
 const resolveExecutable = (command: string): Promise<string> =>
   Promise.resolve(command === "systemctl" ? "/usr/bin/systemctl" : command)
+
+it.skipIf(process.platform !== "win32")(
+  "runs Windows package-manager shims without interpreting prefix arguments",
+  async () => {
+    const root = await temporaryDirectory()
+    const prefix = join(root, "global tools & packages")
+    const entrypoint = join(prefix, "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
+    const metadata = join(dirname(dirname(entrypoint)), "package.json")
+    const argumentsPath = join(root, "arguments.json")
+    const script = join(root, "installer.cjs")
+    const shim = join(root, "npm.cmd")
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "")
+    await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.2" }))
+    await writeFile(shim, `@ECHO off\r\n"${process.execPath}" "%~dp0installer.cjs" %*\r\n`)
+    await writeFile(
+      script,
+      `const fs = require("node:fs")
+fs.writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify(process.argv.slice(2)))
+fs.writeFileSync(${JSON.stringify(metadata)}, JSON.stringify({name: "@akshar5/cohall", version: "1.2.3"}))
+`,
+    )
+    const options = {
+      currentVersion: "1.2.2",
+      target: "1.2.3",
+      restart: false,
+      dryRun: false,
+      entrypoint,
+      statePath: join(root, "receipt.json"),
+      resolveExecutable: async (command: string) => {
+        if (command === "npm") return shim
+        throw new Error(`Could not find ${command} on PATH`)
+      },
+    }
+    await expect(upgrade(options)).resolves.toMatchObject({ installed_version: "1.2.3" })
+    expect(JSON.parse(await readFile(argumentsPath, "utf8"))).toEqual([
+      "install",
+      "--global",
+      "--prefix",
+      (await realpath(prefix)).replaceAll("\\", "/"),
+      "@akshar5/cohall@1.2.3",
+    ])
+
+    await writeFile(script, 'console.error("fixture installer failed"); process.exit(12)\n')
+    await expect(upgrade({ ...options, target: "1.2.4" })).rejects.toThrow(
+      "failed with status 12: fixture installer failed",
+    )
+  },
+)
 
 describe("upgrade target", () => {
   it("warns when the CLI and running daemon use different installations", () => {

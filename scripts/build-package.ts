@@ -21,7 +21,7 @@ const result = await Bun.build({
   format: "esm",
   minify: false,
   sourcemap: "external",
-  external: ["effect", "@modelcontextprotocol/sdk/*", "zod/*", "ws"],
+  external: ["effect", "@modelcontextprotocol/sdk/*", "zod/*", "ws", "execa"],
   define: { __COHALL_VERSION__: JSON.stringify(metadata.version) },
   loader: { ".md": "text" },
 })
