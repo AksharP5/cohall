@@ -1060,9 +1060,19 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   const createDelegation = Effect.fn("RelayStore.createDelegation")(function* (
     input: CreateTaskInput,
     targetDeviceId: DeviceId,
-    sourceDeviceId?: DeviceId,
+    boundDeviceId?: DeviceId,
     providerSessionId?: string,
   ) {
+    const sourceDeviceId = yield* Effect.try({
+      try: () =>
+        boundDeviceId === undefined ||
+        db
+          .query("SELECT id FROM devices WHERE id = ? AND forgotten_at IS NULL")
+          .get(boundDeviceId) === null
+          ? undefined
+          : boundDeviceId,
+      catch: operationError("RelayStore.createDelegation.source"),
+    })
     const timestamp = now()
     const threadId = input.threadId ?? makeThreadId()
     const task = Task.make({
@@ -1587,7 +1597,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
               created_at: timestamp,
               expires_at: expiresAt,
               last_seen_at: timestamp,
-              bound_device_id: role === "device" ? (deviceId ?? null) : null,
+              bound_device_id: deviceId ?? null,
               revoked_at: null,
             } satisfies AuthSessionRow
             db.query(

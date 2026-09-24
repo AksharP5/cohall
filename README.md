@@ -122,6 +122,13 @@ unset pairing_token
 `cohall join` remains available for scripts that only want to exchange a
 pairing token and write configuration.
 
+Full-worker pairings associate both credentials with the same device. Once the
+worker registers, its client requests record the source device and automatic
+routing prefers an equally suitable peer. Older pairings keep working; pair the
+worker again to enable source attribution and that routing preference. Forgetting
+a device revokes both associated credentials. Client-only pairings have no worker
+identity.
+
 ### 3. Keep the device available
 
 ```bash
