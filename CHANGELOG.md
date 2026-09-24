@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.2](https://github.com/AksharP5/cohall/compare/v0.6.1...v0.6.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **bot:** retain cancellation limits after uncertain dispatch ([#81](https://github.com/AksharP5/cohall/issues/81)) ([e324530](https://github.com/AksharP5/cohall/commit/e324530ee578bae7fd5a244a70daffa4304d8eb7))
+* **cli:** reject invalid timeouts before sending work ([#70](https://github.com/AksharP5/cohall/issues/70)) ([bac67e9](https://github.com/AksharP5/cohall/commit/bac67e9a2dc8c9c460f2b5df7b882d098177c5ae))
+* **config:** reject files as workspace roots ([#75](https://github.com/AksharP5/cohall/issues/75)) ([7b86305](https://github.com/AksharP5/cohall/commit/7b86305f36f68d264441c0d09fabbcbc23f457ae))
+* **delegation:** keep child tasks out of blocked parent slots ([#80](https://github.com/AksharP5/cohall/issues/80)) ([5b1e891](https://github.com/AksharP5/cohall/commit/5b1e891244c913d752b98015a28f30d6dd9b237a))
+* **deps:** update packages with published advisories ([#77](https://github.com/AksharP5/cohall/issues/77)) ([10801c9](https://github.com/AksharP5/cohall/commit/10801c9bc620b61da73b33480628ece4e0d1b583))
+* **pairing:** track the source of worker requests ([#79](https://github.com/AksharP5/cohall/issues/79)) ([5f383c6](https://github.com/AksharP5/cohall/commit/5f383c6ec8c5068417fcb7bdd915aed4976e71dc))
+* **provider:** finish cancellation before releasing the worker ([#74](https://github.com/AksharP5/cohall/issues/74)) ([a4ff068](https://github.com/AksharP5/cohall/commit/a4ff0684be9d1fbbc543d141537f2d0d5232559d))
+* **relay:** isolate failed device connections ([#72](https://github.com/AksharP5/cohall/issues/72)) ([035868d](https://github.com/AksharP5/cohall/commit/035868d72fcf5894ff8dcf71407951522bf66d1c))
+* **service:** retain the configured file and Node runtime ([#73](https://github.com/AksharP5/cohall/issues/73)) ([9811d1b](https://github.com/AksharP5/cohall/commit/9811d1b83bc9e8249f7f514c200967e110f7befc))
+* **tasks:** preserve continuity after reconnects ([#76](https://github.com/AksharP5/cohall/issues/76)) ([3b22717](https://github.com/AksharP5/cohall/commit/3b2271726316d6b6364fda3a8adbecaf69149342))
+* **windows:** launch providers, upgrades, and background workers reliably ([#78](https://github.com/AksharP5/cohall/issues/78)) ([6ccc4f8](https://github.com/AksharP5/cohall/commit/6ccc4f89550dcb22449d3035daa96af716c2558e))
+
 ## [0.6.1](https://github.com/AksharP5/cohall/compare/v0.6.0...v0.6.1) (2026-09-23)
 
 
