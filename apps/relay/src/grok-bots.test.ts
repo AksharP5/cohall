@@ -2,7 +2,7 @@ import { BotId, Device, makeDeviceId, now, version } from "@cohall/protocol"
 import { Effect, ManagedRuntime } from "effect"
 import { expect, it } from "vitest"
 import { Database } from "./database.ts"
-import { chooseDevice } from "./main.ts"
+import { resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
 const reacher = { id: BotId.make("bot-reacher"), name: "Reacher" }
@@ -38,16 +38,16 @@ it("routes only advertised bots and refreshes a roster without reconnecting the 
     await Effect.runPromise(store.upsertDevice(device))
     await expect(
       Effect.runPromise(
-        chooseDevice({
+        resolveDelegation({
           prompt: "Hello",
           botId: reacher.id,
           targetDeviceId: device.id,
         }).pipe(Effect.provideService(RelayStore.Service, store)),
       ),
-    ).resolves.toBe(device.id)
+    ).resolves.toMatchObject({ targetDeviceId: device.id })
     await expect(
       Effect.runPromise(
-        chooseDevice({
+        resolveDelegation({
           prompt: "Hello",
           botId: BotId.make("missing-bot"),
           targetDeviceId: device.id,
@@ -58,12 +58,12 @@ it("routes only advertised bots and refreshes a roster without reconnecting the 
     await Effect.runPromise(store.markDeviceOffline(device.id))
     await expect(
       Effect.runPromise(
-        chooseDevice({
+        resolveDelegation({
           prompt: "Queue this",
           botId: scout.id,
         }).pipe(Effect.provideService(RelayStore.Service, store)),
       ),
-    ).resolves.toBe(device.id)
+    ).resolves.toMatchObject({ targetDeviceId: device.id })
     const updated = await Effect.runPromise(
       store.heartbeat(device.id, "busy", [{ ...scout, name: "Renamed Scout" }]),
     )
@@ -76,7 +76,7 @@ it("routes only advertised bots and refreshes a roster without reconnecting the 
     expect((await Effect.runPromise(store.heartbeat(device.id, "online", []))).bots).toEqual([])
     await expect(
       Effect.runPromise(
-        chooseDevice({
+        resolveDelegation({
           prompt: "Hello again",
           botId: scout.id,
         }).pipe(Effect.provideService(RelayStore.Service, store)),

@@ -205,6 +205,11 @@ Reuse the returned `thread_id` for follow-ups so the target resumes its provider
 session. Queued follow-ups pick up the preceding turn's session when they start,
 including after a worker restart.
 
+Delegated child tasks inherit their parent's thread. Cohall routes them away
+from unfinished ancestors using the same worker slot, and rejects an explicit
+target that would make them wait on an ancestor. A Bot can still delegate to
+Codex or a different Bot on its own computer.
+
 ## Talk to your Grok Bots
 
 The experimental `grok-bot` provider sends messages to existing named Bots
