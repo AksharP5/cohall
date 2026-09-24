@@ -2,6 +2,7 @@ import { execFile, type ExecFileException } from "node:child_process"
 import { chmod, mkdir, realpath, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { configurationPath } from "./config.ts"
 import {
   packageInstallation,
   trustedExecutable,
@@ -33,25 +34,41 @@ const xml = (value: string): string =>
     .replaceAll("'", "&apos;")
 
 const systemdArgument = (value: string): string =>
-  `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
+  `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("\n", "\\n").replaceAll("\r", "\\r")}"`
 
 export const deviceServicePlan = (options: {
   readonly platform: NodeJS.Platform
   readonly entrypoint: string
   readonly home: string
+  readonly nodeExecutable: string
+  readonly configPath: string
   readonly uid?: number
 }): DeviceServicePlan => {
+  const servicePath = [
+    dirname(options.nodeExecutable),
+    join(options.home, ".local", "bin"),
+    join(options.home, ".npm-global", "bin"),
+    join(options.home, ".bun", "bin"),
+    options.platform === "darwin"
+      ? join(options.home, "Library", "pnpm")
+      : join(options.home, ".local", "share", "pnpm"),
+    ...(options.platform === "darwin" ? ["/opt/homebrew/bin"] : []),
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+  ].join(":")
   if (options.platform === "linux") {
     const path = join(options.home, ".config", "systemd", "user", "cohall-device.service")
     return {
       file: {
         path,
         mode: 0o600,
-        content: `[Unit]\nDescription=Cohall device agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=PATH=%h/.local/bin:%h/.npm-global/bin:%h/.bun/bin:%h/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\nExecStart=${systemdArgument(options.entrypoint)} device\nRestart=always\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`,
+        content: `[Unit]\nDescription=Cohall device agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdArgument(`PATH=${servicePath}`)}\nEnvironment=${systemdArgument(`COHALL_CONFIG=${options.configPath}`)}\nExecStart=${systemdArgument(options.entrypoint.replaceAll("$", () => "$$"))} device\nRestart=always\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`,
       },
       commands: [
         { command: "systemctl", arguments: ["--user", "daemon-reload"] },
-        { command: "systemctl", arguments: ["--user", "enable", "--now", "cohall-device.service"] },
+        { command: "systemctl", arguments: ["--user", "enable", "cohall-device.service"] },
+        { command: "systemctl", arguments: ["--user", "restart", "cohall-device.service"] },
       ],
       note: "The device starts after login. Run loginctl enable-linger $USER if it must run before login.",
     }
@@ -64,7 +81,7 @@ export const deviceServicePlan = (options: {
       file: {
         path,
         mode: 0o600,
-        content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>${xml(options.entrypoint)}</string>\n    <string>device</string>\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>NetworkState</key>\n    <true/>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>3</integer>\n  <key>ProcessType</key>\n  <string>Background</string>\n</dict>\n</plist>\n`,
+        content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>${xml(options.entrypoint)}</string>\n    <string>device</string>\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${xml(servicePath)}</string>\n    <key>COHALL_CONFIG</key>\n    <string>${xml(options.configPath)}</string>\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>NetworkState</key>\n    <true/>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>3</integer>\n  <key>ProcessType</key>\n  <string>Background</string>\n</dict>\n</plist>\n`,
       },
       commands: [
         { command: "launchctl", arguments: ["bootout", domain, path] },
@@ -140,6 +157,8 @@ export const installDeviceService = async (
     platform,
     entrypoint,
     home: options.home ?? homedir(),
+    nodeExecutable: process.execPath,
+    configPath: configurationPath(),
     ...(uid === undefined ? {} : { uid }),
   })
   await mkdir(dirname(plan.file.path), { recursive: true, mode: 0o700 })
