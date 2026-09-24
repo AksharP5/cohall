@@ -186,6 +186,7 @@ export interface Interface {
     deviceId: DeviceId,
   ) => Effect.Effect<ReadonlyArray<Task>, PersistenceError>
   readonly assignTask: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
+  readonly markTaskDispatched: (taskId: TaskId) => Effect.Effect<void, PersistenceError>
   readonly rollbackAssignment: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
   readonly acceptTask: (taskId: TaskId, deviceId: DeviceId) => Effect.Effect<Task, PersistenceError>
   readonly finishTask: (
@@ -1458,9 +1459,17 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     if (["completed", "failed", "cancelled"].includes(current.status)) {
       return current
     }
+    const dispatched =
+      current.provider === "grok-bot" &&
+      (yield* Effect.try({
+        try: () =>
+          db.query("SELECT 1 FROM tasks WHERE id = ? AND dispatched_at IS NOT NULL").get(taskId) !==
+          null,
+        catch: operationError("RelayStore.requestCancellation"),
+      }))
     if (
       current.provider === "grok-bot" &&
-      (current.status !== "queued" || current.startedAt !== undefined)
+      (current.status !== "queued" || current.startedAt !== undefined || dispatched)
     ) {
       return yield* new PersistenceError({
         operation: "RelayStore.requestCancellation",
@@ -1713,6 +1722,15 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     threadContext,
     pendingTasksFor,
     assignTask,
+    markTaskDispatched: (taskId) =>
+      Effect.try({
+        try: () => {
+          db.query(
+            "UPDATE tasks SET dispatched_at = COALESCE(dispatched_at, ?) WHERE id = ? AND status = 'assigned'",
+          ).run(now(), taskId)
+        },
+        catch: operationError("RelayStore.markTaskDispatched"),
+      }),
     rollbackAssignment: (taskId) =>
       transition(
         taskId,
@@ -1788,7 +1806,8 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           source_device_id TEXT REFERENCES devices(id),
           target_device_id TEXT NOT NULL REFERENCES devices(id), parent_task_id TEXT,
           workspace TEXT, provider_session_id TEXT, result TEXT, error TEXT,
-          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+          dispatched_at TEXT
         );
         CREATE INDEX IF NOT EXISTS tasks_thread_created ON tasks(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS tasks_target_status ON tasks(target_device_id, status);
@@ -1837,6 +1856,14 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
       const taskColumns = db.query<{ readonly name: string }, []>("PRAGMA table_info(tasks)").all()
       if (!taskColumns.some((column) => column.name === "bot_id")) {
         db.exec("ALTER TABLE tasks ADD COLUMN bot_id TEXT")
+      }
+      if (!taskColumns.some((column) => column.name === "dispatched_at")) {
+        db.transaction(() => {
+          db.exec("ALTER TABLE tasks ADD COLUMN dispatched_at TEXT")
+          // Older queued Bot tasks may already be running with a lost acceptance event.
+          db.exec(`UPDATE tasks SET dispatched_at = COALESCE(started_at, updated_at)
+            WHERE provider = 'grok-bot' AND status NOT IN ('completed', 'failed', 'cancelled')`)
+        })()
       }
     },
     catch: operationError("RelayStore.migrate"),

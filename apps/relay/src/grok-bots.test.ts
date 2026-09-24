@@ -237,3 +237,49 @@ it("adds bot discovery and task columns without changing CLI sessions or history
     database.close()
   }
 })
+
+it("preserves uncertain dispatch across restarts and migrates outstanding bot tasks conservatively", async () => {
+  const database = new Database(":memory:")
+  const original = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+  let migrated: typeof original | undefined
+  let restarted: typeof original | undefined
+  try {
+    const store = await original.runPromise(RelayStore.Service)
+    const device = grokComputer()
+    await Effect.runPromise(store.upsertDevice(device))
+    const legacy = await Effect.runPromise(
+      store.createDelegation({ prompt: "Legacy queued work", botId: reacher.id }, device.id),
+    )
+    await original.dispose()
+    database.exec("ALTER TABLE tasks DROP COLUMN dispatched_at")
+
+    migrated = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+    const restored = await migrated.runPromise(RelayStore.Service)
+    await expect(Effect.runPromise(restored.requestCancellation(legacy.id))).rejects.toBeDefined()
+    const fresh = await Effect.runPromise(
+      restored.createDelegation({ prompt: "New queued work", botId: scout.id }, device.id),
+    )
+    expect((await Effect.runPromise(restored.requestCancellation(fresh.id))).status).toBe(
+      "cancelled",
+    )
+
+    const dispatched = await Effect.runPromise(
+      restored.createDelegation({ prompt: "Lost acceptance", botId: scout.id }, device.id),
+    )
+    await Effect.runPromise(restored.assignTask(dispatched.id))
+    Effect.runSync(restored.markTaskDispatched(dispatched.id))
+    await migrated.dispose()
+    restarted = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+    const recovered = await restarted.runPromise(RelayStore.Service)
+    await Effect.runPromise(recovered.recover())
+    expect((await Effect.runPromise(recovered.getTask(dispatched.id))).status).toBe("queued")
+    await expect(
+      Effect.runPromise(recovered.requestCancellation(dispatched.id)),
+    ).rejects.toBeDefined()
+  } finally {
+    await original.dispose()
+    await migrated?.dispose()
+    await restarted?.dispose()
+    database.close()
+  }
+})

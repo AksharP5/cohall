@@ -370,12 +370,8 @@ export const runRelay = async (): Promise<void> => {
   }
 
   const dispatch = async (task: Task): Promise<Task> => {
-    const assigned = await run(
-      Effect.gen(function* () {
-        const store = yield* RelayStore.Service
-        return yield* store.assignTask(task.id)
-      }),
-    )
+    const store = await run(RelayStore.Service)
+    const assigned = await Effect.runPromise(store.assignTask(task.id))
     if (assigned.status !== "assigned") {
       return assigned
     }
@@ -383,16 +379,14 @@ export const runRelay = async (): Promise<void> => {
       hub.sendToDevice(
         assigned.targetDeviceId,
         SocketEvent.make({ _tag: "TaskAssigned", task: assigned }),
+        assigned.provider === "grok-bot"
+          ? () => Effect.runSync(store.markTaskDispatched(assigned.id))
+          : undefined,
       )
     ) {
       return assigned
     }
-    return run(
-      Effect.gen(function* () {
-        const store = yield* RelayStore.Service
-        return yield* store.rollbackAssignment(task.id)
-      }),
-    )
+    return Effect.runPromise(store.rollbackAssignment(task.id))
   }
 
   const dispatchOperation = async (operation: DeviceOperation): Promise<DeviceOperation> => {

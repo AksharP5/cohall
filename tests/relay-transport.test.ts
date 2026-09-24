@@ -1,5 +1,6 @@
 import { RelayClient } from "../packages/client/src/index.ts"
 import {
+  BotId,
   Device,
   makeDeviceId,
   maxSocketPayloadBytes,
@@ -108,6 +109,46 @@ it("isolates invalid connections and requeues work when a device connection fail
       expect((await Effect.runPromise(client.getTask(task.id))).status).toBe("queued")
     })
     await healthy()
+
+    const botId = BotId.make("transport-bot")
+    const botDevice = Device.make({
+      ...device,
+      id: makeDeviceId(),
+      name: "bot-transport-device",
+      providers: ["grok-bot"],
+      bots: [{ id: botId, name: "Transport Bot" }],
+    })
+    const botWorker = await openSocket()
+    const botConnected = once(botWorker, "message")
+    botWorker.send(JSON.stringify({ _tag: "Authenticate", token }))
+    await botConnected
+    botWorker.send(JSON.stringify({ _tag: "DeviceHello", device: botDevice }))
+    await vi.waitFor(async () => {
+      expect(
+        (await Effect.runPromise(client.devices())).find(({ id }) => id === botDevice.id)?.status,
+      ).toBe("online")
+    })
+    const uncertain = await Effect.runPromise(
+      client.createTask({ targetDeviceId: botDevice.id, botId, prompt: "Acceptance may be lost" }),
+    )
+    expect(uncertain.status).toBe("assigned")
+    const botClosed = once(botWorker, "close")
+    botWorker.terminate()
+    await botClosed
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(uncertain.id))).status).toBe("queued")
+    })
+    await expect(Effect.runPromise(client.cancelTask(uncertain.id))).rejects.toMatchObject({
+      message: "Stop this bot in Grok Bot; its gateway cannot cancel an individual Cohall request",
+    })
+    const unsent = await Effect.runPromise(
+      client.createTask({
+        targetDeviceId: botDevice.id,
+        botId,
+        prompt: "Never sent to an offline worker",
+      }),
+    )
+    expect((await Effect.runPromise(client.cancelTask(unsent.id))).status).toBe("cancelled")
   } finally {
     for (const socket of sockets) socket.terminate()
     if (relay.exitCode === null) relay.kill("SIGKILL")

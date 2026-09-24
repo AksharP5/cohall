@@ -1,4 +1,4 @@
-import { AuthSessionId, DeviceId } from "@cohall/protocol"
+import { AuthSessionId, DeviceId, SocketEvent, makeTaskId } from "@cohall/protocol"
 import { expect, it } from "vitest"
 import { WebSocket } from "ws"
 import { Hub, type ConnectionSocket } from "./hub.ts"
@@ -42,4 +42,34 @@ it("bounds owner sockets and accepts one registration per socket", () => {
   expect(hub.registerDevice(deviceId, first)).toBe(true)
   expect(hub.registerDevice(deviceId, first)).toBe(false)
   expect(hub.pendingConnections()).toBe(15)
+})
+
+it("records dispatch only for live connections and before an uncertain send", () => {
+  const hub = new Hub()
+  const deviceId = DeviceId.make("22222222-2222-4222-8222-222222222222")
+  const event = SocketEvent.make({ _tag: "CancelTask", taskId: makeTaskId() })
+  const attempts: Array<string> = []
+  const record = () => {
+    attempts.push("record")
+  }
+  expect(hub.sendToDevice(deviceId, event, record)).toBe(false)
+  expect(attempts).toEqual([])
+
+  const connection = socket()
+  connection.send = () => {
+    attempts.push("send")
+    throw new Error("Disconnected during send")
+  }
+  hub.attach(connection, {})
+  hub.registerDevice(deviceId, connection)
+  expect(hub.sendToDevice(deviceId, event, record)).toBe(false)
+  expect(attempts).toEqual(["record", "send"])
+
+  attempts.length = 0
+  expect(() =>
+    hub.sendToDevice(deviceId, event, () => {
+      throw new Error("Persistence failed")
+    }),
+  ).toThrow("Persistence failed")
+  expect(attempts).toEqual([])
 })
