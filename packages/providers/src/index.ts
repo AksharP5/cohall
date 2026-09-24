@@ -515,8 +515,11 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
           cleanup: false,
         })
         let finished = false
-        const exited = child.then(({ exitCode }) => {
+        const exited = child.then(({ exitCode, failed, originalMessage, shortMessage }) => {
           finished = true
+          if (failed && exitCode === undefined) {
+            throw new Error(originalMessage ?? shortMessage ?? "Provider failed to start")
+          }
           return exitCode ?? 1
         })
         let termination: Promise<void> | undefined

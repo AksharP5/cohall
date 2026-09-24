@@ -445,7 +445,7 @@ const defaultRunner: CommandRunner = {
       stripFinalNewline: false,
     })
     return {
-      exitCode: result.exitCode ?? 1,
+      exitCode: result.failed ? result.exitCode || 1 : 0,
       stdout: result.stdout,
       stderr: result.stderr,
       ...(result.shortMessage === undefined ? {} : { error: result.shortMessage.slice(0, 16_384) }),

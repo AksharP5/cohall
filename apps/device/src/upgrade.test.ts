@@ -45,13 +45,13 @@ it.skipIf(process.platform !== "win32")(
     const shim = join(root, "npm.cmd")
     await mkdir(dirname(entrypoint), { recursive: true })
     await writeFile(entrypoint, "")
-    await writeFile(metadata, JSON.stringify({ version: "1.2.2" }))
+    await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.2" }))
     await writeFile(shim, `@ECHO off\r\n"${process.execPath}" "%~dp0installer.cjs" %*\r\n`)
     await writeFile(
       script,
       `const fs = require("node:fs")
 fs.writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify(process.argv.slice(2)))
-fs.writeFileSync(${JSON.stringify(metadata)}, JSON.stringify({version: "1.2.3"}))
+fs.writeFileSync(${JSON.stringify(metadata)}, JSON.stringify({name: "@akshar5/cohall", version: "1.2.3"}))
 `,
     )
     const options = {
