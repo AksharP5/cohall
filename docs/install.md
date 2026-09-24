@@ -92,7 +92,7 @@ values are prompted with useful defaults. Re-running `cohall init` repairs the
 skill installation and reuses credentials when the selected relay has not
 changed. `cohall join` remains the non-guided configuration primitive.
 
-Workspace roots must already exist. Cohall resolves them to canonical paths and
+Workspace roots must be existing directories. Cohall resolves them to canonical paths and
 rejects delegated work outside them.
 
 For a client that submits work but never runs a device worker:

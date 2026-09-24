@@ -1,6 +1,6 @@
 import { DeviceId, Provider, makeDeviceId, type Provider as ProviderName } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
-import { access, chmod, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises"
 import { homedir, hostname, platform } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
@@ -105,12 +105,20 @@ export const parseWorkspaces = (
               .map((workspace) => workspace.trim())
               .filter((workspace) => workspace.length > 0)
           : Schema.decodeUnknownSync(WorkspaceList)(JSON.parse(workspaceJson))
-      const canonical = await Promise.all(values.map((workspace) => realpath(resolve(workspace))))
+      const canonical = await Promise.all(
+        values.map(async (workspace) => {
+          const path = await realpath(resolve(workspace))
+          if (!(await stat(path)).isDirectory()) {
+            throw new Error(`Not a directory: ${workspace}`)
+          }
+          return path
+        }),
+      )
       return [...new Set(canonical)]
     },
     catch: (cause) =>
       new Error(
-        `Workspace roots must be existing paths; JSON input must be an array of paths: ${cause instanceof Error ? cause.message : String(cause)}`,
+        `Workspace roots must be existing directories; JSON input must be an array of paths: ${cause instanceof Error ? cause.message : String(cause)}`,
       ),
   })
 
