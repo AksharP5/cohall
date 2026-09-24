@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -71,7 +71,7 @@ fs.writeFileSync(${JSON.stringify(metadata)}, JSON.stringify({name: "@akshar5/co
       "install",
       "--global",
       "--prefix",
-      prefix.replaceAll("\\", "/"),
+      (await realpath(prefix)).replaceAll("\\", "/"),
       "@akshar5/cohall@1.2.3",
     ])
 
