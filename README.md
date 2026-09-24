@@ -251,11 +251,13 @@ and `delegate` tools; the Bot target selects the provider automatically.
 A Cohall thread records the exchange and lets follow-ups find the same Bot.
 It does not create an isolated Grok Bot conversation: messages sent in the
 Grok Bot app share that Bot's history. Bot tasks use the Bot's own permissions
-and computer context, so omit `--workspace`. Queued Bot tasks that have not
-started can be cancelled; active Bot turns must be stopped in Grok Bot because
+and computer context, so omit `--workspace`. Queued Bot tasks that have never
+been dispatched can be cancelled; active Bot turns must be stopped in Grok Bot because
 the gateway cannot safely cancel a specific Cohall turn.
-An accepted Bot request remains non-cancellable through Cohall if a disconnect
-or relay restart puts it back in the queue.
+A dispatched Bot request remains non-cancellable through Cohall if a disconnect
+or relay restart puts it back in the queue, even if its acceptance message was lost.
+When upgrading an older relay without dispatch records, outstanding Bot requests
+are conservatively treated as potentially dispatched.
 
 Cohall includes a local callback command in each Bot request. After finishing,
 the Bot hands its result back by running `cohall reply <task-id> --message-file

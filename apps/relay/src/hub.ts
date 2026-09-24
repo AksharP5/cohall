@@ -121,13 +121,16 @@ export class Hub {
     return this.#devices.get(deviceId)?.readyState === WebSocket.OPEN
   }
 
-  sendToDevice(deviceId: DeviceId, event: SocketEvent): boolean {
+  sendToDevice(deviceId: DeviceId, event: SocketEvent, beforeSend?: () => void): boolean {
     const socket = this.#devices.get(deviceId)
     if (socket?.readyState !== WebSocket.OPEN || !this.isAuthorized(socket)) {
       return false
     }
+    const payload = JSON.stringify(event)
+    // Persist dispatch without yielding between the live-connection check and the send attempt.
+    beforeSend?.()
     try {
-      socket.send(JSON.stringify(event))
+      socket.send(payload)
       return true
     } catch {
       return false
