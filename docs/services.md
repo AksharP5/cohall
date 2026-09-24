@@ -33,8 +33,16 @@ cohall service install
 journalctl --user -u cohall-device -f
 ```
 
-The generated service uses the exact executable that ran the installer. Linger
-is optional. Without it, the user service starts after login and stops with the
+The generated service uses the exact Cohall executable and puts the current
+Node.js directory first on `PATH`. It records the resolved configuration file,
+including `COHALL_CONFIG` or `XDG_CONFIG_HOME` overrides. Reinstall the service
+after moving that file or replacing a Node.js installation at a different path.
+Reinstalling restarts an existing worker to apply the changes.
+
+Other environment overrides are not copied from your shell. Save device settings
+with `cohall configure`, or set them explicitly in the service environment.
+
+Linger is optional. Without it, the user service starts after login and stops with the
 user's service manager. With it, the service starts at boot and remains after
 logout:
 
@@ -172,7 +180,9 @@ cohall service install
 
 The generated LaunchAgent uses `RunAtLoad` and `KeepAlive`: it starts at login,
 restarts after failure, and reconnects when the network returns. It cannot run
-before that user logs in. Check it with:
+before that user logs in. As on Linux, it records the current Node.js directory
+and configuration file, so custom Node installations and `COHALL_CONFIG` work
+after login. Reinstall it when either path changes. Check it with:
 
 ```bash
 launchctl print gui/"$(id -u)"/com.cohall.device
