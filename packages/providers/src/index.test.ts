@@ -142,3 +142,45 @@ it.skipIf(process.platform === "win32")(
     expect(settledBeforeRelease).toBe(false)
   },
 )
+
+it.skipIf(process.platform !== "win32")(
+  "runs Windows provider shims with literal arguments and prompts on stdin",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall provider & args-"))
+    directories.push(directory)
+    await writeFile(
+      join(directory, "codex.cmd"),
+      `@ECHO off\r\n"${process.execPath}" "%~dp0provider.cjs" %*\r\n`,
+    )
+    await writeFile(
+      join(directory, "provider.cjs"),
+      `let input = ""
+process.stdin.setEncoding("utf8")
+process.stdin.on("data", (chunk) => input += chunk)
+process.stdin.on("end", () => console.log(JSON.stringify({
+  type: "item.completed",
+  item: {type: "agent_message", text: JSON.stringify({input, args: process.argv.slice(2)})}
+})))
+`,
+    )
+    process.env.PATH = directory
+    const model = 'model with spaces & echo injected > injected.txt | ^% ! "quoted"'
+    const prompt = "Review this literally:\n& echo not-a-command > untouched.txt\nUnicode: café"
+    const response = await Effect.runPromise(
+      run({ provider: "codex", threadId: "test", prompt, cwd: directory, model }),
+    )
+    expect(JSON.parse(response.result)).toEqual({
+      input: prompt,
+      args: [
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "-c",
+        'approval_policy="never"',
+        "--model",
+        model,
+        "-",
+      ],
+    })
+  },
+)

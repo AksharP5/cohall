@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { execFile, type ExecFileException } from "node:child_process"
+import { execa } from "execa"
 import { constants } from "node:fs"
 import {
   access,
@@ -434,22 +434,23 @@ export const serviceCandidates = (
 }
 
 const defaultRunner: CommandRunner = {
-  run: (command, arguments_, timeoutMs = 300_000) =>
-    new Promise((resolve) => {
-      execFile(
-        command,
-        [...arguments_],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: timeoutMs, windowsHide: true },
-        (error: ExecFileException | null, stdout, stderr) => {
-          resolve({
-            exitCode: typeof error?.code === "number" ? error.code : error === null ? 0 : 1,
-            stdout,
-            stderr,
-            ...(error === null ? {} : { error: error.message }),
-          })
-        },
-      )
-    }),
+  run: async (command, arguments_, timeoutMs = 300_000) => {
+    const result = await execa(command, arguments_, {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: timeoutMs,
+      windowsHide: true,
+      stdin: "ignore",
+      reject: false,
+      stripFinalNewline: false,
+    })
+    return {
+      exitCode: result.exitCode ?? 1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      ...(result.shortMessage === undefined ? {} : { error: result.shortMessage.slice(0, 16_384) }),
+    }
+  },
 }
 
 const checked = async (
