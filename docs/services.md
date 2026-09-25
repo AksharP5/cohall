@@ -39,6 +39,10 @@ including `COHALL_CONFIG` or `XDG_CONFIG_HOME` overrides. Reinstall the service
 after moving that file or replacing a Node.js installation at a different path.
 Reinstalling restarts an existing worker to apply the changes.
 
+Some Grok Bot cloud computers have no systemd user manager. On those hosts,
+follow [Grok Bot computer setup](grok-bot.md) for a supported supervisor or
+recovery routine; `cohall service install` cannot register a service there.
+
 Other environment overrides are not copied from your shell. Save device settings
 with `cohall configure`, or set them explicitly in the service environment.
 
