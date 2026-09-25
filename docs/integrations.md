@@ -23,7 +23,8 @@ extension is required.
 Use `cohall bots` to discover named Grok Bots and `cohall send @BotName` to
 message one. MCP exposes the same discovery through `list_bots`; `delegate`
 infers `grok-bot` from a Bot target. See [Grok Bot setup](../README.md#talk-to-your-grok-bots)
-for the required host gateway and local reply callback.
+for messaging details, and [computer setup](grok-bot.md) for Tailscale, pairing,
+and the local gateway.
 
 When delegating from a conversation, the sending agent must distill why the user
 is asking, relevant facts and prior findings, constraints, and the intended

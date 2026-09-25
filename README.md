@@ -217,13 +217,22 @@ through the local Grok Bot gateway on their computer. It uses each Bot's current
 conversation, tools, and permissions. Grok Bot remains the agent responding;
 Codex is a separate provider that the Bot can delegate to.
 
-On the Grok Bot computer, configure its gateway file and restart the Cohall
-worker:
+For a new computer, follow [Grok Bot setup](docs/grok-bot.md). It covers
+Tailscale access, the suggested `tag:grokbot` identity, secure pairing, gateway
+configuration, and recovery on hosts without systemd. Pair the computer once;
+its Cohall worker discovers every named Bot there. Tailscale policies can
+select the computer by its tag; Cohall does not require one.
+
+On an already paired Grok Bot computer, configure its actual gateway file and
+restart the Cohall worker:
 
 ```bash
-cohall configure --grok-gateway "$HOME/sand-data/gateway.json" --providers codex,grok-bot
+test -r "$HOME/agent-data/gateway.json" &&
+  cohall configure --grok-gateway "$HOME/agent-data/gateway.json" --providers grok-bot
 ```
 
+The path is an example; check the file on that computer before using it. Add
+`codex` to the provider list only when Codex is installed and signed in there.
 The path can also be supplied as `COHALL_GROK_GATEWAY`. The gateway credential
 stays on that computer; clients discover Bots through the Cohall relay. Upgrade
 the relay, workers, and clients before enabling this provider. Restart
@@ -363,6 +372,7 @@ configuration.
 ## Documentation
 
 - [Installation, pairing, providers, and upgrades](docs/install.md)
+- [Grok Bot computer setup, Tailscale, and recovery](docs/grok-bot.md)
 - [Agent skill and MCP integrations](docs/integrations.md)
 - [Linux, macOS, and Windows services](docs/services.md)
 - [Contributing](CONTRIBUTING.md)

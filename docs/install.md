@@ -135,11 +135,11 @@ when delegated work starts.
 | OpenCode    | `opencode`       | `opencode run --session` |
 
 The experimental `grok-bot` provider connects to named Bots through their
-computer's local gateway. Configure it with `cohall configure --grok-gateway
-<absolute-path> --providers codex,grok-bot` and restart the worker. See
-[Grok Bot setup and messaging](../README.md#talk-to-your-grok-bots) for discovery,
-callbacks, and upgrade order. Bot model selection and permissions remain with
-Grok Bot.
+computer's local gateway. Follow [Grok Bot computer setup](grok-bot.md) for
+Tailscale access, pairing, provider configuration, and recovery. A worker
+configured with `--providers grok-bot` advertises all Bots found by that
+gateway. Add `codex` only when its CLI is installed and signed in on that
+computer. Bot model selection and permissions remain with Grok Bot.
 
 Limit a device to providers configured for that user:
 
