@@ -197,6 +197,24 @@ npx -y @akshar5/cohall wait <task-id> --timeout 1800
 npx -y @akshar5/cohall trace <task-id> --follow
 ```
 
+Completed tasks also appear in the sending client's inbox. This covers queued
+work and tasks that finish after a wait times out:
+
+```bash
+npx -y @akshar5/cohall inbox
+npx -y @akshar5/cohall status <task-id>
+npx -y @akshar5/cohall inbox ack <task-id>
+```
+
+The inbox shows short previews; `status` returns the full result. Acknowledge a
+task after handling it. Synchronous `delegate` calls acknowledge their own
+results automatically. The inbox shows up to 20 oldest entries and sets
+`hasMore` when more are waiting; acknowledge handled entries to reveal the rest.
+Each client credential has its own inbox, including
+client-only pairings. The relay keeps at most 1,000 completed tasks by default,
+so an old unacknowledged result can leave the inbox when history is pruned.
+Tasks created before the inbox was added have no inbox entry.
+
 Attach up to two explicit files to a coding task. Each file may be up to 256 KiB.
 The target receives them as temporary files and can return up to two files by
 writing them to the output directory named in its task prompt. List task files

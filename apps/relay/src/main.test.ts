@@ -1,8 +1,38 @@
 import { describe, expect, it } from "vitest"
-import { makeDeviceId, makeAuthSessionId, now, AuthSession, AttachmentName } from "@cohall/protocol"
-import { canDispatchTaskToDevice, canReadTaskAttachments, relayListenOptions } from "./main.ts"
+import { Schema } from "effect"
+import {
+  makeDeviceId,
+  makeAuthSessionId,
+  now,
+  AuthSession,
+  AttachmentName,
+  CreateTaskInput,
+  maxAttachmentBytes,
+} from "@cohall/protocol"
+import {
+  canDispatchTaskToDevice,
+  canReadTaskAttachments,
+  maxTaskRequestBodyBytes,
+  relayListenOptions,
+} from "./main.ts"
 
 const configuration = { host: "127.0.0.1", port: 8787 }
+
+it("accepts a schema-valid task with maximum escaped text and two maximum files", () => {
+  const data = Buffer.alloc(maxAttachmentBytes).toString("base64")
+  const task = Schema.decodeUnknownSync(CreateTaskInput)({
+    prompt: "\0".repeat(131_072),
+    context: "\0".repeat(131_072),
+    title: "\0".repeat(256),
+    workspace: "\0".repeat(4_096),
+    attachments: [
+      { name: AttachmentName.make("first.txt"), data },
+      { name: AttachmentName.make("second.txt"), data },
+    ],
+  })
+
+  expect(Buffer.byteLength(JSON.stringify(task))).toBeLessThan(maxTaskRequestBodyBytes)
+})
 
 describe("relay listener", () => {
   it("uses the configured host and port without socket activation", () => {

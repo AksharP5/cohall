@@ -32,6 +32,7 @@ import {
   writeStoredConfiguration,
 } from "./config.ts"
 import {
+  acknowledgedTaskResult,
   createDelegation,
   followTaskTrace,
   listBots,
@@ -114,6 +115,7 @@ Usage:
                   [--context text] [--thread uuid] [--parent task-id] [--workspace path]
                   [--attach path] [--timeout seconds] [--no-wait]
   cohall status <task-id>
+  cohall inbox [ack <task-id>]
   cohall trace <task-id> [--follow]
   cohall wait <task-id> [--timeout seconds]
   cohall attachments <task-id>
@@ -968,13 +970,26 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         ...(attachments.length === 0 ? {} : { attachments }),
       }),
     )
+    const completed = arguments_.options.has("no-wait")
+      ? task
+      : await Effect.runPromise(waitForTask(relay, task, waitSeconds))
     print(
-      taskResult(
-        arguments_.options.has("no-wait")
-          ? task
-          : await Effect.runPromise(waitForTask(relay, task, waitSeconds)),
-      ),
+      arguments_.options.has("no-wait")
+        ? taskResult(completed)
+        : await acknowledgedTaskResult(relay, completed),
     )
+    return
+  }
+  if (command === "inbox") {
+    allowOptions(arguments_, [])
+    if (arguments_.positionals[0] === "ack") {
+      if (arguments_.positionals.length !== 2) throw new Error("Usage: cohall inbox ack <task-id>")
+      const id = Schema.decodeUnknownSync(TaskId)(arguments_.positionals[1])
+      print(await Effect.runPromise(relay.acknowledgeCompletion(id)))
+      return
+    }
+    noPositionals(arguments_, command)
+    print(await Effect.runPromise(relay.inbox()))
     return
   }
   if (command === "status") {

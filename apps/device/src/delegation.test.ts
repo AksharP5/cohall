@@ -1,4 +1,4 @@
-import { RelayClient } from "@cohall/client"
+import { RelayClient, RelayRequestError } from "@cohall/client"
 import {
   BotId,
   Device,
@@ -13,7 +13,7 @@ import {
 import { Effect } from "effect"
 import { describe, expect, it, vi } from "vitest"
 import { ClientConfiguration } from "./config.ts"
-import { createDelegation, listBots, taskResult } from "./delegation.ts"
+import { acknowledgedTaskResult, createDelegation, listBots, taskResult } from "./delegation.ts"
 
 const timestamp = Timestamp.make("2026-08-09T12:00:00.000Z")
 const device = Device.make({
@@ -78,6 +78,30 @@ const client = (devices: ReadonlyArray<Device> = [device], tasks: ReadonlyArray<
       }),
     ),
   ),
+})
+
+it("returns successful work even when inbox acknowledgement is unavailable", async () => {
+  const completed = Task.make({ ...task, completedAt: timestamp })
+  const unavailable = {
+    ...client(),
+    acknowledgeCompletion: vi.fn(() =>
+      Effect.fail(
+        new RelayRequestError({ operation: "ack", message: "Route not found", status: 404 }),
+      ),
+    ),
+  }
+  expect(await acknowledgedTaskResult(unavailable, completed)).toEqual(taskResult(completed))
+
+  const failed = {
+    ...client(),
+    acknowledgeCompletion: vi.fn(() =>
+      Effect.fail(new RelayRequestError({ operation: "ack", message: "Relay unavailable" })),
+    ),
+  }
+  expect(await acknowledgedTaskResult(failed, completed)).toMatchObject({
+    status: "completed",
+    inbox_warning: expect.stringContaining("Relay unavailable"),
+  })
 })
 
 describe("bot delegation", () => {

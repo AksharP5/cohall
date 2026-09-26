@@ -12,6 +12,8 @@ import {
   Task,
   TaskAttachment,
   maxAttachmentBytes,
+  TaskInbox,
+  TaskInboxItem,
   TaskTrace,
   ThreadContext,
   UsageSummary,
@@ -59,6 +61,8 @@ export interface Interface {
     name: AttachmentNameType,
     direction?: AttachmentDirection,
   ) => Effect.Effect<Uint8Array, RelayClientError>
+  readonly inbox: () => Effect.Effect<TaskInbox, RelayClientError>
+  readonly acknowledgeCompletion: (taskId: TaskId) => Effect.Effect<TaskInboxItem, RelayClientError>
   readonly traceTask: (taskId: TaskId) => Effect.Effect<TaskTrace, RelayClientError>
   readonly cancelTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
   readonly threadContext: (threadId: ThreadId) => Effect.Effect<ThreadContext, RelayClientError>
@@ -265,6 +269,14 @@ export const make = (options: RelayClientOptions): Interface => {
                 message: cause instanceof Error ? cause.message : String(cause),
               }),
       }),
+    inbox: () => request("RelayClient.inbox", "/api/inbox", TaskInbox),
+    acknowledgeCompletion: (taskId) =>
+      request(
+        "RelayClient.acknowledgeCompletion",
+        `/api/inbox/${encodeURIComponent(taskId)}/ack`,
+        TaskInboxItem,
+        { method: "POST" },
+      ),
     traceTask: (taskId) =>
       request("RelayClient.traceTask", `/api/tasks/${encodeURIComponent(taskId)}/trace`, TaskTrace),
     cancelTask: (taskId) =>

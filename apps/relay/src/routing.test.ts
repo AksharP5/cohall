@@ -42,7 +42,9 @@ it("routes child tasks away from their parent and inherits only that parent's th
     const peer = device("b-peer")
     await Effect.runPromise(store.upsertDevice(source))
     await Effect.runPromise(store.upsertDevice(peer))
-    const parent = await Effect.runPromise(store.createDelegation({ prompt: "Parent" }, source.id))
+    const parent = await Effect.runPromise(
+      store.createDelegation({ prompt: "Parent" }, source.id, "owner"),
+    )
     await Effect.runPromise(store.assignTask(parent.id))
     await Effect.runPromise(store.acceptTask(parent.id, source.id))
     const input = { prompt: "Child", parentTaskId: parent.id }
@@ -76,7 +78,11 @@ it("bounds legacy ancestor walks when history has been pruned or contains a cycl
     const source = device("source")
     await Effect.runPromise(store.upsertDevice(source))
     const parent = await Effect.runPromise(
-      store.createDelegation({ prompt: "Retained parent", parentTaskId: makeTaskId() }, source.id),
+      store.createDelegation(
+        { prompt: "Retained parent", parentTaskId: makeTaskId() },
+        source.id,
+        "owner",
+      ),
     )
     await Effect.runPromise(store.finishTask(parent.id, source.id, "Done"))
     const input = { prompt: "Follow up", parentTaskId: parent.id }
@@ -100,14 +106,14 @@ it("checks retained ancestors while allowing separate bot and CLI slots on one d
     const source = device("source")
     await Effect.runPromise(store.upsertDevice(source))
     const parent = await Effect.runPromise(
-      store.createDelegation({ prompt: "Bot parent", botId }, source.id),
+      store.createDelegation({ prompt: "Bot parent", botId }, source.id, "owner"),
     )
     await Effect.runPromise(store.assignTask(parent.id))
     await Effect.runPromise(store.acceptTask(parent.id, source.id))
     const childInput = { prompt: "CLI child", parentTaskId: parent.id, targetDeviceId: source.id }
     const childRoute = await runtime.runPromise(resolveDelegation(childInput))
     const child = await Effect.runPromise(
-      store.createDelegation(childRoute.input, childRoute.targetDeviceId),
+      store.createDelegation(childRoute.input, childRoute.targetDeviceId, "owner"),
     )
     await Effect.runPromise(store.assignTask(child.id))
     await Effect.runPromise(store.acceptTask(child.id, source.id))

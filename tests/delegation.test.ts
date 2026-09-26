@@ -359,6 +359,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(skill).toContain("# Cohall")
     expect(skill).toContain("Use the installed `cohall` executable when it is available")
     expect(skill).toContain("cohall delegate")
+    expect(skill).toContain("cohall inbox")
     expect(await runCohall(root, [])).toContain("cohall join")
     expect(await runCohall(root, ["device", "--help"])).toContain("cohall device")
     expect(await runCohall(root, ["delegate", "--help"])).toContain("cohall delegate")
@@ -529,6 +530,8 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       "list_devices",
       "list_bots",
       "delegate",
+      "completion_inbox",
+      "acknowledge_completion",
       "task_status",
       "list_task_attachments",
       "download_task_attachment",
@@ -687,8 +690,8 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     await expect(
       Effect.runPromise(unrelatedDevice.listAttachments(mcpAttachmentTask.task_id)),
     ).rejects.toMatchObject({ status: 403 })
-    await mcp.close()
-
+    await Effect.runPromise(client.acknowledgeCompletion(attachmentFinished.id))
+    await Effect.runPromise(client.acknowledgeCompletion(mcpAttachmentFinished.id))
     const rawQueued: unknown = JSON.parse(
       await runCohall(
         root,
@@ -712,6 +715,29 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(completed.sourceDeviceId).toBe(deviceId)
     expect(completed.result).toBe("Codex completed the delegated work.")
     expect(completed.providerSessionId).toBe("22222222-2222-4222-8222-222222222222")
+    expect((await Effect.runPromise(client.inbox())).items[0]).toMatchObject({
+      id: queued.task_id,
+      status: "completed",
+      resultPreview: completed.result,
+    })
+    expect((await Effect.runPromise(owner.inbox())).items).toEqual([])
+    const cliInbox: unknown = JSON.parse(await runCohall(root, ["inbox"], cliEnvironment))
+    expect(cliInbox).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ id: queued.task_id })]),
+      hasMore: false,
+    })
+    const mcpInbox = await mcp.callTool({ name: "completion_inbox", arguments: {} })
+    expect(mcpInbox.content).toEqual([
+      expect.objectContaining({ text: expect.stringContaining(queued.task_id) }),
+    ])
+    await mcp.close()
+    await expect(
+      Effect.runPromise(owner.acknowledgeCompletion(completed.id)),
+    ).rejects.toMatchObject({
+      status: 404,
+    })
+    await runCohall(root, ["inbox", "ack", completed.id], cliEnvironment)
+    expect((await Effect.runPromise(client.inbox())).items).toEqual([])
     const rawTrace: unknown = JSON.parse(
       await runCohall(root, ["trace", queued.task_id], cliEnvironment),
     )
@@ -840,6 +866,20 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       expect(promptPath).toBeDefined()
       await expect(access(promptPath ?? "missing")).rejects.toMatchObject({ code: "ENOENT" })
     }
+
+    const synchronous: unknown = JSON.parse(
+      await runCohall(
+        root,
+        ["delegate", "--target", "test-device", "--workspace", root, "--prompt", "Check again"],
+        cliEnvironment,
+      ),
+    )
+    expect(Schema.decodeUnknownSync(TaskResult)(synchronous).status).toBe("completed")
+    expect(
+      (await Effect.runPromise(client.inbox())).items.some(
+        (item) => item.promptPreview === "Check again",
+      ),
+    ).toBe(false)
 
     await expect(Effect.runPromise(owner.forgetDevice(deviceId))).rejects.toMatchObject({
       status: 409,
