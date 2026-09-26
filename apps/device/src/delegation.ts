@@ -1,4 +1,4 @@
-import type { Interface as RelayClient } from "@cohall/client"
+import { RelayRequestError, type Interface as RelayClient } from "@cohall/client"
 import {
   BotId,
   DeviceId,
@@ -46,6 +46,7 @@ export const TaskResult = Schema.Struct({
   bot_id: Schema.optionalKey(BotId),
   result: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
+  inbox_warning: Schema.optionalKey(Schema.String),
 })
 export interface TaskResult extends Schema.Schema.Type<typeof TaskResult> {}
 
@@ -123,6 +124,25 @@ export const taskResult = (task: Task): TaskResult =>
     ...(task.result === undefined ? {} : { result: task.result }),
     ...(task.error === undefined ? {} : { error: task.error }),
   })
+
+export const acknowledgedTaskResult = async (
+  client: RelayClient,
+  task: Task,
+): Promise<TaskResult> => {
+  const result = taskResult(task)
+  const acknowledgementError = await Effect.runPromise(client.acknowledgeCompletion(task.id))
+    .then(() => undefined)
+    .catch((cause: unknown) => {
+      if (cause instanceof RelayRequestError && cause.status === 404) return undefined
+      return cause instanceof Error ? cause.message : String(cause)
+    })
+  return acknowledgementError === undefined
+    ? result
+    : TaskResult.make({
+        ...result,
+        inbox_warning: `Result received, but the inbox could not be cleared: ${acknowledgementError}`,
+      })
+}
 
 export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
   client: RelayClient,

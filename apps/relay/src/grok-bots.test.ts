@@ -90,18 +90,20 @@ it("runs bot and local CLI tasks in separate slots while upgrades wait for every
     const device = grokComputer()
     await Effect.runPromise(store.upsertDevice(device))
     const botTask = await Effect.runPromise(
-      store.createDelegation({ prompt: "Delegate work", botId: reacher.id }, device.id),
+      store.createDelegation({ prompt: "Delegate work", botId: reacher.id }, device.id, "owner"),
     )
     const botFollowup = await Effect.runPromise(
       store.createDelegation(
         { prompt: "Follow up", botId: reacher.id, threadId: botTask.threadId },
         device.id,
+        "owner",
       ),
     )
     const scoutTask = await Effect.runPromise(
       store.createDelegation(
         { prompt: "Research", botId: scout.id, threadId: botTask.threadId },
         device.id,
+        "owner",
       ),
     )
     expect((await Effect.runPromise(store.assignTask(botTask.id))).status).toBe("assigned")
@@ -123,13 +125,17 @@ it("runs bot and local CLI tasks in separate slots while upgrades wait for every
           provider: "codex",
         },
         device.id,
-        device.id,
+        "owner",
       ),
     )
     expect((await Effect.runPromise(store.assignTask(child.id))).status).toBe("assigned")
     expect(child.parentTaskId).toBe(botTask.id)
     const otherCli = await Effect.runPromise(
-      store.createDelegation({ prompt: "More CLI work", provider: "claude-code" }, device.id),
+      store.createDelegation(
+        { prompt: "More CLI work", provider: "claude-code" },
+        device.id,
+        "owner",
+      ),
     )
     expect((await Effect.runPromise(store.assignTask(otherCli.id))).status).toBe("queued")
     await Effect.runPromise(
@@ -162,11 +168,11 @@ it("cancels queued bot work without claiming to stop a running Grok Bot", async 
     const device = grokComputer()
     await Effect.runPromise(store.upsertDevice(device))
     const queued = await Effect.runPromise(
-      store.createDelegation({ prompt: "Queued", botId: reacher.id }, device.id),
+      store.createDelegation({ prompt: "Queued", botId: reacher.id }, device.id, "owner"),
     )
     expect((await Effect.runPromise(store.requestCancellation(queued.id))).status).toBe("cancelled")
     const active = await Effect.runPromise(
-      store.createDelegation({ prompt: "Active", botId: reacher.id }, device.id),
+      store.createDelegation({ prompt: "Active", botId: reacher.id }, device.id, "owner"),
     )
     await Effect.runPromise(store.assignTask(active.id))
     await expect(Effect.runPromise(store.requestCancellation(active.id))).rejects.toMatchObject({
@@ -199,19 +205,23 @@ it("adds bot discovery and task columns without changing CLI sessions or history
     const store = await original.runPromise(RelayStore.Service)
     await Effect.runPromise(store.upsertDevice({ ...device, providers: ["codex"] }))
     const task = await Effect.runPromise(
-      store.createDelegation({ prompt: "Legacy work" }, device.id),
+      store.createDelegation({ prompt: "Legacy work" }, device.id, "owner"),
     )
     await Effect.runPromise(store.assignTask(task.id))
     await Effect.runPromise(store.finishTask(task.id, device.id, "Legacy result", "legacy-session"))
     await original.dispose()
     database.exec(`
+      DROP INDEX tasks_inbox;
       ALTER TABLE devices DROP COLUMN bots_json;
       ALTER TABLE tasks DROP COLUMN bot_id;
+      ALTER TABLE tasks DROP COLUMN requester_id;
+      ALTER TABLE tasks DROP COLUMN completion_seen_at;
     `)
     migrated = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
     const restored = await migrated.runPromise(RelayStore.Service)
     expect((await Effect.runPromise(restored.listDevices()))[0]?.bots).toBeUndefined()
     expect((await Effect.runPromise(restored.getTask(task.id))).result).toBe("Legacy result")
+    expect((await Effect.runPromise(restored.inboxFor("owner"))).items).toEqual([])
     expect(await Effect.runPromise(restored.sessionFor(task.threadId, device.id, "codex"))).toBe(
       "legacy-session",
     )
@@ -220,10 +230,15 @@ it("adds bot discovery and task columns without changing CLI sessions or history
       restored.createDelegation(
         { prompt: "Bot work", botId: reacher.id, threadId: task.threadId },
         device.id,
+        "owner",
       ),
     )
     await Effect.runPromise(restored.assignTask(botTask.id))
     await Effect.runPromise(restored.finishTask(botTask.id, device.id, "Bot result", "bot-session"))
+    expect((await Effect.runPromise(restored.inboxFor("owner"))).items[0]).toMatchObject({
+      id: botTask.id,
+      botId: reacher.id,
+    })
     expect((await Effect.runPromise(restored.getTask(botTask.id))).botId).toBe(reacher.id)
     expect(
       (await Effect.runPromise(restored.getTask(botTask.id))).providerSessionId,
@@ -248,7 +263,11 @@ it("preserves uncertain dispatch across restarts and migrates outstanding bot ta
     const device = grokComputer()
     await Effect.runPromise(store.upsertDevice(device))
     const legacy = await Effect.runPromise(
-      store.createDelegation({ prompt: "Legacy queued work", botId: reacher.id }, device.id),
+      store.createDelegation(
+        { prompt: "Legacy queued work", botId: reacher.id },
+        device.id,
+        "owner",
+      ),
     )
     await original.dispose()
     database.exec("ALTER TABLE tasks DROP COLUMN dispatched_at")
@@ -257,14 +276,14 @@ it("preserves uncertain dispatch across restarts and migrates outstanding bot ta
     const restored = await migrated.runPromise(RelayStore.Service)
     await expect(Effect.runPromise(restored.requestCancellation(legacy.id))).rejects.toBeDefined()
     const fresh = await Effect.runPromise(
-      restored.createDelegation({ prompt: "New queued work", botId: scout.id }, device.id),
+      restored.createDelegation({ prompt: "New queued work", botId: scout.id }, device.id, "owner"),
     )
     expect((await Effect.runPromise(restored.requestCancellation(fresh.id))).status).toBe(
       "cancelled",
     )
 
     const dispatched = await Effect.runPromise(
-      restored.createDelegation({ prompt: "Lost acceptance", botId: scout.id }, device.id),
+      restored.createDelegation({ prompt: "Lost acceptance", botId: scout.id }, device.id, "owner"),
     )
     await Effect.runPromise(restored.assignTask(dispatched.id))
     Effect.runSync(restored.markTaskDispatched(dispatched.id))
