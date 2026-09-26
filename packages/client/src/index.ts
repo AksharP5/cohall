@@ -10,6 +10,8 @@ import {
   PairingCredential,
   PairingResult,
   Task,
+  TaskInbox,
+  TaskInboxItem,
   TaskTrace,
   ThreadContext,
   UsageSummary,
@@ -47,6 +49,8 @@ export interface Interface {
   readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, RelayClientError>
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<Task, RelayClientError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
+  readonly inbox: () => Effect.Effect<TaskInbox, RelayClientError>
+  readonly acknowledgeCompletion: (taskId: TaskId) => Effect.Effect<TaskInboxItem, RelayClientError>
   readonly traceTask: (taskId: TaskId) => Effect.Effect<TaskTrace, RelayClientError>
   readonly cancelTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
   readonly threadContext: (threadId: ThreadId) => Effect.Effect<ThreadContext, RelayClientError>
@@ -179,6 +183,14 @@ export const make = (options: RelayClientOptions): Interface => {
       }),
     getTask: (taskId) =>
       request("RelayClient.getTask", `/api/tasks/${encodeURIComponent(taskId)}`, Task),
+    inbox: () => request("RelayClient.inbox", "/api/inbox", TaskInbox),
+    acknowledgeCompletion: (taskId) =>
+      request(
+        "RelayClient.acknowledgeCompletion",
+        `/api/inbox/${encodeURIComponent(taskId)}/ack`,
+        TaskInboxItem,
+        { method: "POST" },
+      ),
     traceTask: (taskId) =>
       request("RelayClient.traceTask", `/api/tasks/${encodeURIComponent(taskId)}/trace`, TaskTrace),
     cancelTask: (taskId) =>

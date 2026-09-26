@@ -718,8 +718,17 @@ export const runRelay = async (): Promise<void> => {
           input.threadId === undefined || input.provider === "grok-bot"
             ? undefined
             : yield* store.sessionFor(input.threadId, target, input.provider ?? "codex")
-        const task = yield* store.createDelegation(input, target, sourceDeviceId, providerSessionId)
+        const task = yield* store.createDelegation(input, target, principal, providerSessionId)
         return json(yield* Effect.tryPromise(() => dispatch(task)), 201)
+      }
+      if (url.pathname === "/api/inbox" && request.method === "GET") {
+        return json(yield* store.inboxFor(principal))
+      }
+      const acknowledge = url.pathname.match(/^\/api\/inbox\/([^/]+)\/ack$/)
+      if (request.method === "POST" && acknowledge?.[1] !== undefined) {
+        return json(
+          yield* store.acknowledgeCompletion(yield* pathId(TaskId, acknowledge[1]), principal),
+        )
       }
       const task = url.pathname.match(/^\/api\/tasks\/([^/]+)$/)
       if (request.method === "GET" && task?.[1] !== undefined) {

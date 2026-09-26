@@ -31,11 +31,13 @@ it("assigns queued followups with the session completed before a restart", async
       lastSeenAt: now(),
     })
     await Effect.runPromise(store.upsertDevice(device))
-    const first = await Effect.runPromise(store.createDelegation({ prompt: "Start" }, device.id))
+    const first = await Effect.runPromise(
+      store.createDelegation({ prompt: "Start" }, device.id, "owner"),
+    )
     await Effect.runPromise(store.assignTask(first.id))
     await Effect.runPromise(store.acceptTask(first.id, device.id))
     const followup = await Effect.runPromise(
-      store.createDelegation({ prompt: "Continue", threadId: first.threadId }, device.id),
+      store.createDelegation({ prompt: "Continue", threadId: first.threadId }, device.id, "owner"),
     )
     expect((await Effect.runPromise(store.assignTask(followup.id))).status).toBe("queued")
     await Effect.runPromise(store.finishTask(first.id, device.id, "Answer", "completed-session"))
@@ -70,7 +72,8 @@ it("attributes full-worker clients after registration and prefers a peer for del
     }
     expect(client.session.deviceId).toBe(worker.session.deviceId)
     const principal = await Effect.runPromise(store.authenticateSession(client.token, "client"))
-    expect(principal?.deviceId).toBe(worker.session.deviceId)
+    if (principal === undefined) throw new Error("Expected authenticated client")
+    expect(principal.deviceId).toBe(worker.session.deviceId)
     const peer = Device.make({
       id: makeDeviceId(),
       name: "b-peer",
@@ -86,18 +89,18 @@ it("attributes full-worker clients after registration and prefers a peer for del
     })
     await Effect.runPromise(store.upsertDevice(peer))
     const early = await Effect.runPromise(
-      store.createDelegation({ prompt: "Before registration" }, peer.id, principal?.deviceId),
+      store.createDelegation({ prompt: "Before registration" }, peer.id, principal),
     )
     expect(early.sourceDeviceId).toBeUndefined()
     await Effect.runPromise(
       store.upsertDevice({ ...peer, id: worker.session.deviceId, name: "a-source" }),
     )
     const { targetDeviceId: target } = await runtime.runPromise(
-      resolveDelegation({ prompt: "Work on a peer" }, principal?.deviceId),
+      resolveDelegation({ prompt: "Work on a peer" }, principal.deviceId),
     )
     expect(target).toBe(peer.id)
     const task = await Effect.runPromise(
-      store.createDelegation({ prompt: "After registration" }, target, principal?.deviceId),
+      store.createDelegation({ prompt: "After registration" }, target, principal),
     )
     expect(task.sourceDeviceId).toBe(worker.session.deviceId)
     expect((await Effect.runPromise(store.threadContext(task.threadId))).messages[0]).toMatchObject(
@@ -112,6 +115,126 @@ it("attributes full-worker clients after registration and prefers a peer for del
     )
     const clientOnly = await Effect.runPromise(store.exchangePairing(clientOnlyPairing.token))
     expect(clientOnly.credentials[0]?.session.deviceId).toBeUndefined()
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+it("keeps completion inboxes private to each client and retains acknowledgements", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-inbox-"))
+  const databasePath = join(directory, "relay.db")
+  const original = ManagedRuntime.make(RelayStore.layer(databasePath))
+  let restored: typeof original | undefined
+  try {
+    const store = await original.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "inbox-target",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const pair = async (label: string) => {
+      const invite = await Effect.runPromise(store.createPairing({ label, roles: ["client"] }))
+      const joined = await Effect.runPromise(store.exchangePairing(invite.token))
+      const session = joined.credentials[0]?.session
+      if (session === undefined) throw new Error("Expected client session")
+      return session
+    }
+    const firstClient = await pair("First")
+    const secondClient = await pair("Second")
+    const completed = await Effect.runPromise(
+      store.createDelegation({ prompt: "Find the cause" }, device.id, firstClient),
+    )
+    const pending = await Effect.runPromise(
+      store.createDelegation({ prompt: "Still running" }, device.id, firstClient),
+    )
+    const failed = await Effect.runPromise(
+      store.createDelegation({ prompt: "Other client's work" }, device.id, secondClient),
+    )
+    const ownerTask = await Effect.runPromise(
+      store.createDelegation({ prompt: "Owner's work" }, device.id, "owner"),
+    )
+    await Effect.runPromise(store.finishTask(completed.id, device.id, "😀".repeat(600)))
+    await Effect.runPromise(store.failTask(failed.id, device.id, "Provider failed"))
+    await Effect.runPromise(store.requestCancellation(ownerTask.id))
+
+    expect(await Effect.runPromise(store.inboxFor(firstClient))).toEqual({
+      items: [
+        expect.objectContaining({
+          id: completed.id,
+          status: "completed",
+          promptPreview: "Find the cause",
+          resultPreview: "😀".repeat(512),
+        }),
+      ],
+      hasMore: false,
+    })
+    expect((await Effect.runPromise(store.inboxFor(secondClient))).items[0]?.id).toBe(failed.id)
+    expect((await Effect.runPromise(store.inboxFor("owner"))).items[0]?.id).toBe(ownerTask.id)
+    expect(pending.status).toBe("queued")
+    await expect(
+      Effect.runPromise(store.acknowledgeCompletion(completed.id, secondClient)),
+    ).rejects.toMatchObject({ message: `Unknown inbox task ${completed.id}` })
+    await Effect.runPromise(store.acknowledgeCompletion(completed.id, firstClient))
+    await Effect.runPromise(store.acknowledgeCompletion(completed.id, firstClient))
+    await original.dispose()
+
+    restored = ManagedRuntime.make(RelayStore.layer(databasePath))
+    const recovered = await restored.runPromise(RelayStore.Service)
+    expect(await Effect.runPromise(recovered.inboxFor(firstClient))).toEqual({
+      items: [],
+      hasMore: false,
+    })
+    expect((await Effect.runPromise(recovered.inboxFor(secondClient))).items[0]?.id).toBe(failed.id)
+  } finally {
+    await original.dispose()
+    await restored?.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it("reveals additional completions as older inbox entries are acknowledged", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "inbox-target",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    for (let index = 0; index < 21; index += 1) {
+      const task = await Effect.runPromise(
+        store.createDelegation({ prompt: `Task ${index}` }, device.id, "owner"),
+      )
+      await Effect.runPromise(store.finishTask(task.id, device.id, "Done"))
+    }
+    const firstPage = await Effect.runPromise(store.inboxFor("owner"))
+    expect(firstPage.items).toHaveLength(20)
+    expect(firstPage.hasMore).toBe(true)
+    const first = firstPage.items[0]
+    if (first === undefined) throw new Error("Expected an inbox task")
+    await Effect.runPromise(store.acknowledgeCompletion(first.id, "owner"))
+    const nextPage = await Effect.runPromise(store.inboxFor("owner"))
+    expect(nextPage.items).toHaveLength(20)
+    expect(nextPage.hasMore).toBe(false)
+    expect(nextPage.items).not.toContainEqual(expect.objectContaining({ id: first.id }))
   } finally {
     await runtime.dispose()
   }
@@ -151,6 +274,7 @@ it("bounds outstanding work, serial assignment, and thread context", async () =>
         return yield* store.createDelegation(
           { prompt: "x".repeat(131_072), context: "y".repeat(131_072) },
           deviceId,
+          "owner",
         )
       }),
     )
@@ -163,6 +287,7 @@ it("bounds outstanding work, serial assignment, and thread context", async () =>
             return yield* store.createDelegation(
               { threadId: first.threadId, prompt: `queued-${index}` },
               deviceId,
+              "owner",
             )
           }),
         ),
@@ -172,7 +297,7 @@ it("bounds outstanding work, serial assignment, and thread context", async () =>
       run(
         Effect.gen(function* () {
           const store = yield* RelayStore.Service
-          return yield* store.createDelegation({ prompt: "overflow" }, deviceId)
+          return yield* store.createDelegation({ prompt: "overflow" }, deviceId, "owner")
         }),
       ),
     ).rejects.toMatchObject({ message: expect.stringContaining("outstanding task limit") })
@@ -379,7 +504,11 @@ it("prunes the oldest terminal task history", async () => {
         await run(
           Effect.gen(function* () {
             const store = yield* RelayStore.Service
-            const task = yield* store.createDelegation({ prompt: `task-${index}` }, deviceId)
+            const task = yield* store.createDelegation(
+              { prompt: `task-${index}` },
+              deviceId,
+              "owner",
+            )
             yield* store.assignTask(task.id)
             yield* store.acceptTask(task.id, deviceId)
             return yield* store.finishTask(task.id, deviceId, `result-${index}`)
@@ -454,6 +583,7 @@ it("summarizes retained work and runs typed upgrades across registered devices",
         const completed = yield* store.createDelegation(
           { prompt: "completed", provider: "codex" },
           serverId,
+          "owner",
         )
         yield* store.assignTask(completed.id)
         yield* store.acceptTask(completed.id, serverId)
@@ -461,6 +591,7 @@ it("summarizes retained work and runs typed upgrades across registered devices",
         return yield* store.createDelegation(
           { prompt: "queued", provider: "claude-code" },
           laptopId,
+          "owner",
         )
       }),
     )

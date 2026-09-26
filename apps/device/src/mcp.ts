@@ -5,7 +5,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { Effect } from "effect"
 import * as z from "zod/v4"
 import type { ClientConfiguration } from "./config.ts"
-import { createDelegation, listBots, taskResult, threadContext, waitForTask } from "./delegation.ts"
+import {
+  acknowledgedTaskResult,
+  createDelegation,
+  listBots,
+  taskResult,
+  threadContext,
+  waitForTask,
+} from "./delegation.ts"
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -102,12 +109,33 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
           ...(workspace === undefined ? {} : { workspace }),
         }),
       )
-      return output(
-        taskResult(
-          wait ? await Effect.runPromise(waitForTask(client, task, timeout_seconds)) : task,
-        ),
-      )
+      const completed = wait
+        ? await Effect.runPromise(waitForTask(client, task, timeout_seconds))
+        : task
+      return output(wait ? await acknowledgedTaskResult(client, completed) : taskResult(completed))
     },
+  )
+
+  server.registerTool(
+    "completion_inbox",
+    {
+      title: "List completed work",
+      description:
+        "List up to 20 unacknowledged completed tasks sent by this client. hasMore signals additional entries. Use task_status for a full result, then acknowledge the task after handling it.",
+      inputSchema: {},
+    },
+    async () => output(await Effect.runPromise(client.inbox())),
+  )
+
+  server.registerTool(
+    "acknowledge_completion",
+    {
+      title: "Acknowledge completed work",
+      description: "Remove a handled task from this client's completion inbox.",
+      inputSchema: { task_id: z.string().uuid() },
+    },
+    async ({ task_id }) =>
+      output(await Effect.runPromise(client.acknowledgeCompletion(TaskId.make(task_id)))),
   )
 
   server.registerTool(

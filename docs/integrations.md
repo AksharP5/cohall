@@ -4,6 +4,12 @@ CLI plus skill is the recommended integration. MCP is available for harnesses
 that prefer native tool discovery. Both create the same relay tasks; use one
 entry point per task.
 
+For queued work, `cohall inbox` or the MCP `completion_inbox` tool lists results
+the sending client has not handled. Fetch a full result with `cohall status
+<task-id>` or `task_status`, then use `cohall inbox ack <task-id>` or
+`acknowledge_completion` to remove it from the inbox. A synchronous `delegate`
+call acknowledges its result automatically.
+
 ## CLI plus skill
 
 ```bash

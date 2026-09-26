@@ -11,6 +11,8 @@ import {
   Provider,
   Task,
   TaskId,
+  TaskInbox,
+  TaskInboxItem,
   TaskStatus,
   TaskTrace,
   TaskTraceEvent,
@@ -91,6 +93,8 @@ interface TaskRow {
   readonly bot_id: string | null
   readonly status: string
   readonly source_device_id: string | null
+  readonly requester_id: string | null
+  readonly completion_seen_at: string | null
   readonly target_device_id: string
   readonly parent_task_id: string | null
   readonly workspace: string | null
@@ -101,6 +105,19 @@ interface TaskRow {
   readonly updated_at: string
   readonly started_at: string | null
   readonly completed_at: string | null
+}
+
+interface InboxRow {
+  readonly id: string
+  readonly thread_id: string
+  readonly target_device_id: string
+  readonly provider: string
+  readonly bot_id: string | null
+  readonly status: string
+  readonly prompt_preview: string
+  readonly result_preview: string | null
+  readonly error_preview: string | null
+  readonly completed_at: string
 }
 
 interface TaskTraceEventRow {
@@ -176,9 +193,16 @@ export interface Interface {
   readonly createDelegation: (
     input: CreateTaskInput,
     targetDeviceId: DeviceId,
-    sourceDeviceId?: DeviceId,
+    principal: AuthSession | "owner",
     providerSessionId?: string,
   ) => Effect.Effect<Task, PersistenceError>
+  readonly inboxFor: (
+    principal: AuthSession | "owner",
+  ) => Effect.Effect<TaskInbox, PersistenceError>
+  readonly acknowledgeCompletion: (
+    taskId: TaskId,
+    principal: AuthSession | "owner",
+  ) => Effect.Effect<TaskInboxItem, PersistenceError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
   readonly traceTask: (taskId: TaskId) => Effect.Effect<TaskTrace, PersistenceError>
   readonly threadContext: (threadId: ThreadId) => Effect.Effect<ThreadContext, PersistenceError>
@@ -331,6 +355,20 @@ const taskFromRow = (row: TaskRow): Effect.Effect<Task, PersistenceError> =>
     ...(row.error === null ? {} : { error: row.error }),
     ...(row.started_at === null ? {} : { startedAt: row.started_at }),
     ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
+  })
+
+const inboxItemFromRow = (row: InboxRow): Effect.Effect<TaskInboxItem, PersistenceError> =>
+  decode("RelayStore.decodeInboxItem", TaskInboxItem, {
+    id: row.id,
+    threadId: row.thread_id,
+    targetDeviceId: row.target_device_id,
+    provider: row.provider,
+    ...(row.bot_id === null ? {} : { botId: row.bot_id }),
+    status: row.status,
+    promptPreview: row.prompt_preview,
+    completedAt: row.completed_at,
+    ...(row.result_preview === null ? {} : { resultPreview: row.result_preview }),
+    ...(row.error_preview === null ? {} : { errorPreview: row.error_preview }),
   })
 
 const operationFromRow = (
@@ -508,6 +546,12 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   const queryTask = (taskId: TaskId): TaskRow | null =>
     db.query<TaskRow, [string]>("SELECT * FROM tasks WHERE id = ?").get(taskId)
 
+  const inboxColumns = `id, thread_id, target_device_id, provider, bot_id, status,
+    substr(prompt, 1, 160) AS prompt_preview,
+    substr(result, 1, 512) AS result_preview,
+    substr(error, 1, 512) AS error_preview,
+    COALESCE(completed_at, updated_at) AS completed_at`
+
   const queryOperation = (operationId: OperationId): DeviceOperationRow | null =>
     db
       .query<DeviceOperationRow, [string]>("SELECT * FROM device_operations WHERE id = ?")
@@ -527,6 +571,58 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       )
     }
     return yield* taskFromRow(row)
+  })
+
+  const inboxFor = Effect.fn("RelayStore.inboxFor")(function* (principal: AuthSession | "owner") {
+    const requesterId = principal === "owner" ? "owner" : principal.id
+    const rows = yield* Effect.try({
+      try: () =>
+        db
+          .query<InboxRow, [string]>(
+            `SELECT ${inboxColumns} FROM tasks WHERE requester_id = ? AND completion_seen_at IS NULL
+             AND status IN ('completed', 'failed', 'cancelled')
+             ORDER BY completed_at ASC, id ASC LIMIT 21`,
+          )
+          .all(requesterId),
+      catch: operationError("RelayStore.inboxFor"),
+    })
+    return TaskInbox.make({
+      items: yield* Effect.forEach(rows.slice(0, 20), inboxItemFromRow),
+      hasMore: rows.length > 20,
+    })
+  })
+
+  const acknowledgeCompletion = Effect.fn("RelayStore.acknowledgeCompletion")(function* (
+    taskId: TaskId,
+    principal: AuthSession | "owner",
+  ) {
+    const requesterId = principal === "owner" ? "owner" : principal.id
+    const row = yield* Effect.try({
+      try: () =>
+        db
+          .query<InboxRow, [string, string]>(
+            `SELECT ${inboxColumns} FROM tasks WHERE id = ? AND requester_id = ?
+             AND status IN ('completed', 'failed', 'cancelled')`,
+          )
+          .get(taskId, requesterId),
+      catch: operationError("RelayStore.acknowledgeCompletion.read"),
+    })
+    if (row === null) {
+      return yield* new PersistenceError({
+        operation: "RelayStore.acknowledgeCompletion",
+        message: `Unknown inbox task ${taskId}`,
+      })
+    }
+    yield* Effect.try({
+      try: () =>
+        db
+          .query(
+            "UPDATE tasks SET completion_seen_at = COALESCE(completion_seen_at, ?) WHERE id = ?",
+          )
+          .run(now(), taskId),
+      catch: operationError("RelayStore.acknowledgeCompletion.write"),
+    })
+    return yield* inboxItemFromRow(row)
   })
 
   const traceTask = Effect.fn("RelayStore.traceTask")(function* (taskId: TaskId) {
@@ -1061,9 +1157,11 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   const createDelegation = Effect.fn("RelayStore.createDelegation")(function* (
     input: CreateTaskInput,
     targetDeviceId: DeviceId,
-    boundDeviceId?: DeviceId,
+    principal: AuthSession | "owner",
     providerSessionId?: string,
   ) {
+    const requesterId = principal === "owner" ? "owner" : principal.id
+    const boundDeviceId = principal === "owner" ? undefined : principal.deviceId
     const sourceDeviceId = yield* Effect.try({
       try: () =>
         boundDeviceId === undefined ||
@@ -1137,9 +1235,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           db.query(
             `INSERT INTO tasks (
               id, thread_id, prompt, context, provider, status, source_device_id,
-              target_device_id, parent_task_id, workspace, provider_session_id, bot_id,
-              created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              requester_id, target_device_id, parent_task_id, workspace,
+              provider_session_id, bot_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             task.id,
             task.threadId,
@@ -1148,6 +1246,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             task.provider,
             task.status,
             task.sourceDeviceId ?? null,
+            requesterId,
             task.targetDeviceId,
             task.parentTaskId ?? null,
             task.workspace ?? null,
@@ -1718,6 +1817,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
     createDelegation,
     getTask,
+    inboxFor,
+    acknowledgeCompletion,
     traceTask,
     threadContext,
     pendingTasksFor,
@@ -1804,6 +1905,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
           prompt TEXT NOT NULL, context TEXT, provider TEXT NOT NULL, bot_id TEXT, status TEXT NOT NULL,
           source_device_id TEXT REFERENCES devices(id),
+          requester_id TEXT, completion_seen_at TEXT,
           target_device_id TEXT NOT NULL REFERENCES devices(id), parent_task_id TEXT,
           workspace TEXT, provider_session_id TEXT, result TEXT, error TEXT,
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
@@ -1857,6 +1959,14 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
       if (!taskColumns.some((column) => column.name === "bot_id")) {
         db.exec("ALTER TABLE tasks ADD COLUMN bot_id TEXT")
       }
+      if (!taskColumns.some((column) => column.name === "requester_id")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN requester_id TEXT")
+      }
+      if (!taskColumns.some((column) => column.name === "completion_seen_at")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN completion_seen_at TEXT")
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS tasks_inbox
+        ON tasks(requester_id, completion_seen_at, completed_at)`)
       if (!taskColumns.some((column) => column.name === "dispatched_at")) {
         db.transaction(() => {
           db.exec("ALTER TABLE tasks ADD COLUMN dispatched_at TEXT")

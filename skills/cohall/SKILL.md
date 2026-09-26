@@ -82,6 +82,11 @@ When a coding agent running as a Cohall task delegates again, `COHALL_THREAD_ID`
 and `COHALL_TASK_ID` carry its thread and parent task. Pass `--thread` and
 `--parent` explicitly from a Grok Bot using the IDs in its handoff.
 
+For work sent with `--no-wait`, check `cohall inbox` when returning to the task.
+Read the full result with `cohall status <task-id>`, use it in the current work,
+then run `cohall inbox ack <task-id>`. Results that arrive after a wait times
+out appear in the same inbox.
+
 ## Message named bots
 
 1. Run `cohall bots` and choose a listed target. Use its qualified target when

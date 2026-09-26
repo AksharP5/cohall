@@ -247,6 +247,26 @@ export const Task = Schema.Struct({
 }).check(Schema.makeFilter(validBotTarget))
 export interface Task extends Schema.Schema.Type<typeof Task> {}
 
+export const TaskInboxItem = Schema.Struct({
+  id: TaskId,
+  threadId: ThreadId,
+  targetDeviceId: DeviceId,
+  provider: Provider,
+  botId: Schema.optionalKey(BotId),
+  status: Schema.Literals(["completed", "failed", "cancelled"]),
+  promptPreview: optionalText(320),
+  resultPreview: Schema.optionalKey(optionalText(1024)),
+  errorPreview: Schema.optionalKey(optionalText(1024)),
+  completedAt: Timestamp,
+})
+export interface TaskInboxItem extends Schema.Schema.Type<typeof TaskInboxItem> {}
+
+export const TaskInbox = Schema.Struct({
+  items: boundedArray(TaskInboxItem, 20),
+  hasMore: Schema.Boolean,
+})
+export interface TaskInbox extends Schema.Schema.Type<typeof TaskInbox> {}
+
 export const taskSlot = (task: Pick<Task, "provider" | "botId">): string =>
   task.provider === "grok-bot" ? `grok-bot:${task.botId}` : "cli"
 
