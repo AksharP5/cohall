@@ -9,6 +9,7 @@ import {
   type Bot,
   type Provider,
   type DeviceOperation,
+  type InputAttachment,
   type OperationId,
   type Task,
   type TaskId,
@@ -24,6 +25,7 @@ import type { DeviceConfiguration } from "./config.ts"
 import { discoverGrokBots, runGrokBot } from "./grok-bot.ts"
 import { cleanupBotReply } from "./bot-replies.ts"
 import { upgrade, type UpgradeOptions, type UpgradeResult } from "./upgrade.ts"
+import { prepareTaskFiles, type TaskFiles } from "./task-attachments.ts"
 
 const maxQueuedRelayMessages = 8
 
@@ -34,8 +36,9 @@ export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnect
 
 interface State {
   socket: WebSocket | undefined
+  supportsAttachments: boolean
   processing: Promise<void>
-  readonly terminal: Map<TaskId, string>
+  readonly terminal: Map<TaskId, SocketEvent>
   readonly queue: Array<Task>
   readonly sessions: Map<string, string>
   readonly tasks: Map<TaskId, { readonly task: Task; readonly controller: AbortController }>
@@ -75,6 +78,9 @@ const capabilities = (providers: ReadonlyArray<Provider>): Device["capabilities"
         ? "Named bots through this computer's local Grok Bot gateway"
         : `${providerLabel(provider)} executable detected; authentication is checked when work starts`,
   }))
+  if (providers.some((provider) => provider !== "grok-bot")) {
+    values.push({ id: "task-attachments", label: "Task file attachments" })
+  }
   if (
     Providers.findExecutable("google-chrome") !== undefined ||
     Providers.findExecutable("chromium") !== undefined ||
@@ -197,7 +203,7 @@ export const openAllowedWorkspace = async (
   }
 }
 
-const promptFor = (task: Task, deviceName: string): string => {
+const promptFor = (task: Task, deviceName: string, files?: TaskFiles): string => {
   const context =
     task.context === undefined
       ? ""
@@ -207,6 +213,18 @@ const promptFor = (task: Task, deviceName: string): string => {
     "Complete the delegated task using this device's local workspace, tools, credentials, and signed-in services.",
     "Never read, reveal, copy, or use Cohall configuration files or Cohall authentication tokens.",
     "Return a concise, complete result with the evidence the sending agent needs.",
+    ...(files === undefined
+      ? []
+      : [
+          ...(files.inputNames.length === 0
+            ? []
+            : [
+                `Input directory: ${files.input}`,
+                `Input file names: ${files.inputNames.join(", ")}`,
+              ]),
+          `Output directory: ${files.output}`,
+          "To return files, write at most 2 regular files of up to 256 KiB each in the output directory and mention them in your result.",
+        ]),
     `\nTask:\n${task.prompt}${context}`,
   ].join("\n")
 }
@@ -217,11 +235,28 @@ const send = (state: State, event: SocketEvent): void => {
   }
 }
 
+const omitOutputFiles = (event: SocketEvent, note: string): SocketEvent => {
+  if (event._tag !== "TaskFinished" || (event.attachments?.length ?? 0) === 0) {
+    return event
+  }
+  const message = `\n\n[Output files omitted: ${note}]`
+  return SocketEvent.make({
+    _tag: "TaskFinished",
+    taskId: event.taskId,
+    result: `${event.result.slice(0, 131_072 - message.length)}${message}`,
+    ...(event.providerSessionId === undefined
+      ? {}
+      : { providerSessionId: event.providerSessionId }),
+  })
+}
+
 const sendTerminal = (state: State, taskId: TaskId, event: SocketEvent): void => {
-  const payload = JSON.stringify(event)
-  state.terminal.set(taskId, payload)
+  const safeEvent = state.supportsAttachments
+    ? event
+    : omitOutputFiles(event, "the relay does not support attachments. Upgrade the relay and retry.")
+  state.terminal.set(taskId, safeEvent)
   if (state.socket?.readyState === WebSocket.OPEN) {
-    state.socket.send(payload)
+    state.socket.send(JSON.stringify(safeEvent))
   }
 }
 
@@ -295,57 +330,99 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
   state.tasks.set(task.id, { task, controller })
   send(state, SocketEvent.make({ _tag: "TaskAccepted", taskId: task.id }))
 
-  const workflow: Effect.Effect<Providers.RunResult, Providers.ProviderError> = Effect.gen(
-    function* () {
-      if (task.provider === "grok-bot") {
-        return yield* Effect.tryPromise({
-          try: (signal) => runGrokBot(configuration.grokGateway, task, signal),
-          catch: (cause) =>
-            new Providers.ProviderRunError({
-              provider: task.provider,
-              message: cause instanceof Error ? cause.message : String(cause),
-            }),
-        })
-      }
-      const workspace = yield* Effect.tryPromise({
-        try: () => openAllowedWorkspace(configuration, task.workspace),
+  const workflow: Effect.Effect<
+    Providers.RunResult & { readonly attachments?: ReadonlyArray<InputAttachment> },
+    Providers.ProviderError
+  > = Effect.gen(function* () {
+    if (task.provider === "grok-bot") {
+      return yield* Effect.tryPromise({
+        try: (signal) => runGrokBot(configuration.grokGateway, task, signal),
         catch: (cause) =>
           new Providers.ProviderRunError({
             provider: task.provider,
             message: cause instanceof Error ? cause.message : String(cause),
           }),
       })
+    }
+    const provider = task.provider
+    if (!state.supportsAttachments && (task.inputAttachmentNames?.length ?? 0) > 0) {
+      return yield* new Providers.ProviderRunError({
+        provider,
+        message: "The relay does not support task file attachments",
+      })
+    }
+    const workspace = yield* Effect.tryPromise({
+      try: () => openAllowedWorkspace(configuration, task.workspace),
+      catch: (cause) =>
+        new Providers.ProviderRunError({
+          provider,
+          message: cause instanceof Error ? cause.message : String(cause),
+        }),
+    })
+    return yield* Effect.gen(function* () {
+      const files = state.supportsAttachments
+        ? yield* Effect.tryPromise({
+            try: (signal) =>
+              prepareTaskFiles(configuration, task.id, task.inputAttachmentNames ?? [], signal),
+            catch: (cause) =>
+              new Providers.ProviderRunError({
+                provider,
+                message: cause instanceof Error ? cause.message : String(cause),
+              }),
+          })
+        : undefined
       const sessionId = task.providerSessionId ?? state.sessions.get(sessionKey(task))
       return yield* Providers.run({
-        provider: task.provider,
+        provider,
         threadId: task.threadId,
         taskId: task.id,
-        prompt: promptFor(task, configuration.name),
+        prompt: promptFor(task, configuration.name, files),
         cwd: workspace.cwd,
         beforeSpawn: workspace.validate,
         ...(sessionId === undefined ? {} : { sessionId }),
         ...(configuration.model === undefined ? {} : { model: configuration.model }),
         ...(configuration.sandbox === undefined ? {} : { sandbox: configuration.sandbox }),
-      }).pipe(Effect.ensuring(Effect.promise(() => workspace.close().catch(() => undefined))))
-    },
-  )
+      }).pipe(
+        Effect.flatMap((result) =>
+          files === undefined
+            ? Effect.succeed(result)
+            : Effect.tryPromise({
+                try: async () => ({ ...result, attachments: await files.collectOutputs() }),
+                catch: (cause) =>
+                  new Providers.ProviderRunError({
+                    provider,
+                    message: cause instanceof Error ? cause.message : String(cause),
+                  }),
+              }),
+        ),
+        Effect.ensuring(files === undefined ? Effect.void : Effect.promise(() => files.cleanup())),
+      )
+    }).pipe(Effect.ensuring(Effect.promise(() => workspace.close().catch(() => undefined))))
+  })
 
   void Effect.runPromise(workflow, { signal: controller.signal })
     .then((result) => {
+      const finished = SocketEvent.make({
+        _tag: "TaskFinished",
+        taskId: task.id,
+        result: result.result,
+        ...(result.sessionId === undefined ? {} : { providerSessionId: result.sessionId }),
+        ...(result.attachments === undefined || result.attachments.length === 0
+          ? {}
+          : { attachments: result.attachments }),
+      })
+      const bounded =
+        Buffer.byteLength(JSON.stringify(finished)) > maxSocketPayloadBytes
+          ? omitOutputFiles(
+              finished,
+              "the combined result exceeded the 1 MiB transfer limit. Shorten the result or files and retry.",
+            )
+          : finished
       if (result.sessionId !== undefined) {
         state.sessions.set(sessionKey(task), result.sessionId)
       }
       remember(state, task.id)
-      sendTerminal(
-        state,
-        task.id,
-        SocketEvent.make({
-          _tag: "TaskFinished",
-          taskId: task.id,
-          result: result.result,
-          ...(result.sessionId === undefined ? {} : { providerSessionId: result.sessionId }),
-        }),
-      )
+      sendTerminal(state, task.id, bounded)
     })
     .catch((cause: unknown) => {
       remember(state, task.id)
@@ -585,6 +662,7 @@ const connect = (
                 }).pipe(Effect.flatMap(decodeSocketEvent)),
               )
               if (event._tag === "Connected") {
+                state.supportsAttachments = event.taskAttachments === true
                 state.socket = socket
                 socket.send(
                   JSON.stringify(
@@ -598,8 +676,15 @@ const connect = (
                     }),
                   ),
                 )
-                for (const payload of state.terminal.values()) {
-                  socket.send(payload)
+                for (const [taskId, pending] of state.terminal) {
+                  const safeEvent = state.supportsAttachments
+                    ? pending
+                    : omitOutputFiles(
+                        pending,
+                        "the relay does not support attachments. Upgrade the relay and retry.",
+                      )
+                  state.terminal.set(taskId, safeEvent)
+                  socket.send(JSON.stringify(safeEvent))
                 }
                 for (const payload of state.operationTerminal.values()) {
                   socket.send(payload)
@@ -657,6 +742,7 @@ export const runDaemon = (
 ): Effect.Effect<void, DeviceConnectionError> => {
   const state: State = {
     socket: undefined,
+    supportsAttachments: false,
     processing: Promise.resolve(),
     terminal: new Map(),
     queue: [],

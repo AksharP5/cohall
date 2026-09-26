@@ -10,10 +10,14 @@ import {
   PairingCredential,
   PairingResult,
   Task,
+  TaskAttachment,
+  maxAttachmentBytes,
   TaskTrace,
   ThreadContext,
   UsageSummary,
   type AuthSessionId,
+  type AttachmentDirection,
+  type AttachmentName as AttachmentNameType,
   type DeviceId,
   type OperationId,
   type TaskId,
@@ -47,6 +51,14 @@ export interface Interface {
   readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, RelayClientError>
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<Task, RelayClientError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
+  readonly listAttachments: (
+    taskId: TaskId,
+  ) => Effect.Effect<ReadonlyArray<TaskAttachment>, RelayClientError>
+  readonly readAttachment: (
+    taskId: TaskId,
+    name: AttachmentNameType,
+    direction?: AttachmentDirection,
+  ) => Effect.Effect<Uint8Array, RelayClientError>
   readonly traceTask: (taskId: TaskId) => Effect.Effect<TaskTrace, RelayClientError>
   readonly cancelTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
   readonly threadContext: (threadId: ThreadId) => Effect.Effect<ThreadContext, RelayClientError>
@@ -173,12 +185,86 @@ export const make = (options: RelayClientOptions): Interface => {
         { method: "POST" },
       ),
     createTask: (input) =>
-      request("RelayClient.createTask", "/api/tasks", Task, {
-        method: "POST",
-        body: JSON.stringify(input),
+      Effect.gen(function* () {
+        if ((input.attachments?.length ?? 0) > 0) {
+          const health = yield* request(
+            "RelayClient.attachmentSupport",
+            "/api/health",
+            Schema.Struct({ taskAttachments: Schema.optionalKey(Schema.Boolean) }),
+          )
+          if (health.taskAttachments !== true) {
+            return yield* new RelayRequestError({
+              operation: "RelayClient.createTask",
+              message: "Upgrade the Cohall relay before sending file attachments",
+            })
+          }
+        }
+        return yield* request("RelayClient.createTask", "/api/tasks", Task, {
+          method: "POST",
+          body: JSON.stringify(input),
+        })
       }),
     getTask: (taskId) =>
       request("RelayClient.getTask", `/api/tasks/${encodeURIComponent(taskId)}`, Task),
+    listAttachments: (taskId) =>
+      request(
+        "RelayClient.listAttachments",
+        `/api/tasks/${encodeURIComponent(taskId)}/attachments`,
+        Schema.Array(TaskAttachment),
+      ),
+    readAttachment: (taskId, name, direction) =>
+      Effect.tryPromise({
+        try: async (signal) => {
+          const operation = "RelayClient.readAttachment"
+          const response = await fetch(
+            `${baseUrl}/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(name)}${direction === undefined ? "" : `?direction=${direction}`}`,
+            {
+              headers: { authorization: `Bearer ${options.token}` },
+              signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+            },
+          )
+          if (!response.ok) {
+            throw new RelayRequestError({
+              operation,
+              message: await responseMessage(response, operation),
+              status: response.status,
+            })
+          }
+          if (response.body === null) {
+            throw new RelayDecodeError({
+              operation,
+              message: "Relay returned an empty attachment response",
+            })
+          }
+          const reader = response.body.getReader()
+          const chunks: Array<Uint8Array> = []
+          let size = 0
+          while (true) {
+            const chunk = await reader.read()
+            if (chunk.done) break
+            size += chunk.value.byteLength
+            if (size > maxAttachmentBytes) {
+              await reader.cancel()
+              throw new RelayDecodeError({ operation, message: "Attachment exceeded 256 KiB" })
+            }
+            chunks.push(chunk.value)
+          }
+          const bytes = new Uint8Array(size)
+          let offset = 0
+          for (const chunk of chunks) {
+            bytes.set(chunk, offset)
+            offset += chunk.byteLength
+          }
+          return bytes
+        },
+        catch: (cause) =>
+          cause instanceof RelayRequestError || cause instanceof RelayDecodeError
+            ? cause
+            : new RelayRequestError({
+                operation: "RelayClient.readAttachment",
+                message: cause instanceof Error ? cause.message : String(cause),
+              }),
+      }),
     traceTask: (taskId) =>
       request("RelayClient.traceTask", `/api/tasks/${encodeURIComponent(taskId)}/trace`, TaskTrace),
     cancelTask: (taskId) =>

@@ -1,6 +1,8 @@
 import { RelayClient } from "@cohall/client"
 import {
   AuthSessionId,
+  AttachmentName,
+  AttachmentDirection,
   DeviceId,
   OperationId,
   Provider,
@@ -44,6 +46,7 @@ import { guidedSetupInput, joinRelay, terminalPrompter, type Prompter } from "./
 import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 import { installDeviceService } from "./service.ts"
 import { deviceVersionWarning, normalizeUpgradeTarget, upgrade } from "./upgrade.ts"
+import { readInputAttachments } from "./task-attachments.ts"
 
 interface Arguments {
   readonly options: ReadonlyMap<string, ReadonlyArray<string> | true>
@@ -51,8 +54,10 @@ interface Arguments {
 }
 
 const valueOptions = new Set([
+  "attach",
   "context",
   "context-file",
+  "direction",
   "grok-gateway",
   "error",
   "label",
@@ -60,6 +65,7 @@ const valueOptions = new Set([
   "message",
   "message-file",
   "name",
+  "output",
   "parent",
   "prompt",
   "prompt-file",
@@ -106,10 +112,12 @@ Usage:
   cohall send [@device-or-bot] [prompt] [delegate options]
   cohall delegate [prompt] [--target @device-or-bot] [--provider provider]
                   [--context text] [--thread uuid] [--parent task-id] [--workspace path]
-                  [--timeout seconds] [--no-wait]
+                  [--attach path] [--timeout seconds] [--no-wait]
   cohall status <task-id>
   cohall trace <task-id> [--follow]
   cohall wait <task-id> [--timeout seconds]
+  cohall attachments <task-id>
+  cohall download <task-id> <name> --output path [--direction input|output]
   cohall cancel <task-id>
   cohall reply <task-id> --message-file path | --message text | --message - | --error text
   cohall thread <thread-id>
@@ -907,6 +915,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     allowOptions(arguments_, [
       "context",
       "context-file",
+      "attach",
       "no-wait",
       "parent",
       "prompt",
@@ -939,6 +948,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       throw new Error("Use either a positional prompt or --prompt, not both")
     }
     const context = await readInput(arguments_, "context")
+    const attachments = await readInputAttachments(values(arguments_, "attach"))
     const target = positionalTarget ?? option(arguments_, "target")
     const thread = option(arguments_, "thread")
     const workspace = option(arguments_, "workspace")
@@ -955,6 +965,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         ...(provider === undefined
           ? {}
           : { provider: Schema.decodeUnknownSync(Provider)(provider) }),
+        ...(attachments.length === 0 ? {} : { attachments }),
       }),
     )
     print(
@@ -970,6 +981,35 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     allowOptions(arguments_, [])
     const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
     print(taskResult(await Effect.runPromise(relay.getTask(id))))
+    return
+  }
+  if (command === "attachments") {
+    allowOptions(arguments_, [])
+    const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
+    print(await Effect.runPromise(relay.listAttachments(id)))
+    return
+  }
+  if (command === "download") {
+    allowOptions(arguments_, ["output", "direction"])
+    if (arguments_.positionals.length !== 2) {
+      throw new Error(
+        "Usage: cohall download <task-id> <name> --output path [--direction input|output]",
+      )
+    }
+    const destination = option(arguments_, "output")
+    if (destination === undefined) {
+      throw new Error("--output is required")
+    }
+    const id = Schema.decodeUnknownSync(TaskId)(arguments_.positionals[0])
+    const name = Schema.decodeUnknownSync(AttachmentName)(arguments_.positionals[1])
+    const directionInput = option(arguments_, "direction")
+    const direction =
+      directionInput === undefined
+        ? undefined
+        : Schema.decodeUnknownSync(AttachmentDirection)(directionInput)
+    const data = await Effect.runPromise(relay.readAttachment(id, name, direction))
+    await writeFile(destination, data, { flag: "wx", mode: 0o600 })
+    print({ task_id: id, name, path: resolve(destination), bytes: data.length })
     return
   }
   if (command === "trace") {

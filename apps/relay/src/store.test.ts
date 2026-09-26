@@ -1,11 +1,19 @@
-import { Device, DeviceId, makeDeviceId, now, version } from "@cohall/protocol"
+import {
+  AttachmentName,
+  Device,
+  DeviceId,
+  makeDeviceId,
+  now,
+  version,
+  maxAttachmentBytes,
+} from "@cohall/protocol"
 import { Effect, ManagedRuntime } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect, it } from "vitest"
 import { Database } from "./database.ts"
-import { resolveDelegation } from "./main.ts"
+import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
 it("assigns queued followups with the session completed before a restart", async () => {
@@ -410,6 +418,205 @@ it("prunes the oldest terminal task history", async () => {
     ).resolves.toMatchObject({ result: "result-2" })
   } finally {
     await runtime.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it("stores task files with completion, rejects invalid results atomically, and prunes files with tasks", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:", 1))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "worker",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const task = await Effect.runPromise(
+      store.createDelegation(
+        {
+          prompt: "Inspect screenshot",
+          attachments: [{ name: "screen.png", data: Buffer.from("image").toString("base64") }],
+        },
+        device.id,
+      ),
+    )
+    expect(task.inputAttachmentNames).toEqual(["screen.png"])
+    expect(
+      await Effect.runPromise(store.readAttachment(task.id, AttachmentName.make("screen.png"))),
+    ).toEqual(new Uint8Array(Buffer.from("image")))
+    expect(await Effect.runPromise(store.listAttachments(task.id))).toEqual([
+      { name: "screen.png", direction: "input", bytes: 5 },
+    ])
+    await Effect.runPromise(store.assignTask(task.id))
+    await Effect.runPromise(store.acceptTask(task.id, device.id))
+    const output = [{ name: "report.txt" as const, data: Buffer.from("answer").toString("base64") }]
+    await expect(
+      Effect.runPromise(store.finishTask(task.id, makeDeviceId(), "Done", undefined, output)),
+    ).rejects.toBeDefined()
+    await expect(
+      Effect.runPromise(
+        store.finishTask(task.id, device.id, "Done", undefined, [
+          { name: "oversized", data: Buffer.alloc(maxAttachmentBytes + 1).toString("base64") },
+        ]),
+      ),
+    ).rejects.toBeDefined()
+    expect((await Effect.runPromise(store.getTask(task.id))).status).toBe("running")
+    await Effect.runPromise(store.finishTask(task.id, device.id, "Done", undefined, output))
+    expect(await Effect.runPromise(store.listAttachments(task.id))).toEqual([
+      { name: "screen.png", direction: "input", bytes: 5 },
+      { name: "report.txt", direction: "output", bytes: 6 },
+    ])
+    await Effect.runPromise(
+      store.finishTask(task.id, device.id, "Duplicate", undefined, [
+        { name: "late.txt", data: Buffer.from("late").toString("base64") },
+      ]),
+    )
+    expect(await Effect.runPromise(store.listAttachments(task.id))).toHaveLength(2)
+
+    const next = await Effect.runPromise(store.createDelegation({ prompt: "Next" }, device.id))
+    await Effect.runPromise(store.assignTask(next.id))
+    await Effect.runPromise(store.acceptTask(next.id, device.id))
+    await Effect.runPromise(store.finishTask(next.id, device.id, "Done"))
+    await expect(Effect.runPromise(store.listAttachments(task.id))).rejects.toBeDefined()
+    expect(await Effect.runPromise(store.listAttachments(next.id))).toEqual([])
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+it("fails queued attached work clearly after a worker reconnects without file support", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "worker",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [{ id: "task-attachments", label: "Task files" }],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const task = await Effect.runPromise(
+      store.createDelegation(
+        {
+          prompt: "Review",
+          attachments: [{ name: "report.txt", data: Buffer.from("draft").toString("base64") }],
+        },
+        device.id,
+      ),
+    )
+    const downgraded = Device.make({ ...device, capabilities: [] })
+    await Effect.runPromise(store.upsertDevice(downgraded))
+    expect(canDispatchTaskToDevice(task, (await Effect.runPromise(store.listDevices()))[0])).toBe(
+      false,
+    )
+    const failed = await Effect.runPromise(
+      store.failTask(
+        task.id,
+        device.id,
+        "Target worker no longer supports task file attachments. Upgrade the worker and retry.",
+      ),
+    )
+    expect(failed).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("Upgrade the worker"),
+    })
+    expect(await Effect.runPromise(store.listAttachments(task.id))).toEqual([
+      { name: "report.txt", direction: "input", bytes: 5 },
+    ])
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+it("keeps input files across relay recovery before completion", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-attachments-restart-"))
+  const databasePath = join(directory, "relay.db")
+  const runtime = ManagedRuntime.make(RelayStore.layer(databasePath))
+  let restored:
+    | ManagedRuntime.ManagedRuntime<RelayStore.Service, RelayStore.PersistenceError>
+    | undefined
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "worker",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const task = await Effect.runPromise(
+      store.createDelegation(
+        {
+          prompt: "Inspect",
+          attachments: [{ name: "report.txt", data: Buffer.from("input").toString("base64") }],
+        },
+        device.id,
+      ),
+    )
+    await Effect.runPromise(store.assignTask(task.id))
+    await Effect.runPromise(store.acceptTask(task.id, device.id))
+    await runtime.dispose()
+
+    restored = ManagedRuntime.make(RelayStore.layer(databasePath))
+    const recovered = await restored.runPromise(RelayStore.Service)
+    await Effect.runPromise(recovered.recover())
+    expect((await Effect.runPromise(recovered.getTask(task.id))).status).toBe("queued")
+    expect(await Effect.runPromise(recovered.listAttachments(task.id))).toEqual([
+      { name: "report.txt", direction: "input", bytes: 5 },
+    ])
+    await Effect.runPromise(recovered.assignTask(task.id))
+    await Effect.runPromise(recovered.acceptTask(task.id, device.id))
+    await Effect.runPromise(
+      recovered.finishTask(task.id, device.id, "Done", undefined, [
+        { name: "report.txt", data: Buffer.from("report").toString("base64") },
+      ]),
+    )
+    expect(await Effect.runPromise(recovered.listAttachments(task.id))).toEqual([
+      { name: "report.txt", direction: "input", bytes: 5 },
+      { name: "report.txt", direction: "output", bytes: 6 },
+    ])
+    expect(
+      await Effect.runPromise(recovered.readAttachment(task.id, AttachmentName.make("report.txt"))),
+    ).toEqual(new Uint8Array(Buffer.from("report")))
+    expect(
+      await Effect.runPromise(
+        recovered.readAttachment(task.id, AttachmentName.make("report.txt"), "input"),
+      ),
+    ).toEqual(new Uint8Array(Buffer.from("input")))
+    await restored.dispose()
+    restored = ManagedRuntime.make(RelayStore.layer(databasePath))
+    const settled = await restored.runPromise(RelayStore.Service)
+    await Effect.runPromise(settled.recover())
+    expect((await Effect.runPromise(settled.getTask(task.id))).status).toBe("completed")
+    expect(
+      await Effect.runPromise(settled.readAttachment(task.id, AttachmentName.make("report.txt"))),
+    ).toEqual(new Uint8Array(Buffer.from("report")))
+  } finally {
+    await runtime.dispose()
+    await restored?.dispose()
     await rm(directory, { recursive: true, force: true })
   }
 })

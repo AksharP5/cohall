@@ -5,6 +5,8 @@ export const version =
   typeof __COHALL_VERSION__ === "undefined" ? "0.0.0-development" : __COHALL_VERSION__
 
 export const maxSocketPayloadBytes = 1024 * 1024
+export const maxAttachmentBytes = 256 * 1024
+export const maxTaskAttachments = 2
 
 const bounded = (maxLength: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maxLength))
@@ -211,6 +213,59 @@ export const Message = Schema.Struct({
 })
 export interface Message extends Schema.Schema.Type<typeof Message> {}
 
+export const AttachmentName = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(128),
+  Schema.makeFilter((name) =>
+    name !== "." &&
+    name !== ".." &&
+    !/[<>:"/\\|?*]/.test(name) &&
+    !/[. ]$/.test(name) &&
+    !/^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(name) &&
+    new TextEncoder().encode(name).byteLength <= 128 &&
+    [...name].every((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127)
+      ? undefined
+      : "Use a file name without path separators or control characters",
+  ),
+)
+export type AttachmentName = typeof AttachmentName.Type
+
+export const AttachmentDirection = Schema.Literals(["input", "output"])
+export type AttachmentDirection = typeof AttachmentDirection.Type
+
+export const TaskAttachment = Schema.Struct({
+  name: AttachmentName,
+  direction: AttachmentDirection,
+  bytes: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: maxAttachmentBytes })),
+})
+export interface TaskAttachment extends Schema.Schema.Type<typeof TaskAttachment> {}
+
+export const InputAttachment = Schema.Struct({
+  name: AttachmentName,
+  data: Schema.String.check(
+    Schema.isMaxLength(Math.ceil(maxAttachmentBytes / 3) * 4),
+    Schema.makeFilter((value) =>
+      value.length > 0 &&
+      value.length % 4 === 0 &&
+      (value.length / 4) * 3 - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0) <=
+        maxAttachmentBytes &&
+      /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+        ? undefined
+        : "Expected nonempty base64 data",
+    ),
+  ),
+})
+export interface InputAttachment extends Schema.Schema.Type<typeof InputAttachment> {}
+
+const attachments = boundedArray(InputAttachment, maxTaskAttachments).check(
+  Schema.makeFilter((files) =>
+    new Set(files.map((file) => file.name.normalize("NFC").toLocaleLowerCase("en-US"))).size ===
+    files.length
+      ? undefined
+      : "Attachment names must be unique",
+  ),
+)
+
 const validBotTarget = (input: {
   readonly provider?: Provider
   readonly botId?: BotId
@@ -239,6 +294,7 @@ export const Task = Schema.Struct({
   workspace: Schema.optionalKey(bounded(4096)),
   providerSessionId: Schema.optionalKey(bounded(4096)),
   result: Schema.optionalKey(optionalText(131_072)),
+  inputAttachmentNames: Schema.optionalKey(boundedArray(AttachmentName, maxTaskAttachments)),
   error: Schema.optionalKey(optionalText(16_384)),
   createdAt: Timestamp,
   updatedAt: Timestamp,
@@ -358,12 +414,17 @@ export const CreateTaskInput = Schema.Struct({
   targetDeviceId: Schema.optionalKey(DeviceId),
   parentTaskId: Schema.optionalKey(TaskId),
   workspace: Schema.optionalKey(bounded(4096)),
+  attachments: Schema.optionalKey(attachments),
 }).check(Schema.makeFilter(validBotTarget))
 export interface CreateTaskInput extends Schema.Schema.Type<typeof CreateTaskInput> {}
 
 export const SocketEvent = Schema.TaggedUnion({
   Authenticate: { token: bounded(256) },
-  Connected: { serverVersion: bounded(32), connectedAt: Timestamp },
+  Connected: {
+    serverVersion: bounded(32),
+    connectedAt: Timestamp,
+    taskAttachments: Schema.optionalKey(Schema.Boolean),
+  },
   DeviceHello: { device: Device },
   DeviceHeartbeat: {
     deviceId: DeviceId,
@@ -375,6 +436,7 @@ export const SocketEvent = Schema.TaggedUnion({
   TaskFinished: {
     taskId: TaskId,
     result: optionalText(131_072),
+    attachments: Schema.optionalKey(attachments),
     providerSessionId: Schema.optionalKey(bounded(4096)),
   },
   TaskFailed: { taskId: TaskId, error: bounded(16_384) },

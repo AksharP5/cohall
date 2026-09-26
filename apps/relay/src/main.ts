@@ -1,10 +1,13 @@
 import {
   AuthSessionId,
+  AttachmentName,
+  AttachmentDirection,
   Device,
   DeviceId,
   OperationId,
   SocketEvent,
   maxSocketPayloadBytes,
+  maxAttachmentBytes,
   TaskId,
   ThreadId,
   decodeCreatePairingInput,
@@ -90,7 +93,7 @@ const requestBody = (request: IncomingMessage, limit: number): Promise<Buffer | 
         return
       }
       cleanup()
-      reject(new Error("Request body exceeded 256 KiB"))
+      reject(new Error(`Request body exceeded ${Math.floor(limit / 1024)} KiB`))
     }
     const onEnd = (): void => {
       cleanup()
@@ -115,7 +118,11 @@ const webRequest = async (request: IncomingMessage): Promise<Request> => {
       headers.append(name, value)
     }
   }
-  const payload = await requestBody(request, 256 * 1024)
+  const pathname = new URL(request.url ?? "/", "http://cohall.local").pathname
+  const payload = await requestBody(
+    request,
+    pathname === "/api/tasks" ? 2 * 1024 * 1024 : maxAttachmentBytes,
+  )
   return new Request(new URL(request.url ?? "/", "http://cohall.local"), {
     method: request.method ?? "GET",
     headers,
@@ -246,6 +253,13 @@ export const resolveDelegation = (
       .listDevices()
       .pipe(Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })))
     const provider = input.provider ?? (input.botId === undefined ? "codex" : "grok-bot")
+    const hasAttachments = (input.attachments?.length ?? 0) > 0
+    if (hasAttachments && provider === "grok-bot") {
+      return yield* new RequestError({
+        status: 400,
+        message: "File attachments require a coding provider",
+      })
+    }
     const slot = taskSlot({
       provider,
       ...(input.botId === undefined ? {} : { botId: input.botId }),
@@ -269,6 +283,15 @@ export const resolveDelegation = (
           message: `${target.name} does not advertise the ${provider} provider`,
         })
       }
+      if (
+        hasAttachments &&
+        !target.capabilities.some((capability) => capability.id === "task-attachments")
+      ) {
+        return yield* new RequestError({
+          status: 409,
+          message: `${target.name} does not support file attachments; upgrade its Cohall worker`,
+        })
+      }
       if (input.botId !== undefined && !target.bots?.some((bot) => bot.id === input.botId)) {
         return yield* new RequestError({
           status: 404,
@@ -286,6 +309,8 @@ export const resolveDelegation = (
     const candidates = devices.filter(
       (device) =>
         device.providers.includes(provider) &&
+        (!hasAttachments ||
+          device.capabilities.some((capability) => capability.id === "task-attachments")) &&
         (input.botId === undefined || device.bots?.some((bot) => bot.id === input.botId)),
     )
     if (input.botId !== undefined && candidates.length > 1) {
@@ -315,6 +340,19 @@ export const resolveDelegation = (
   })
 
 type Principal = "owner" | AuthSession
+
+export const canReadTaskAttachments = (
+  principal: Principal,
+  task: Pick<Task, "targetDeviceId">,
+): boolean =>
+  principal === "owner" || principal.role === "client" || principal.deviceId === task.targetDeviceId
+
+export const canDispatchTaskToDevice = (
+  task: Pick<Task, "inputAttachmentNames">,
+  device: Pick<Device, "capabilities"> | undefined,
+): boolean =>
+  (task.inputAttachmentNames?.length ?? 0) === 0 ||
+  device?.capabilities.some((capability) => capability.id === "task-attachments") === true
 
 export const runRelay = async (): Promise<void> => {
   const configuration = await Effect.runPromise(loadEnvironmentConfiguration)
@@ -361,16 +399,36 @@ export const runRelay = async (): Promise<void> => {
     ).catch(() => undefined)
   }
 
-  const principalFor = async (request: Request): Promise<Principal | undefined> => {
+  const principalFor = async (
+    request: Request,
+    allowDevice = false,
+  ): Promise<Principal | undefined> => {
     const authorization = request.headers.get("authorization")
     if (authorization?.startsWith("Bearer ") !== true) {
       return undefined
     }
-    return authenticate(authorization.slice("Bearer ".length), "client")
+    const token = authorization.slice("Bearer ".length)
+    return (
+      (await authenticate(token, "client")) ??
+      (allowDevice ? authenticate(token, "device") : undefined)
+    )
   }
 
   const dispatch = async (task: Task): Promise<Task> => {
     const store = await run(RelayStore.Service)
+    if ((task.inputAttachmentNames?.length ?? 0) > 0) {
+      const devices = await Effect.runPromise(store.listDevices())
+      const target = devices.find((device) => device.id === task.targetDeviceId)
+      if (!canDispatchTaskToDevice(task, target)) {
+        return Effect.runPromise(
+          store.failTask(
+            task.id,
+            task.targetDeviceId,
+            "Target worker no longer supports task file attachments. Upgrade the worker and retry.",
+          ),
+        )
+      }
+    }
     const assigned = await Effect.runPromise(store.assignTask(task.id))
     if (assigned.status !== "assigned") {
       return assigned
@@ -506,7 +564,12 @@ export const runRelay = async (): Promise<void> => {
       }, 5_000)
       socket.send(
         JSON.stringify(
-          SocketEvent.make({ _tag: "Connected", serverVersion: version, connectedAt: now() }),
+          SocketEvent.make({
+            _tag: "Connected",
+            serverVersion: version,
+            connectedAt: now(),
+            taskAttachments: true,
+          }),
         ),
       )
       return
@@ -572,7 +635,13 @@ export const runRelay = async (): Promise<void> => {
             yield* store.acceptTask(event.taskId, deviceId)
             return
           case "TaskFinished":
-            yield* store.finishTask(event.taskId, deviceId, event.result, event.providerSessionId)
+            yield* store.finishTask(
+              event.taskId,
+              deviceId,
+              event.result,
+              event.providerSessionId,
+              event.attachments,
+            )
             return
           case "TaskFailed":
             yield* store.failTask(event.taskId, deviceId, event.error)
@@ -622,7 +691,7 @@ export const runRelay = async (): Promise<void> => {
 
   const api = async (request: Request, url: URL): Promise<Response> => {
     if (url.pathname === "/api/health" && request.method === "GET") {
-      return json({ ok: true, version })
+      return json({ ok: true, version, taskAttachments: true })
     }
     if (url.pathname === "/api/auth/pair" && request.method === "POST") {
       return run(
@@ -638,7 +707,10 @@ export const runRelay = async (): Promise<void> => {
         )
     }
 
-    const principal = await principalFor(request)
+    const attachmentRoute =
+      request.method === "GET" &&
+      /^\/api\/tasks\/[^/]+\/attachments(?:\/[^/]+)?$/.test(url.pathname)
+    const principal = await principalFor(request, attachmentRoute)
     if (principal === undefined) {
       return json({ error: "Unauthorized" }, 401)
     }
@@ -720,6 +792,48 @@ export const runRelay = async (): Promise<void> => {
             : yield* store.sessionFor(input.threadId, target, input.provider ?? "codex")
         const task = yield* store.createDelegation(input, target, sourceDeviceId, providerSessionId)
         return json(yield* Effect.tryPromise(() => dispatch(task)), 201)
+      }
+      const attachments = url.pathname.match(/^\/api\/tasks\/([^/]+)\/attachments$/)
+      if (request.method === "GET" && attachments?.[1] !== undefined) {
+        const id = yield* pathId(TaskId, attachments[1])
+        const task = yield* store.getTask(id)
+        if (!canReadTaskAttachments(principal, task)) {
+          return yield* new RequestError({
+            status: 403,
+            message: "Device cannot read this task's attachments",
+          })
+        }
+        return json(yield* store.listAttachments(id))
+      }
+      const attachment = url.pathname.match(/^\/api\/tasks\/([^/]+)\/attachments\/([^/]+)$/)
+      if (
+        attachment?.[1] !== undefined &&
+        attachment[2] !== undefined &&
+        request.method === "GET"
+      ) {
+        const id = yield* pathId(TaskId, attachment[1])
+        const name = yield* Effect.try({
+          try: () => decodeURIComponent(attachment[2]!),
+          catch: () => new RequestError({ status: 400, message: "Invalid attachment name" }),
+        }).pipe(Effect.flatMap((value) => pathId(AttachmentName, value)))
+        const task = yield* store.getTask(id)
+        if (!canReadTaskAttachments(principal, task)) {
+          return yield* new RequestError({
+            status: 403,
+            message: "Device cannot read this task's attachments",
+          })
+        }
+        const directionInput = url.searchParams.get("direction")
+        const direction =
+          directionInput === null ? undefined : yield* pathId(AttachmentDirection, directionInput)
+        const data = yield* store.readAttachment(id, name, direction)
+        return new Response(new Uint8Array(data), {
+          headers: {
+            "content-type": "application/octet-stream",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+          },
+        })
       }
       const task = url.pathname.match(/^\/api\/tasks\/([^/]+)$/)
       if (request.method === "GET" && task?.[1] !== undefined) {
@@ -881,7 +995,7 @@ export const runRelay = async (): Promise<void> => {
           outgoing,
           json(
             { error: cause instanceof Error ? cause.message : "Invalid request" },
-            cause instanceof Error && cause.message.includes("256 KiB") ? 413 : 400,
+            cause instanceof Error && cause.message.includes("Request body exceeded") ? 413 : 400,
           ),
         ),
       )

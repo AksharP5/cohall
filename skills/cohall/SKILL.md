@@ -7,7 +7,7 @@ description: Delegate through Cohall to another user-owned device or an existing
 
 Cohall sends a focused task to a coding agent or an existing named Grok Bot. The target
 keeps its local files, credentials, browser state, provider login, skills, and
-permissions. The relay carries prompts, final results, and task state.
+permissions. The relay carries prompts, final results, task state, and explicitly attached files.
 
 Use the installed `cohall` executable when it is available. Fall back to
 `npx -y @akshar5/cohall` only when Cohall is not installed globally.
@@ -67,6 +67,16 @@ Do not delegate ordinary local work when the other device provides no advantage.
 5. The command waits by default and returns JSON. Treat work as successful only
    when `status` is `completed`; use `result` in the current task. Report a
    `failed`, `cancelled`, or `cancelling` state accurately.
+
+   Pass an explicit local file with `--attach path` when the coding task needs
+   it. The MCP `delegate` tool takes `attachment_paths`. A task accepts up to
+   two files of 256 KiB each. The target can return files through the output
+   directory named in its task prompt. After completion, use
+   `cohall attachments <task-id>` and
+   `cohall download <task-id> <name> --output <new-path>` (or the corresponding
+   MCP tools). List results include input and output files. A shared name
+   downloads the output by default; use `--direction input` or the MCP
+   `direction` argument for the input. Named bots do not accept files.
 
 6. Reuse `thread_id` for related follow-ups so the target provider can resume
    its local session:

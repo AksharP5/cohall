@@ -9,6 +9,7 @@ import {
   terminalTaskStatuses,
   isTerminalTask,
   type Device,
+  type InputAttachment,
   type Provider as ProviderName,
   type Task,
   type TaskTrace,
@@ -35,6 +36,7 @@ export interface DelegateOptions {
   readonly workspace?: string
   readonly provider?: ProviderName
   readonly parentTaskId?: TaskId
+  readonly attachments?: ReadonlyArray<InputAttachment>
 }
 
 export const TaskResult = Schema.Struct({
@@ -190,6 +192,7 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
     ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
     ...(provider === undefined ? {} : { provider }),
     ...(parentTaskId === undefined ? {} : { parentTaskId }),
+    ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
   })
 })
 
