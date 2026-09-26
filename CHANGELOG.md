@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/AksharP5/cohall/compare/v0.6.2...v0.7.0) (2026-09-26)
+
+
+### Features
+
+* **delegation:** exchange bounded task files ([#86](https://github.com/AksharP5/cohall/issues/86)) ([8a2f808](https://github.com/AksharP5/cohall/commit/8a2f80841d52a189736a17b991277eaf0c267f23))
+* **tasks:** surface completed work in a client inbox ([#84](https://github.com/AksharP5/cohall/issues/84)) ([a7a367f](https://github.com/AksharP5/cohall/commit/a7a367ff1ffcf9aa77d971d8f83d419154bbb656))
+
 ## [0.6.2](https://github.com/AksharP5/cohall/compare/v0.6.1...v0.6.2) (2026-09-24)
 
 
