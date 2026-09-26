@@ -1,4 +1,5 @@
 import {
+  AttachmentName,
   BotId,
   Device,
   makeDeviceId,
@@ -33,6 +34,27 @@ const device = (name: string) =>
     version,
     lastSeenAt: now(),
   })
+
+it("explains when matching workers need file attachment support", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    await Effect.runPromise(store.upsertDevice(device("older-worker")))
+    await expect(
+      runtime.runPromise(
+        resolveDelegation({
+          prompt: "Inspect this file",
+          attachments: [{ name: AttachmentName.make("report.txt"), data: "eA==" }],
+        }),
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("supports file attachments"),
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
 
 it("routes child tasks away from their parent and inherits only that parent's thread", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))

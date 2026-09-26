@@ -308,13 +308,16 @@ export const resolveDelegation = (
       }
       return { input: resolvedInput, targetDeviceId: target.id }
     }
-    const candidates = devices.filter(
+    const providerDevices = devices.filter(
       (device) =>
         device.providers.includes(provider) &&
-        (!hasAttachments ||
-          device.capabilities.some((capability) => capability.id === "task-attachments")) &&
         (input.botId === undefined || device.bots?.some((bot) => bot.id === input.botId)),
     )
+    const candidates = hasAttachments
+      ? providerDevices.filter((device) =>
+          device.capabilities.some((capability) => capability.id === "task-attachments"),
+        )
+      : providerDevices
     if (input.botId !== undefined && candidates.length > 1) {
       return yield* new RequestError({
         status: 409,
@@ -333,9 +336,11 @@ export const resolveDelegation = (
         message:
           candidates.length > 0
             ? "No available delegation target avoids an unfinished parent's worker slot; select another device or bot"
-            : input.botId === undefined
-              ? `No Cohall device advertises the ${provider} provider`
-              : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,
+            : hasAttachments && providerDevices.length > 0
+              ? `No Cohall device advertising the ${provider} provider supports file attachments; upgrade a Cohall worker`
+              : input.botId === undefined
+                ? `No Cohall device advertises the ${provider} provider`
+                : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,
       })
     }
     return { input: resolvedInput, targetDeviceId: selected.id }
