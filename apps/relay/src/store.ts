@@ -10,6 +10,7 @@ import {
   PairingResult,
   Provider,
   Task,
+  TaskAttachment,
   TaskId,
   TaskInbox,
   TaskInboxItem,
@@ -28,12 +29,17 @@ import {
   makeOperationId,
   makeTaskId,
   makeThreadId,
+  maxAttachmentBytes,
+  maxTaskAttachments,
   now,
   taskSlot,
   type AuthSessionId,
+  type AttachmentDirection,
+  type AttachmentName as AttachmentNameType,
   type ConnectionRole as ConnectionRoleName,
   type CreatePairingInput,
   type CreateTaskInput,
+  type InputAttachment,
   type CreateUpgradeOperationsInput,
   type OperationId,
   type OperationStatus,
@@ -204,6 +210,14 @@ export interface Interface {
     principal: AuthSession | "owner",
   ) => Effect.Effect<TaskInboxItem, PersistenceError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
+  readonly listAttachments: (
+    taskId: TaskId,
+  ) => Effect.Effect<ReadonlyArray<TaskAttachment>, PersistenceError>
+  readonly readAttachment: (
+    taskId: TaskId,
+    name: AttachmentNameType,
+    direction?: AttachmentDirection,
+  ) => Effect.Effect<Uint8Array, PersistenceError>
   readonly traceTask: (taskId: TaskId) => Effect.Effect<TaskTrace, PersistenceError>
   readonly threadContext: (threadId: ThreadId) => Effect.Effect<ThreadContext, PersistenceError>
   readonly pendingTasksFor: (
@@ -218,6 +232,7 @@ export interface Interface {
     deviceId: DeviceId,
     result: string,
     providerSessionId?: string,
+    attachments?: ReadonlyArray<InputAttachment>,
   ) => Effect.Effect<Task, PersistenceError>
   readonly failTask: (
     taskId: TaskId,
@@ -335,27 +350,42 @@ const deviceFromRow = (row: DeviceRow): Effect.Effect<Device, PersistenceError> 
     ...(row.connected_at === null ? {} : { connectedAt: row.connected_at }),
   })
 
-const taskFromRow = (row: TaskRow): Effect.Effect<Task, PersistenceError> =>
-  decode("RelayStore.decodeTask", Task, {
-    id: row.id,
-    threadId: row.thread_id,
-    prompt: row.prompt,
-    provider: row.provider,
-    ...(row.bot_id === null ? {} : { botId: row.bot_id }),
-    status: row.status,
-    targetDeviceId: row.target_device_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    ...(row.context === null ? {} : { context: row.context }),
-    ...(row.source_device_id === null ? {} : { sourceDeviceId: row.source_device_id }),
-    ...(row.parent_task_id === null ? {} : { parentTaskId: row.parent_task_id }),
-    ...(row.workspace === null ? {} : { workspace: row.workspace }),
-    ...(row.provider_session_id === null ? {} : { providerSessionId: row.provider_session_id }),
-    ...(row.result === null ? {} : { result: row.result }),
-    ...(row.error === null ? {} : { error: row.error }),
-    ...(row.started_at === null ? {} : { startedAt: row.started_at }),
-    ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
-  })
+const taskFromRow = (db: Database, row: TaskRow): Effect.Effect<Task, PersistenceError> =>
+  Effect.try({
+    try: () =>
+      db
+        .query<{ readonly name: string }, [string]>(
+          "SELECT name FROM task_attachments WHERE task_id = ? AND direction = 'input' ORDER BY name",
+        )
+        .all(row.id),
+    catch: operationError("RelayStore.taskAttachments"),
+  }).pipe(
+    Effect.flatMap((attachments) =>
+      decode("RelayStore.decodeTask", Task, {
+        id: row.id,
+        threadId: row.thread_id,
+        prompt: row.prompt,
+        provider: row.provider,
+        ...(row.bot_id === null ? {} : { botId: row.bot_id }),
+        status: row.status,
+        targetDeviceId: row.target_device_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        ...(row.context === null ? {} : { context: row.context }),
+        ...(row.source_device_id === null ? {} : { sourceDeviceId: row.source_device_id }),
+        ...(row.parent_task_id === null ? {} : { parentTaskId: row.parent_task_id }),
+        ...(row.workspace === null ? {} : { workspace: row.workspace }),
+        ...(row.provider_session_id === null ? {} : { providerSessionId: row.provider_session_id }),
+        ...(row.result === null ? {} : { result: row.result }),
+        ...(attachments.length === 0
+          ? {}
+          : { inputAttachmentNames: attachments.map((item) => item.name) }),
+        ...(row.error === null ? {} : { error: row.error }),
+        ...(row.started_at === null ? {} : { startedAt: row.started_at }),
+        ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
+      }),
+    ),
+  )
 
 const inboxItemFromRow = (row: InboxRow): Effect.Effect<TaskInboxItem, PersistenceError> =>
   decode("RelayStore.decodeInboxItem", TaskInboxItem, {
@@ -570,7 +600,56 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         }),
       )
     }
-    return yield* taskFromRow(row)
+    return yield* taskFromRow(db, row)
+  })
+
+  const listAttachments = Effect.fn("RelayStore.listAttachments")(function* (taskId: TaskId) {
+    yield* getTask(taskId)
+    const rows = yield* Effect.try({
+      try: () =>
+        db
+          .query<
+            { readonly name: string; readonly direction: string; readonly bytes: number },
+            [string]
+          >(
+            "SELECT name, direction, length(data) AS bytes FROM task_attachments WHERE task_id = ? ORDER BY direction, name",
+          )
+          .all(taskId),
+      catch: operationError("RelayStore.listAttachments"),
+    })
+    return yield* Effect.forEach(rows, (row) =>
+      decode("RelayStore.decodeAttachment", TaskAttachment, row),
+    )
+  })
+
+  const readAttachment = Effect.fn("RelayStore.readAttachment")(function* (
+    taskId: TaskId,
+    name: AttachmentNameType,
+    direction?: AttachmentDirection,
+  ) {
+    yield* getTask(taskId)
+    const row = yield* Effect.try({
+      try: () =>
+        direction === undefined
+          ? db
+              .query<{ readonly data: Uint8Array }, [string, string]>(
+                "SELECT data FROM task_attachments WHERE task_id = ? AND name = ? ORDER BY direction DESC LIMIT 1",
+              )
+              .get(taskId, name)
+          : db
+              .query<{ readonly data: Uint8Array }, [string, string, string]>(
+                "SELECT data FROM task_attachments WHERE task_id = ? AND name = ? AND direction = ?",
+              )
+              .get(taskId, name, direction),
+      catch: operationError("RelayStore.readAttachment"),
+    })
+    if (row === null) {
+      return yield* new PersistenceError({
+        operation: "RelayStore.readAttachment",
+        message: `Unknown attachment ${name}`,
+      })
+    }
+    return row.data
   })
 
   const inboxFor = Effect.fn("RelayStore.inboxFor")(function* (principal: AuthSession | "owner") {
@@ -1188,6 +1267,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       ...(sourceDeviceId === undefined ? {} : { sourceDeviceId }),
       ...(input.parentTaskId === undefined ? {} : { parentTaskId: input.parentTaskId }),
       ...(input.workspace === undefined ? {} : { workspace: input.workspace }),
+      ...(input.attachments === undefined || input.attachments.length === 0
+        ? {}
+        : { inputAttachmentNames: input.attachments.map((attachment) => attachment.name) }),
       ...(providerSessionId === undefined ? {} : { providerSessionId }),
     })
     const thread =
@@ -1255,6 +1337,17 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             task.createdAt,
             task.updatedAt,
           )
+          for (const attachment of input.attachments ?? []) {
+            const data = Buffer.from(attachment.data, "base64")
+            if (data.length < 1 || data.length > maxAttachmentBytes) {
+              throw new Error(
+                `Attachment ${attachment.name} must be 1 to ${maxAttachmentBytes} bytes`,
+              )
+            }
+            db.query(
+              "INSERT INTO task_attachments (task_id, name, direction, data) VALUES (?, ?, 'input', ?)",
+            ).run(task.id, attachment.name, data)
+          }
           recordTaskTraceEvent(task.id, "queued", "Relay accepted the task", timestamp)
           db.query(
             `INSERT INTO messages (
@@ -1317,7 +1410,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     const [thread, messages, tasks] = yield* Effect.all([
       threadFromRow(threadRow),
       Effect.forEach(messageRows.slice(-20), messageFromRow),
-      Effect.forEach(taskRows.slice(-20), taskFromRow),
+      Effect.forEach(taskRows.slice(-20), (row) => taskFromRow(db, row)),
     ])
     const recentMessages = recentWithin(messages, 256 * 1024)
     const recentTasks = recentWithin(tasks, 768 * 1024)
@@ -1344,7 +1437,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           .all(deviceId),
       catch: operationError("RelayStore.pendingTasksFor"),
     })
-    return yield* Effect.forEach(rows, taskFromRow)
+    return yield* Effect.forEach(rows, (row) => taskFromRow(db, row))
   })
 
   const transition = Effect.fn("RelayStore.transition")(function* (
@@ -1472,6 +1565,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     result?: string,
     error?: string,
     providerSessionId?: string,
+    attachments?: ReadonlyArray<InputAttachment>,
   ) {
     const current = yield* requireTarget(taskId, deviceId)
     if (["completed", "failed", "cancelled"].includes(current.status)) {
@@ -1500,6 +1594,25 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             )
           if (updated.changes !== 1) {
             return
+          }
+          db.query("DELETE FROM task_attachments WHERE task_id = ? AND direction = 'output'").run(
+            taskId,
+          )
+          if (status === "completed") {
+            if ((attachments?.length ?? 0) > maxTaskAttachments) {
+              throw new Error(`A task supports at most ${maxTaskAttachments} output files`)
+            }
+            for (const attachment of attachments ?? []) {
+              const data = Buffer.from(attachment.data, "base64")
+              if (data.length < 1 || data.length > maxAttachmentBytes) {
+                throw new Error(
+                  `Attachment ${attachment.name} must be 1 to ${maxAttachmentBytes} bytes`,
+                )
+              }
+              db.query(
+                "INSERT INTO task_attachments (task_id, name, direction, data) VALUES (?, ?, 'output', ?)",
+              ).run(taskId, attachment.name, data)
+            }
           }
           recordTaskTraceEvent(
             taskId,
@@ -1817,6 +1930,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
     createDelegation,
     getTask,
+    listAttachments,
+    readAttachment,
     inboxFor,
     acknowledgeCompletion,
     traceTask,
@@ -1850,8 +1965,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           ),
         ),
       ),
-    finishTask: (taskId, deviceId, result, providerSessionId) =>
-      terminal(taskId, deviceId, "completed", result, undefined, providerSessionId),
+    finishTask: (taskId, deviceId, result, providerSessionId, attachments) =>
+      terminal(taskId, deviceId, "completed", result, undefined, providerSessionId, attachments),
     failTask: (taskId, deviceId, error) => terminal(taskId, deviceId, "failed", undefined, error),
     acknowledgeCancellation: (taskId, deviceId) => terminal(taskId, deviceId, "cancelled"),
     requestCancellation,
@@ -1913,6 +2028,12 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         );
         CREATE INDEX IF NOT EXISTS tasks_thread_created ON tasks(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS tasks_target_status ON tasks(target_device_id, status);
+        CREATE TABLE IF NOT EXISTS task_attachments (
+          task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          name TEXT NOT NULL, direction TEXT NOT NULL CHECK(direction IN ('input', 'output')),
+          data BLOB NOT NULL CHECK(length(data) BETWEEN 1 AND ${maxAttachmentBytes}),
+          PRIMARY KEY(task_id, direction, name)
+        );
         CREATE TABLE IF NOT EXISTS task_trace_events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

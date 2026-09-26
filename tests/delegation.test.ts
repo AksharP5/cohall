@@ -1,5 +1,6 @@
 import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
 import {
+  AttachmentName,
   Device,
   BotId,
   CreateTaskInput,
@@ -299,6 +300,12 @@ printf 'codex thread=%s config=%s args=%s\n' "$COHALL_THREAD_ID" "$COHALL_CONFIG
 if [[ -n "$COHALL_TOKEN$COHALL_CLIENT_TOKEN$COHALL_DEVICE_TOKEN" ]]; then exit 86; fi
 if [[ "$prompt" == *LONG_RUNNING* ]]; then sleep 20; fi
 if [[ "$prompt" == *NOISY_STDERR* ]]; then head -c 70000 /dev/zero >&2; fi
+if [[ "$prompt" == *ATTACHMENT_HANDOFF* ]]; then
+  input_dir="$(printf '%s\n' "$prompt" | sed -n 's/^Input directory: //p' | head -n 1)"
+  output_dir="$(printf '%s\n' "$prompt" | sed -n 's/^Output directory: //p' | head -n 1)"
+  [[ "$(cat "$input_dir/report.txt")" == draft ]] || exit 90
+  printf report > "$output_dir/report.txt"
+fi
 if [[ "$prompt" == *OVERSIZED_EVENT* ]]; then
   printf '%s' '{"type":"item.completed","item":{"type":"command_execution","text":"'
   head -c 1048576 /dev/zero | tr '\\0' x
@@ -526,6 +533,8 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       "completion_inbox",
       "acknowledge_completion",
       "task_status",
+      "list_task_attachments",
+      "download_task_attachment",
       "task_trace",
       "wait_task",
       "cancel_task",
@@ -545,6 +554,144 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
         },
       },
     })
+    const screenshot = join(directory, "report.txt")
+    await writeFile(screenshot, "draft")
+    const attachmentTask = Schema.decodeUnknownSync(TaskResult)(
+      JSON.parse(
+        await runCohall(
+          root,
+          [
+            "delegate",
+            "--target",
+            "test-device",
+            "--workspace",
+            root,
+            "--attach",
+            screenshot,
+            "--no-wait",
+            "--prompt",
+            "ATTACHMENT_HANDOFF",
+          ],
+          cliEnvironment,
+        ),
+      ),
+    )
+    const attachmentFinished = await Effect.runPromise(
+      waitForTerminal(client, await Effect.runPromise(client.getTask(attachmentTask.task_id))),
+    )
+    expect(attachmentFinished.status).toBe("completed")
+    expect(
+      JSON.parse(await runCohall(root, ["attachments", attachmentTask.task_id], cliEnvironment)),
+    ).toEqual([
+      { name: "report.txt", direction: "input", bytes: 5 },
+      { name: "report.txt", direction: "output", bytes: 6 },
+    ])
+    const downloaded = join(directory, "downloaded-report.txt")
+    await runCohall(
+      root,
+      ["download", attachmentTask.task_id, "report.txt", "--output", downloaded],
+      cliEnvironment,
+    )
+    expect(await readFile(downloaded, "utf8")).toBe("report")
+    const original = join(directory, "original-report.txt")
+    await runCohall(
+      root,
+      [
+        "download",
+        attachmentTask.task_id,
+        "report.txt",
+        "--direction",
+        "input",
+        "--output",
+        original,
+      ],
+      cliEnvironment,
+    )
+    expect(await readFile(original, "utf8")).toBe("draft")
+    await expect(
+      runCohall(
+        root,
+        ["download", attachmentTask.task_id, "report.txt", "--output", downloaded],
+        cliEnvironment,
+      ),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining("EEXIST") })
+
+    const delegatedWithFile = await mcp.callTool({
+      name: "delegate",
+      arguments: {
+        prompt: "ATTACHMENT_HANDOFF",
+        target: "test-device",
+        workspace: root,
+        attachment_paths: [screenshot],
+        wait: false,
+      },
+    })
+    const taskText = delegatedWithFile.content.find((part) => part.type === "text")?.text
+    if (typeof taskText !== "string") throw new Error("MCP delegate did not return task JSON")
+    const mcpAttachmentTask = Schema.decodeUnknownSync(TaskResult)(JSON.parse(taskText))
+    const mcpAttachmentFinished = await Effect.runPromise(
+      waitForTerminal(client, await Effect.runPromise(client.getTask(mcpAttachmentTask.task_id))),
+    )
+    expect(mcpAttachmentFinished.status).toBe("completed")
+    const listedFiles = await mcp.callTool({
+      name: "list_task_attachments",
+      arguments: { task_id: mcpAttachmentTask.task_id },
+    })
+    expect(listedFiles.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("report.txt"),
+    })
+    const mcpDownload = join(directory, "mcp-report.txt")
+    expect(
+      (
+        await mcp.callTool({
+          name: "download_task_attachment",
+          arguments: {
+            task_id: mcpAttachmentTask.task_id,
+            name: "report.txt",
+            output_path: mcpDownload,
+          },
+        })
+      ).isError,
+    ).not.toBe(true)
+    expect(await readFile(mcpDownload, "utf8")).toBe("report")
+    const mcpInput = join(directory, "mcp-input.txt")
+    await mcp.callTool({
+      name: "download_task_attachment",
+      arguments: {
+        task_id: mcpAttachmentTask.task_id,
+        name: "report.txt",
+        direction: "input",
+        output_path: mcpInput,
+      },
+    })
+    expect(await readFile(mcpInput, "utf8")).toBe("draft")
+    const targetFiles = RelayClient.make({ baseUrl: relayUrl, token: deviceCredential.token })
+    expect(
+      await Effect.runPromise(
+        targetFiles.readAttachment(
+          mcpAttachmentTask.task_id,
+          AttachmentName.make("report.txt"),
+          "input",
+        ),
+      ),
+    ).toEqual(new Uint8Array(Buffer.from("draft")))
+    const unrelatedPairing = await Effect.runPromise(
+      owner.createPairing({ label: "Other device", roles: ["device"] }),
+    )
+    const unrelatedCredential = (
+      await Effect.runPromise(exchangePairing(relayUrl, { token: unrelatedPairing.token }))
+    ).credentials[0]
+    if (unrelatedCredential === undefined) throw new Error("Missing other device credential")
+    const unrelatedDevice = RelayClient.make({
+      baseUrl: relayUrl,
+      token: unrelatedCredential.token,
+    })
+    await expect(
+      Effect.runPromise(unrelatedDevice.listAttachments(mcpAttachmentTask.task_id)),
+    ).rejects.toMatchObject({ status: 403 })
+    await Effect.runPromise(client.acknowledgeCompletion(attachmentFinished.id))
+    await Effect.runPromise(client.acknowledgeCompletion(mcpAttachmentFinished.id))
     const rawQueued: unknown = JSON.parse(
       await runCohall(
         root,
@@ -704,9 +851,9 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(codexLines[0]).toContain("--skip-git-repo-check")
     expect(codexLines[0]).toContain(`config=${configPath}`)
     expect(codexLines[0]).toContain('sandbox_mode="workspace-write"')
-    expect(codexLines[1]).toContain("exec resume")
-    expect(codexLines[1]).toContain(`config=${configPath}`)
-    expect(codexLines[1]).toContain('sandbox_mode="workspace-write"')
+    const resumedCodex = codexLines.find((line) => line.includes("exec resume"))
+    expect(resumedCodex).toContain(`config=${configPath}`)
+    expect(resumedCodex).toContain('sandbox_mode="workspace-write"')
     const openCodeLines = log.split("\n").filter((line) => line.startsWith("opencode "))
     expect(openCodeLines).toHaveLength(2)
     expect(openCodeLines.join("\n")).not.toContain("Use opencode")

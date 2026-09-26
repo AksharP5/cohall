@@ -12,6 +12,8 @@ import {
 import { Effect } from "effect"
 import * as Providers from "@cohall/providers"
 import { type AddressInfo } from "node:net"
+import { writeFile } from "node:fs/promises"
+import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
 import { DeviceConfiguration } from "./config.ts"
@@ -67,6 +69,193 @@ afterEach(async () => {
 })
 
 describe("device relay connection", () => {
+  it("replays the completed result and file after reconnecting", async () => {
+    const { server, relayUrl } = await startServer()
+    const task = Task.make({
+      id: makeTaskId(),
+      threadId: makeThreadId(),
+      targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      prompt: "Return a report file",
+      provider: "codex",
+      status: "assigned",
+      createdAt: now(),
+      updatedAt: now(),
+    })
+    let disconnected = false
+    let finishProvider: (() => void) | undefined
+    vi.spyOn(Providers, "run").mockImplementation((options) =>
+      Effect.promise(async () => {
+        await new Promise<void>((resolve) => {
+          finishProvider = resolve
+          if (disconnected) resolve()
+        })
+        const output = options.prompt.match(/^Output directory: (.+)$/m)?.[1]
+        if (output === undefined) throw new Error("Missing output directory")
+        await writeFile(join(output, "report.txt"), "answer")
+        return { result: "Done" }
+      }),
+    )
+    let connections = 0
+    const finished: Array<{
+      readonly result: string
+      readonly attachments?: ReadonlyArray<{ readonly name: string; readonly data: string }>
+    }> = []
+    server.on("connection", (socket) => {
+      connections += 1
+      const first = connections === 1
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({
+            _tag: "Connected",
+            serverVersion: "test",
+            connectedAt: now(),
+            taskAttachments: true,
+          }),
+        ),
+      )
+      socket.on("close", () => {
+        if (first) {
+          disconnected = true
+          finishProvider?.()
+        }
+      })
+      socket.on("message", (message) => {
+        const event = JSON.parse(message.toString()) as {
+          readonly _tag: string
+          readonly result?: string
+          readonly attachments?: ReadonlyArray<{ readonly name: string; readonly data: string }>
+        }
+        if (first && event._tag === "DeviceHello") {
+          socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+        }
+        if (first && event._tag === "TaskAccepted") {
+          socket.close()
+        }
+        if (!first && event._tag === "TaskFinished" && event.result !== undefined) {
+          finished.push({
+            result: event.result,
+            ...(event.attachments === undefined ? {} : { attachments: event.attachments }),
+          })
+          socket.send(JSON.stringify({ _tag: "TaskSettled", taskId: task.id }))
+        }
+      })
+    })
+    void run(relayUrl)
+    await vi.waitFor(() => expect(finished).toHaveLength(1), { timeout: 8_000 })
+    expect(finished[0]).toEqual({
+      result: "Done",
+      attachments: [{ name: "report.txt", data: Buffer.from("answer").toString("base64") }],
+    })
+  })
+
+  it("preserves the text result when maximum files exceed the socket budget", async () => {
+    const { server, relayUrl } = await startServer()
+    const task = Task.make({
+      id: makeTaskId(),
+      threadId: makeThreadId(),
+      targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      prompt: "Return files",
+      provider: "codex",
+      status: "assigned",
+      createdAt: now(),
+      updatedAt: now(),
+    })
+    vi.spyOn(Providers, "run").mockImplementation((options) =>
+      Effect.promise(async () => {
+        const output = options.prompt.match(/^Output directory: (.+)$/m)?.[1]
+        if (output === undefined) throw new Error("Missing output directory")
+        await Promise.all([
+          writeFile(join(output, "one.bin"), Buffer.alloc(256 * 1024)),
+          writeFile(join(output, "two.bin"), Buffer.alloc(256 * 1024)),
+        ])
+        return { result: "界".repeat(131_072) }
+      }),
+    )
+    const finished: Array<{
+      readonly result: string
+      readonly attachments?: unknown
+      readonly bytes: number
+    }> = []
+    server.once("connection", (socket) => {
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({
+            _tag: "Connected",
+            serverVersion: "test",
+            connectedAt: now(),
+            taskAttachments: true,
+          }),
+        ),
+      )
+      socket.on("message", (message) => {
+        const event = JSON.parse(message.toString()) as {
+          readonly _tag: string
+          readonly result?: string
+          readonly attachments?: unknown
+        }
+        if (event._tag === "DeviceHello")
+          socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+        if (event._tag === "TaskFinished" && event.result !== undefined) {
+          finished.push({
+            result: event.result,
+            attachments: event.attachments,
+            bytes: Buffer.byteLength(message.toString()),
+          })
+        }
+      })
+    })
+    void run(relayUrl)
+    await vi.waitFor(() => expect(finished).toHaveLength(1))
+    expect(finished[0]?.result).toContain("Output files omitted")
+    expect(finished[0]?.result).toContain("界")
+    expect(finished[0]?.attachments).toBeUndefined()
+    expect(finished[0]?.bytes).toBeLessThan(maxSocketPayloadBytes)
+  })
+
+  it("does not invite file output when an older relay omits attachment support", async () => {
+    const { server, relayUrl } = await startServer()
+    const task = Task.make({
+      id: makeTaskId(),
+      threadId: makeThreadId(),
+      targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      prompt: "Answer",
+      provider: "codex",
+      status: "assigned",
+      createdAt: now(),
+      updatedAt: now(),
+    })
+    let prompt = ""
+    vi.spyOn(Providers, "run").mockImplementation((options) =>
+      Effect.sync(() => {
+        prompt = options.prompt
+        return { result: "Done" }
+      }),
+    )
+    const finished: Array<{ readonly result?: string; readonly attachments?: unknown }> = []
+    server.once("connection", (socket) => {
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({ _tag: "Connected", serverVersion: "old", connectedAt: now() }),
+        ),
+      )
+      socket.on("message", (message) => {
+        const event = JSON.parse(message.toString()) as {
+          readonly _tag: string
+          readonly result?: string
+          readonly attachments?: unknown
+        }
+        if (event._tag === "DeviceHello")
+          socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+        if (event._tag === "TaskFinished") finished.push(event)
+      })
+    })
+    void run(relayUrl)
+    await vi.waitFor(() => expect(finished).toHaveLength(1))
+    expect(prompt).not.toContain("Output directory:")
+    expect(finished[0]).toMatchObject({ result: "Done" })
+    expect(finished[0]?.attachments).toBeUndefined()
+  })
+
   it("registers before slow bot discovery and then publishes the roster", async () => {
     const { server, relayUrl } = await startServer()
     const bots = [{ id: BotId.make("bot-a"), name: "Research" }]

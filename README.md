@@ -215,6 +215,29 @@ client-only pairings. The relay keeps at most 1,000 completed tasks by default,
 so an old unacknowledged result can leave the inbox when history is pruned.
 Tasks created before the inbox was added have no inbox entry.
 
+Attach up to two explicit files to a coding task. Each file may be up to 256 KiB.
+The target receives them as temporary files and can return up to two files by
+writing them to the output directory named in its task prompt. List task files
+or download a file using the task ID:
+
+```bash
+cohall delegate --target @macbook --attach ./screenshot.png \
+  --prompt 'Inspect the screenshot and return a short report file.'
+cohall attachments <task-id>
+cohall download <task-id> report.txt --output ./report.txt
+```
+
+The `delegate` MCP tool accepts `attachment_paths`; `list_task_attachments` and
+`download_task_attachment` provide the same retrieval flow. Downloads require a
+new destination path and never overwrite a local file. When an input and output
+share a name, downloads select the output by default; pass `--direction input`
+(or the MCP `direction` argument) to retrieve the input. File bytes remain on the
+relay until the task is removed by its configured history limit. Upgrade the
+relay and target worker before sending attachments; older workers do not
+advertise attachment support. Named Grok Bots do not support file attachments.
+If a long result and output files exceed the 1 MiB transfer limit, the task
+completes with its text result and a notice that the files were omitted.
+
 `--timeout` accepts 5 to 86400 seconds and defaults to 900. It limits how long
 the command waits; the task continues after that. Invalid timeout values are
 rejected before any work is sent, including with `--no-wait`.

@@ -1,9 +1,17 @@
 import { RelayClient } from "@cohall/client"
-import { Provider, TaskId, ThreadId, version } from "@cohall/protocol"
+import {
+  AttachmentDirection,
+  AttachmentName,
+  Provider,
+  TaskId,
+  ThreadId,
+  version,
+} from "@cohall/protocol"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import * as z from "zod/v4"
+import { writeFile } from "node:fs/promises"
 import type { ClientConfiguration } from "./config.ts"
 import {
   acknowledgedTaskResult,
@@ -13,6 +21,7 @@ import {
   threadContext,
   waitForTask,
 } from "./delegation.ts"
+import { readInputAttachments } from "./task-attachments.ts"
 
 const output = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -83,6 +92,13 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
           .max(4096)
           .optional()
           .describe("Coding provider workspace. Omit for named Grok Bots."),
+        attachment_paths: z
+          .array(z.string())
+          .max(2)
+          .optional()
+          .describe(
+            "Local files to send with the task, up to 2 files of 256 KiB each. Coding providers only.",
+          ),
         wait: z.boolean().default(true),
         timeout_seconds: z.number().int().min(5).max(86_400).default(900),
       },
@@ -95,9 +111,11 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
       thread_id,
       parent_task_id,
       workspace,
+      attachment_paths,
       wait,
       timeout_seconds,
     }) => {
+      const attachments = await readInputAttachments(attachment_paths ?? [])
       const task = await Effect.runPromise(
         createDelegation(client, configuration, {
           prompt,
@@ -107,6 +125,7 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
           ...(thread_id === undefined ? {} : { threadId: ThreadId.make(thread_id) }),
           ...(parent_task_id === undefined ? {} : { parentTaskId: TaskId.make(parent_task_id) }),
           ...(workspace === undefined ? {} : { workspace }),
+          ...(attachments.length === 0 ? {} : { attachments }),
         }),
       )
       const completed = wait
@@ -147,6 +166,43 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     },
     async ({ task_id }) =>
       output(taskResult(await Effect.runPromise(client.getTask(TaskId.make(task_id))))),
+  )
+
+  server.registerTool(
+    "list_task_attachments",
+    {
+      title: "List task files",
+      description: "List input and output files retained with a delegated task.",
+      inputSchema: { task_id: z.string().uuid() },
+    },
+    async ({ task_id }) =>
+      output(await Effect.runPromise(client.listAttachments(TaskId.make(task_id)))),
+  )
+
+  server.registerTool(
+    "download_task_attachment",
+    {
+      title: "Download a task file",
+      description: "Save one task file to a new local path. Existing files are never overwritten.",
+      inputSchema: {
+        task_id: z.string().uuid(),
+        name: z.string(),
+        output_path: z.string(),
+        direction: z.enum(["input", "output"]).optional(),
+      },
+    },
+    async ({ task_id, name, output_path, direction }) => {
+      const safeName = Schema.decodeUnknownSync(AttachmentName)(name)
+      const safeDirection =
+        direction === undefined
+          ? undefined
+          : Schema.decodeUnknownSync(AttachmentDirection)(direction)
+      const data = await Effect.runPromise(
+        client.readAttachment(TaskId.make(task_id), safeName, safeDirection),
+      )
+      await writeFile(output_path, data, { flag: "wx", mode: 0o600 })
+      return output({ task_id, name: safeName, output_path, bytes: data.length })
+    },
   )
 
   server.registerTool(

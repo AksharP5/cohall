@@ -12,6 +12,7 @@ import {
   makeTaskId,
   makeThreadId,
   maxSocketPayloadBytes,
+  maxAttachmentBytes,
   now,
   supportsDeviceOperations,
   taskSlot,
@@ -37,6 +38,55 @@ it("infers the Grok provider from a bot and rejects incompatible task targets", 
   }
   expect(taskSlot({ provider: "grok-bot", botId })).toBe("grok-bot:bot-reacher")
   expect(taskSlot({ provider: "codex" })).toBe(taskSlot({ provider: "claude-code" }))
+})
+
+it("bounds attachment names, count, and decoded bytes at the task boundary", () => {
+  const file = { name: "screen.png", data: Buffer.from("image").toString("base64") }
+  expect(
+    Schema.decodeUnknownSync(CreateTaskInput)({ prompt: "Inspect", attachments: [file] })
+      .attachments,
+  ).toEqual([file])
+  for (const attachments of [
+    [file, file],
+    [file, { ...file, name: "SCREEN.PNG" }],
+    [file, { ...file, name: "other.png" }, { ...file, name: "third.png" }],
+    [{ ...file, name: "../private" }],
+    [{ ...file, name: "" }],
+    [{ ...file, name: "CON.txt" }],
+    [{ ...file, name: "CONIN$.txt" }],
+    [{ ...file, name: "CONOUT$.txt" }],
+    [{ ...file, name: "COM¹.txt" }],
+    [{ ...file, name: "LPT².txt" }],
+    [{ ...file, name: "bad:name.txt" }],
+    [{ ...file, data: "not base64" }],
+    [{ ...file, data: Buffer.alloc(maxAttachmentBytes + 1).toString("base64") }],
+  ]) {
+    expect(() =>
+      Schema.decodeUnknownSync(CreateTaskInput)({ prompt: "Inspect", attachments }),
+    ).toThrow()
+  }
+  expect(() =>
+    Schema.decodeUnknownSync(SocketEvent)({
+      _tag: "TaskFinished",
+      taskId: makeTaskId(),
+      result: "Done",
+      attachments: [file, { ...file, name: "SCREEN.PNG" }],
+    }),
+  ).toThrow()
+})
+
+it("fits two maximum output files and a text result in a socket frame", () => {
+  const data = Buffer.alloc(maxAttachmentBytes).toString("base64")
+  const event = SocketEvent.make({
+    _tag: "TaskFinished",
+    taskId: makeTaskId(),
+    result: "x".repeat(131_072),
+    attachments: [
+      { name: "one.bin", data },
+      { name: "two.bin", data },
+    ],
+  })
+  expect(Buffer.byteLength(JSON.stringify(event))).toBeLessThan(maxSocketPayloadBytes)
 })
 
 it("keeps bot target invariants on assigned tasks and accepts roster-clearing heartbeats", () => {
