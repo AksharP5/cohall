@@ -48,6 +48,7 @@ import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 import { installDeviceService } from "./service.ts"
 import { deviceVersionWarning, normalizeUpgradeTarget, upgrade } from "./upgrade.ts"
 import { readInputAttachments } from "./task-attachments.ts"
+import { checkMcp } from "./mcp-diagnostics.ts"
 
 interface Arguments {
   readonly options: ReadonlyMap<string, ReadonlyArray<string> | true>
@@ -762,6 +763,10 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         ? undefined
         : await discoverGrokBots(grokGateway).catch(() => undefined)
     const clientToken = process.env.COHALL_CLIENT_TOKEN ?? storedCredentials.clientToken
+    const mcp =
+      clientToken === undefined
+        ? { status: "not configured" as const }
+        : await checkMcp(process.argv[1] ?? "", relayUrl, clientToken)
     const hasDeviceCredential =
       process.env.COHALL_DEVICE_TOKEN !== undefined || storedCredentials.deviceToken !== undefined
     const deviceId = process.env.COHALL_DEVICE_ID ?? configuration?.deviceId
@@ -777,6 +782,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const warnings = [
       ...(response?.ok === true ? [] : ["Relay is unreachable"]),
       ...(versionWarning === undefined ? [] : [versionWarning]),
+      ...(mcp.status === "error" ? [`MCP check failed: ${mcp.error}`] : []),
       ...(hasDeviceCredential &&
       response?.ok === true &&
       currentDevice?.status !== "online" &&
@@ -807,6 +813,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       client_credential:
         process.env.COHALL_CLIENT_TOKEN !== undefined ||
         storedCredentials.clientToken !== undefined,
+      mcp,
       device_credential: hasDeviceCredential,
       workspaces: configuration?.workspaces ?? [],
       providers: providerExecutables,

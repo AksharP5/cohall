@@ -157,7 +157,9 @@ it preserves credentials only after verifying them at the restored address.
 Non-loopback HTTP is refused unless `--allow-http` explicitly confirms that an
 independent private network such as Tailscale encrypts the connection.
 `cohall doctor` checks the effective configuration, relay connection, provider
-executables, authentication readiness, and versions.
+executables, authentication readiness, and versions. With a client credential,
+it also starts the local MCP server, completes a protocol handshake, and checks
+that tools are listed. This check does not call a tool or require the relay.
 
 Configuration locations:
 
