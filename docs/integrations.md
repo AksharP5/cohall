@@ -23,6 +23,10 @@ This installs the embedded skill into:
 - `~/.claude/skills/cohall` for Claude Code;
 - `~/.config/opencode/skills/cohall` for OpenCode.
 
+With a client credential, `doctor` starts Cohall's MCP server and verifies that
+it lists tools. This checks the local server; the agent host still needs a
+working MCP configuration to load it.
+
 Any other harness with shell access can invoke the CLI directly. No Cohall UI
 extension is required.
 
