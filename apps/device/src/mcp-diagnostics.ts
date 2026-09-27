@@ -1,24 +1,26 @@
 import { version } from "@cohall/protocol"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js"
+import { configurationPath } from "./config.ts"
 
 export const checkMcp = async (
   entrypoint: string,
   relayUrl: string,
   token: string,
 ): Promise<{ status: "ok"; tool_count: number } | { status: "error"; error: string }> => {
-  const env: Record<string, string> = {}
-  for (const [name, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[name] = value
-  }
-  env.COHALL_RELAY_URL = relayUrl
-  env.COHALL_CLIENT_TOKEN = token
-
   const client = new Client({ name: "cohall-doctor", version })
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [entrypoint, "mcp"],
-    env,
+    env: {
+      ...getDefaultEnvironment(),
+      COHALL_CONFIG: configurationPath(),
+      COHALL_RELAY_URL: relayUrl,
+      COHALL_CLIENT_TOKEN: token,
+    },
     stderr: "pipe",
   })
 
