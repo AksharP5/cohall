@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/AksharP5/cohall/compare/v0.7.0...v0.8.0) (2026-09-27)
+
+
+### Features
+
+* **doctor:** verify MCP server exposes tools ([#89](https://github.com/AksharP5/cohall/issues/89)) ([bee2abc](https://github.com/AksharP5/cohall/commit/bee2abcf64bd5715a88c560d07b8515455cd90d1))
+
 ## [0.7.0](https://github.com/AksharP5/cohall/compare/v0.6.2...v0.7.0) (2026-09-26)
 
 
