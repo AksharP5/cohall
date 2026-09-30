@@ -137,20 +137,18 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
     expect(separate.id).not.toBe(original.id)
     const ownerTask = await Effect.runPromise(owner.createTask(input))
     expect(ownerTask.id).not.toBe(original.id)
-    for (const current of [separate, ownerTask])
+    for (const current of [original, separate, ownerTask])
       await Effect.runPromise(owner.cancelTask(current.id))
-    await vi.waitFor(
-      async () =>
-        expect((await Effect.runPromise(client.getTask(original.id))).status).toBe("failed"),
-      { timeout: 10_000 },
-    )
+    await vi.waitFor(() => expect(Date.now()).toBeGreaterThan(Date.parse(input.expiresAt)), {
+      timeout: 10_000,
+    })
     await Effect.runPromise(owner.forgetDevice(target.id))
     await stop(relay)
     relay = start()
     await vi.waitFor(async () => expect((await fetch(`${relayUrl}/api/health`)).ok).toBe(true), {
       timeout: 10_000,
     })
-    expect((await Effect.runPromise(client.createTask(input))).status).toBe("failed")
+    expect((await Effect.runPromise(client.createTask(input))).status).toBe("cancelled")
     await expect(
       Effect.runPromise(client.createTask({ ...input, prompt: "Changed" })),
     ).rejects.toMatchObject({ status: 409 })
@@ -175,7 +173,7 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
       ],
       { env: environment },
     )
-    expect(JSON.parse(cli.stdout)).toMatchObject({ task_id: original.id, status: "failed" })
+    expect(JSON.parse(cli.stdout)).toMatchObject({ task_id: original.id, status: "cancelled" })
     await mcp.connect(
       new StdioClientTransport({
         command: "node",
