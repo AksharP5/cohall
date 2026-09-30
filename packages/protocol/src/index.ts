@@ -42,6 +42,8 @@ export const MessageId = uuid("MessageId")
 export type MessageId = typeof MessageId.Type
 export const TaskId = uuid("TaskId")
 export type TaskId = typeof TaskId.Type
+export const TaskRequestId = uuid("TaskRequestId")
+export type TaskRequestId = typeof TaskRequestId.Type
 export const TaskRunId = uuid("TaskRunId")
 export type TaskRunId = typeof TaskRunId.Type
 export const ClarificationId = uuid("ClarificationId")
@@ -529,6 +531,7 @@ export const ThreadContext = Schema.Struct({
 export interface ThreadContext extends Schema.Schema.Type<typeof ThreadContext> {}
 
 export const CreateTaskInput = Schema.Struct({
+  requestId: Schema.optionalKey(TaskRequestId),
   threadId: Schema.optionalKey(ThreadId),
   title: Schema.optionalKey(bounded(256)),
   prompt: bounded(131_072),

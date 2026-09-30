@@ -2,6 +2,7 @@ import {
   AnswerTaskInput,
   RequestTaskInput,
   Device,
+  BotId,
   makeDeviceId,
   now,
   Timestamp,
@@ -212,6 +213,7 @@ it("rejects past deadlines and Bot deadlines before creating work", async () => 
           {
             prompt: "Bot",
             provider: "grok-bot",
+            botId: BotId.make("test-bot"),
             expiresAt: Timestamp.make("2100-01-01T00:00:00Z"),
           },
           makeDeviceId(),

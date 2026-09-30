@@ -65,6 +65,15 @@ Do not delegate ordinary local work when the other device provides no advantage.
    to use Codex on a computer; selecting a named bot infers `grok-bot`.
    Omit `--target` only when Cohall may choose a matching computer.
 
+   For a submission you may need to retry, generate and save a UUID v4 before
+   sending, then pass `--request-id <uuid>` or MCP `delegate.request_id`. Use a
+   device ID or `@device-id/bot-id` from discovery. After a lost response,
+   repeat the same input and ID with the same client credential to recover
+   the original task. Changed input returns 409; pruned task history returns
+   410 and the ID remains consumed. Check the original work before using a
+   new ID. With request IDs, specify a target or provider for thread follow-ups,
+   and explicitly select a Bot for Bot follow-ups.
+
 5. The command waits by default and returns JSON. Treat work as successful only
    when `status` is `completed`; use `result` in the current task. Report a
    `failed`, `cancelled`, or `cancelling` state accurately. Handle `needs_input`

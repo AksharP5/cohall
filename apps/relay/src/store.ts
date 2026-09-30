@@ -80,6 +80,11 @@ export class TaskDeadlineError extends Schema.TaggedErrorClass<TaskDeadlineError
   { status: Schema.Literals([400, 409]), message: Schema.String },
 ) {}
 
+export class TaskRequestError extends Schema.TaggedErrorClass<TaskRequestError>()(
+  "RelayStore.TaskRequestError",
+  { status: Schema.Literals([409, 410]), message: Schema.String },
+) {}
+
 interface ThreadRow {
   readonly id: string
   readonly title: string
@@ -234,8 +239,13 @@ export interface Interface {
     targetDeviceId: DeviceId,
     principal: AuthSession | "owner",
     providerSessionId?: string,
-  ) => Effect.Effect<Task, PersistenceError | TaskDeadlineError>
+    requestedInput?: CreateTaskInput,
+  ) => Effect.Effect<Task, PersistenceError | TaskDeadlineError | TaskRequestError>
   readonly expireTasks: () => Effect.Effect<ReadonlyArray<Task>, PersistenceError>
+  readonly findDelegation: (
+    input: CreateTaskInput,
+    principal: AuthSession | "owner",
+  ) => Effect.Effect<Task | undefined, PersistenceError | TaskRequestError>
   readonly inboxFor: (
     principal: AuthSession | "owner",
   ) => Effect.Effect<TaskInbox, PersistenceError>
@@ -605,6 +615,70 @@ const interruptedTaskStatus = `CASE
   ELSE 'queued' END`
 
 const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => {
+  const requestHash = (input: CreateTaskInput): string => {
+    const { requestId: _requestId, attachments, ...fields } = input
+    const normalized = {
+      ...fields,
+      provider: input.provider ?? (input.botId === undefined ? "codex" : "grok-bot"),
+      ...(attachments === undefined || attachments.length === 0
+        ? {}
+        : {
+            attachments: attachments.map(({ name, data }) => [
+              name,
+              Buffer.from(data, "base64").toString("base64"),
+            ]),
+          }),
+    }
+    return createHash("sha256")
+      .update(
+        JSON.stringify(
+          Object.entries(normalized).sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0,
+          ),
+        ),
+      )
+      .digest("hex")
+  }
+
+  const requestedTask = (
+    input: CreateTaskInput,
+    principal: AuthSession | "owner",
+  ): TaskRow | null => {
+    if (input.requestId === undefined) return null
+    const saved = db
+      .query<{ readonly input_hash: string; readonly task_id: string | null }, [string, string]>(
+        "SELECT input_hash, task_id FROM task_requests WHERE requester_id = ? AND request_id = ?",
+      )
+      .get(principal === "owner" ? "owner" : principal.id, input.requestId.toLowerCase())
+    if (saved === null) return null
+    if (saved.input_hash !== requestHash(input))
+      throw new TaskRequestError({
+        status: 409,
+        message: "Request ID was already used with different task input",
+      })
+    if (saved.task_id === null)
+      throw new TaskRequestError({
+        status: 410,
+        message: "The original task is no longer retained; this request ID cannot be reused",
+      })
+    const task = db.query<TaskRow, [string]>("SELECT * FROM tasks WHERE id = ?").get(saved.task_id)
+    if (task === null) throw new Error(`Missing task ${saved.task_id} for retained request`)
+    return task
+  }
+
+  const findDelegation = Effect.fn("RelayStore.findDelegation")(function* (
+    input: CreateTaskInput,
+    principal: AuthSession | "owner",
+  ) {
+    const row = yield* Effect.try({
+      try: () => requestedTask(input, principal),
+      catch: (cause) =>
+        cause instanceof TaskRequestError
+          ? cause
+          : operationError("RelayStore.findDelegation")(cause),
+    })
+    return row === null ? undefined : yield* taskFromRow(db, row)
+  })
   const recordTaskTraceEvent = (
     taskId: TaskId,
     kind: TaskTraceEventKind,
@@ -1331,19 +1405,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     targetDeviceId: DeviceId,
     principal: AuthSession | "owner",
     providerSessionId?: string,
+    requestedInput: CreateTaskInput = input,
   ) {
-    if (input.expiresAt !== undefined) {
-      if (input.provider === "grok-bot" || input.botId !== undefined)
-        return yield* new TaskDeadlineError({
-          status: 400,
-          message: "Task deadlines require a coding provider",
-        })
-      if (taskDeadlinePassed(input))
-        return yield* new TaskDeadlineError({
-          status: 400,
-          message: "Task deadline must be in the future",
-        })
-    }
     const requesterId = principal === "owner" ? "owner" : principal.id
     const boundDeviceId = principal === "owner" ? undefined : principal.deviceId
     const sourceDeviceId = yield* Effect.try({
@@ -1356,52 +1419,66 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           : boundDeviceId,
       catch: operationError("RelayStore.createDelegation.source"),
     })
-    const timestamp = now()
-    const threadId = input.threadId ?? makeThreadId()
-    const task = Task.make({
-      id: makeTaskId(),
-      threadId,
-      prompt: input.prompt,
-      provider: input.provider ?? (input.botId === undefined ? "codex" : "grok-bot"),
-      ...(input.botId === undefined ? {} : { botId: input.botId }),
-      status: "queued",
-      targetDeviceId,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      ...(input.expiresAt === undefined
-        ? {}
-        : { expiresAt: Timestamp.make(new Date(input.expiresAt).toISOString()) }),
-      ...(input.context === undefined ? {} : { context: input.context }),
-      ...(sourceDeviceId === undefined ? {} : { sourceDeviceId }),
-      ...(input.parentTaskId === undefined ? {} : { parentTaskId: input.parentTaskId }),
-      ...(input.workspace === undefined ? {} : { workspace: input.workspace }),
-      ...(input.attachments === undefined || input.attachments.length === 0
-        ? {}
-        : { inputAttachmentNames: input.attachments.map((attachment) => attachment.name) }),
-      ...(providerSessionId === undefined ? {} : { providerSessionId }),
-    })
-    const thread =
-      input.threadId === undefined
-        ? Thread.make({
-            id: threadId,
-            title: input.title ?? input.prompt.slice(0, 72),
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          })
-        : undefined
-    const message = Message.make({
-      id: makeMessageId(),
-      threadId,
-      role: "human",
-      authorName: sourceDeviceId === undefined ? "User" : "Remote agent",
-      content: input.prompt,
-      createdAt: timestamp,
-      taskId: task.id,
-      ...(sourceDeviceId === undefined ? {} : { deviceId: sourceDeviceId }),
-    })
-    yield* Effect.try({
+    const submission = yield* Effect.try({
       try: () =>
         db.transaction(() => {
+          const existing = requestedTask(requestedInput, principal)
+          if (existing !== null) return { existing }
+          if (input.expiresAt !== undefined) {
+            if (input.provider === "grok-bot" || input.botId !== undefined)
+              throw new TaskDeadlineError({
+                status: 400,
+                message: "Task deadlines require a coding provider",
+              })
+            if (taskDeadlinePassed(input))
+              throw new TaskDeadlineError({
+                status: 400,
+                message: "Task deadline must be in the future",
+              })
+          }
+          const timestamp = now()
+          const threadId = input.threadId ?? makeThreadId()
+          const task = Task.make({
+            id: makeTaskId(),
+            threadId,
+            prompt: input.prompt,
+            provider: input.provider ?? (input.botId === undefined ? "codex" : "grok-bot"),
+            ...(input.botId === undefined ? {} : { botId: input.botId }),
+            status: "queued",
+            targetDeviceId,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            ...(input.expiresAt === undefined
+              ? {}
+              : { expiresAt: Timestamp.make(new Date(input.expiresAt).toISOString()) }),
+            ...(input.context === undefined ? {} : { context: input.context }),
+            ...(sourceDeviceId === undefined ? {} : { sourceDeviceId }),
+            ...(input.parentTaskId === undefined ? {} : { parentTaskId: input.parentTaskId }),
+            ...(input.workspace === undefined ? {} : { workspace: input.workspace }),
+            ...(input.attachments === undefined || input.attachments.length === 0
+              ? {}
+              : { inputAttachmentNames: input.attachments.map((attachment) => attachment.name) }),
+            ...(providerSessionId === undefined ? {} : { providerSessionId }),
+          })
+          const thread =
+            input.threadId === undefined
+              ? Thread.make({
+                  id: threadId,
+                  title: input.title ?? input.prompt.slice(0, 72),
+                  createdAt: timestamp,
+                  updatedAt: timestamp,
+                })
+              : undefined
+          const message = Message.make({
+            id: makeMessageId(),
+            threadId,
+            role: "human",
+            authorName: sourceDeviceId === undefined ? "User" : "Remote agent",
+            content: input.prompt,
+            createdAt: timestamp,
+            taskId: task.id,
+            ...(sourceDeviceId === undefined ? {} : { deviceId: sourceDeviceId }),
+          })
           const outstanding = db
             .query<{ readonly count: number }, [string]>(
               `SELECT COUNT(*) AS count FROM tasks WHERE target_device_id = ?
@@ -1457,6 +1534,16 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
               "INSERT INTO task_attachments (task_id, name, direction, data) VALUES (?, ?, 'input', ?)",
             ).run(task.id, attachment.name, data)
           }
+          if (requestedInput.requestId !== undefined) {
+            db.query(
+              "INSERT INTO task_requests (requester_id, request_id, input_hash, task_id) VALUES (?, ?, ?, ?)",
+            ).run(
+              requesterId,
+              requestedInput.requestId.toLowerCase(),
+              requestHash(requestedInput),
+              task.id,
+            )
+          }
           recordTaskTraceEvent(task.id, "queued", "Relay accepted the task", timestamp)
           db.query(
             `INSERT INTO messages (
@@ -1475,10 +1562,16 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             message.deviceId ?? null,
           )
           db.query("UPDATE threads SET updated_at = ? WHERE id = ?").run(timestamp, threadId)
+          return { created: task }
         })(),
-      catch: operationError("RelayStore.createDelegation"),
+      catch: (cause) =>
+        cause instanceof TaskRequestError || cause instanceof TaskDeadlineError
+          ? cause
+          : operationError("RelayStore.createDelegation")(cause),
     })
-    return task
+    return "existing" in submission
+      ? yield* taskFromRow(db, submission.existing)
+      : submission.created
   })
 
   const threadContext = Effect.fn("RelayStore.threadContext")(function* (threadId: ThreadId) {
@@ -2347,6 +2440,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
     createDelegation,
     expireTasks,
+    findDelegation,
     getTask,
     reportTaskProgress,
     requestTaskInput,
@@ -2466,6 +2560,13 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         );
         CREATE INDEX IF NOT EXISTS tasks_thread_created ON tasks(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS tasks_target_status ON tasks(target_device_id, status);
+        CREATE TABLE IF NOT EXISTS task_requests (
+          requester_id TEXT NOT NULL, request_id TEXT NOT NULL, input_hash TEXT NOT NULL,
+          task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+          PRIMARY KEY(requester_id, request_id)
+        );
+        CREATE INDEX IF NOT EXISTS task_requests_retained_task
+          ON task_requests(task_id) WHERE task_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS task_attachments (
           task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
           name TEXT NOT NULL, direction TEXT NOT NULL CHECK(direction IN ('input', 'output')),

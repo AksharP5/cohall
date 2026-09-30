@@ -207,25 +207,29 @@ export const make = (options: RelayClientOptions): Interface => {
       ),
     createTask: (input) =>
       Effect.gen(function* () {
-        if (input.expiresAt !== undefined) {
+        const hasAttachments = (input.attachments?.length ?? 0) > 0
+        if (input.requestId !== undefined || input.expiresAt !== undefined || hasAttachments) {
           const health = yield* request(
-            "RelayClient.deadlineSupport",
+            "RelayClient.taskSupport",
             "/api/health",
-            Schema.Struct({ taskDeadlines: Schema.optionalKey(Schema.Boolean) }),
+            Schema.Struct({
+              taskIdempotency: Schema.optionalKey(Schema.Boolean),
+              taskDeadlines: Schema.optionalKey(Schema.Boolean),
+              taskAttachments: Schema.optionalKey(Schema.Boolean),
+            }),
           )
-          if (health.taskDeadlines !== true)
+          if (input.requestId !== undefined && health.taskIdempotency !== true) {
+            return yield* new RelayRequestError({
+              operation: "RelayClient.createTask",
+              message: "Upgrade the Cohall relay before using task request IDs",
+            })
+          }
+          if (input.expiresAt !== undefined && health.taskDeadlines !== true)
             return yield* new RelayRequestError({
               operation: "RelayClient.createTask",
               message: "Upgrade the Cohall relay before using task deadlines",
             })
-        }
-        if ((input.attachments?.length ?? 0) > 0) {
-          const health = yield* request(
-            "RelayClient.attachmentSupport",
-            "/api/health",
-            Schema.Struct({ taskAttachments: Schema.optionalKey(Schema.Boolean) }),
-          )
-          if (health.taskAttachments !== true) {
+          if (hasAttachments && health.taskAttachments !== true) {
             return yield* new RelayRequestError({
               operation: "RelayClient.createTask",
               message: "Upgrade the Cohall relay before sending file attachments",

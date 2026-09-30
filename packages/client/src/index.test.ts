@@ -3,10 +3,16 @@ import { type AddressInfo } from "node:net"
 import { Effect } from "effect"
 import { expect, it } from "vitest"
 import { make } from "./index.ts"
-import { RequestTaskInput, TaskProgressInput, Timestamp, makeTaskId } from "@cohall/protocol"
+import {
+  RequestTaskInput,
+  TaskProgressInput,
+  Timestamp,
+  TaskRequestId,
+  makeTaskId,
+} from "@cohall/protocol"
 import { Schema } from "effect"
 
-it("refuses progress and clarification updates against older relays", async () => {
+it("refuses progress, clarification, and keyed submissions against older relays", async () => {
   let posted = false
   const server = createServer((request, response) => {
     response.setHeader("content-type", "application/json")
@@ -22,6 +28,14 @@ it("refuses progress and clarification updates against older relays", async () =
     const address = server.address()
     if (address === null || typeof address === "string") throw new Error("Missing test port")
     const client = make({ baseUrl: `http://127.0.0.1:${address.port}`, token: "test" })
+    await expect(
+      Effect.runPromise(
+        client.createTask({
+          requestId: TaskRequestId.make(crypto.randomUUID()),
+          prompt: "Build",
+        }),
+      ),
+    ).rejects.toMatchObject({ message: "Upgrade the Cohall relay before using task request IDs" })
     await expect(
       Effect.runPromise(
         client.reportTaskProgress(
