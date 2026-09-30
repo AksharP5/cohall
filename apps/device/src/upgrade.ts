@@ -17,6 +17,7 @@ import { platform as operatingSystem } from "node:os"
 import { configurationPath } from "./config.ts"
 
 const packageName = "@akshar5/cohall"
+const minimumBunLookupVersion = "1.2.15"
 const semanticVersion =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
@@ -61,10 +62,6 @@ const compareVersions = (left: string, right: string): number => {
 export const PackageManager = Schema.Literals(["npm", "bun", "pnpm"])
 export type PackageManager = typeof PackageManager.Type
 export type ServiceManager = "launchd" | "scheduled-task" | "systemd-system" | "systemd-user"
-
-const decodePackageMetadata = Schema.decodeUnknownOption(
-  Schema.Struct({ name: Schema.Literal(packageName), version: Schema.String }),
-)
 
 export interface CommandResult {
   readonly exitCode: number
@@ -127,7 +124,6 @@ export interface UpgradeOptions {
   readonly uid?: number
   readonly statePath?: string
   readonly delegated?: boolean
-  readonly fetch?: typeof globalThis.fetch
   readonly runner?: CommandRunner
   readonly resolveExecutable?: (command: string) => Promise<string>
 }
@@ -583,32 +579,20 @@ const writeReceipt = async (path: string, value: RestartReceipt): Promise<void> 
 
 const installedVersion = async (entrypoint: string): Promise<string> => {
   const canonicalEntrypoint = await realpath(entrypoint)
-  const metadata = decodePackageMetadata(
-    JSON.parse(await readFile(join(dirname(dirname(canonicalEntrypoint)), "package.json"), "utf8")),
+  const metadata: unknown = JSON.parse(
+    await readFile(join(dirname(dirname(canonicalEntrypoint)), "package.json"), "utf8"),
   )
-  if (metadata._tag === "None") {
+  if (
+    typeof metadata !== "object" ||
+    metadata === null ||
+    !("name" in metadata) ||
+    metadata.name !== packageName ||
+    !("version" in metadata) ||
+    typeof metadata.version !== "string"
+  ) {
     throw new Error(`Could not verify the installed ${packageName} version`)
   }
-  return metadata.value.version
-}
-
-const latestVersion = async (request: typeof globalThis.fetch): Promise<string> => {
-  const response = await request(
-    `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
-    {
-      signal: AbortSignal.timeout(30_000),
-    },
-  )
-  if (!response.ok) {
-    throw new Error(
-      `Could not resolve ${packageName}@latest: npm registry returned HTTP ${response.status}`,
-    )
-  }
-  const metadata = decodePackageMetadata(await response.json())
-  if (metadata._tag === "None" || parseVersion(metadata.value.version) === undefined) {
-    throw new Error(`Could not resolve ${packageName}@latest to an exact semantic version`)
-  }
-  return metadata.value.version
+  return metadata.version
 }
 
 const restartReceiptPath = (): string => join(dirname(configurationPath()), "upgrade-restart.json")
@@ -749,7 +733,51 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   const services = await activeServices(runner, candidates)
   await assertServiceInstallations(runner, services, canonicalEntrypoint, entrypoint)
 
-  const resolvedTarget = target === "latest" ? await latestVersion(options.fetch ?? fetch) : target
+  const resolvePackageManager = (): Promise<string> =>
+    options.resolveExecutable === undefined
+      ? trustedExecutable(
+          installation.manager,
+          installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
+        )
+      : resolveExecutable(installation.manager)
+  let packageManagerExecutable: string | undefined
+  let resolvedTarget = target
+  if (target === "latest") {
+    packageManagerExecutable = await resolvePackageManager()
+    if (installation.manager === "bun") {
+      const information = await checked(
+        runner,
+        { command: packageManagerExecutable, arguments: ["--version"] },
+        10_000,
+      )
+      if (compareVersions(information.stdout.trim(), minimumBunLookupVersion) < 0) {
+        throw new Error(
+          `Latest upgrades require Bun ${minimumBunLookupVersion} or newer; upgrade Bun or use --to <exact-version>`,
+        )
+      }
+    }
+    const lookup = await checked(
+      runner,
+      {
+        command: packageManagerExecutable,
+        arguments: [
+          ...(installation.manager === "bun" ? ["pm"] : []),
+          "view",
+          ...(installation.manager === "pnpm" ? [] : ["--global"]),
+          ...(installation.prefix === undefined ? [] : ["--prefix", installation.prefix]),
+          `${packageName}@latest`,
+          "version",
+          "--json",
+        ],
+      },
+      30_000,
+    )
+    const latest: unknown = JSON.parse(lookup.stdout)
+    if (typeof latest !== "string" || parseVersion(latest) === undefined) {
+      throw new Error(`Could not resolve ${packageName}@latest to an exact semantic version`)
+    }
+    resolvedTarget = latest
+  }
   let nextVersion = await installedVersion(entrypoint).catch((cause: unknown) => {
     if (target === "latest") {
       throw new Error(
@@ -793,13 +821,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
 
   if (nextVersion === undefined || resolvedTarget !== nextVersion) {
     const install = packageInstallCommand(installation, resolvedTarget)
-    const installExecutable =
-      options.resolveExecutable === undefined
-        ? await trustedExecutable(
-            install.command,
-            installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
-          )
-        : await resolveExecutable(install.command)
+    const installExecutable = packageManagerExecutable ?? (await resolvePackageManager())
     await checked(runner, { ...install, command: installExecutable })
     nextVersion = await installedVersion(entrypoint)
   }

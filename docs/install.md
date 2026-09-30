@@ -212,10 +212,11 @@ the new version, and restarts only active Cohall services. If a service points
 to another global installation, Cohall stops and reports the correct executable
 instead of restarting the wrong job.
 
-The default target, `latest`, is resolved from the public npm registry and pinned
-before installation through your existing package manager. If it is older than
-the running or installed version, Cohall leaves the installation and services
-untouched. Version ordering includes
+The default target, `latest`, is resolved through that package manager using its
+registry and network settings, then pinned before installation. Bun installations
+require Bun 1.2.15 or newer for this lookup; older Bun versions can still use an
+exact `--to` version. If `latest` is older than the running or installed version,
+Cohall leaves the installation and services untouched. Version ordering includes
 prereleases and ignores build metadata. A failed or invalid lookup, or unreadable
 installed package metadata, stops the upgrade before installation. Use an exact
 `--to` version to repair damaged metadata.

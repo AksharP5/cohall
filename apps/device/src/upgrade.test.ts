@@ -1,6 +1,9 @@
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { once } from "node:events"
+import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { execa } from "execa"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { DeviceId, DeviceOperation, OperationId, now } from "@cohall/protocol"
 import { performDeviceOperation } from "./daemon.ts"
@@ -123,11 +126,6 @@ describe("upgrade target", () => {
 })
 
 describe("latest upgrades", () => {
-  const fetchLatest =
-    (version: unknown, status = 200): typeof globalThis.fetch =>
-    async () =>
-      Response.json({ name: "@akshar5/cohall", version }, { status })
-
   const installation = async (version: string, manager: PackageManager = "npm") => {
     const root = await temporaryDirectory()
     const prefix =
@@ -160,6 +158,9 @@ describe("latest upgrades", () => {
       run: async (command, arguments_) => {
         const invocation = [command, ...arguments_].join(" ")
         invocations.push(invocation)
+        if (arguments_[0] === "view") {
+          return { exitCode: 0, stdout: JSON.stringify(latest), stderr: "" }
+        }
         if (arguments_.includes("show")) {
           return {
             exitCode: 0,
@@ -183,7 +184,6 @@ describe("latest upgrades", () => {
       statePath: join(root, "receipt.json"),
       runner,
       resolveExecutable,
-      fetch: fetchLatest(latest),
     })
 
     expect(result).toMatchObject({
@@ -192,6 +192,9 @@ describe("latest upgrades", () => {
       requested_version: "latest",
       services_restarted: [],
     })
+    expect(invocations).toContain(
+      `npm view --global --prefix ${root} @akshar5/cohall@latest version --json`,
+    )
     expect(invocations.some((invocation) => invocation.includes(" install "))).toBe(false)
     expect(invocations.some((invocation) => invocation.includes(" restart "))).toBe(false)
     expect(JSON.parse(await readFile(metadata, "utf8"))).toMatchObject({ version: currentVersion })
@@ -206,6 +209,12 @@ describe("latest upgrades", () => {
         run: async (command, arguments_) => {
           const invocation = [command, ...arguments_].join(" ")
           invocations.push(invocation)
+          if (arguments_[0] === "--version") {
+            return { exitCode: 0, stdout: "1.2.15\n", stderr: "" }
+          }
+          if (arguments_.includes("view")) {
+            return { exitCode: 0, stdout: '"1.2.3"', stderr: "" }
+          }
           if (command === manager) {
             await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
             return success()
@@ -223,7 +232,6 @@ describe("latest upgrades", () => {
         statePath: join(root, "receipt.json"),
         runner,
         resolveExecutable,
-        fetch: fetchLatest("1.2.3"),
       })
 
       expect(result).toMatchObject({ upgraded: true, installed_version: "1.2.3" })
@@ -235,7 +243,6 @@ describe("latest upgrades", () => {
       expect(invocations.some((invocation) => /(?:install|add).*@latest$/.test(invocation))).toBe(
         false,
       )
-      expect(invocations.some((invocation) => invocation.includes(" view "))).toBe(false)
     },
   )
 
@@ -250,7 +257,9 @@ describe("latest upgrades", () => {
       const runner: CommandRunner = {
         run: async (command, arguments_) => {
           invocations.push([command, ...arguments_].join(" "))
-          return { exitCode: 3, stdout: "", stderr: "" }
+          return arguments_[0] === "view"
+            ? { exitCode: 0, stdout: '"1.2.4"', stderr: "" }
+            : { exitCode: 3, stdout: "", stderr: "" }
         },
       }
       const operation = DeviceOperation.make({
@@ -271,7 +280,6 @@ describe("latest upgrades", () => {
           statePath: join(root, "receipt.json"),
           runner,
           resolveExecutable,
-          fetch: fetchLatest("1.2.4"),
         }),
       )
 
@@ -283,34 +291,127 @@ describe("latest upgrades", () => {
     },
   )
 
-  it("allows an exact version to intentionally roll back without a latest lookup", async () => {
-    const { root, entrypoint, metadata } = await installation("1.2.5")
-    const invocations: Array<string> = []
+  it.each(["npm", "bun"] as const)(
+    "allows an exact %s version rollback without a latest lookup",
+    async (manager) => {
+      const { root, entrypoint, metadata } = await installation("1.2.5", manager)
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, arguments_) => {
+          invocations.push([command, ...arguments_].join(" "))
+          if (command !== manager) return { exitCode: 3, stdout: "", stderr: "" }
+          if (arguments_.includes("view") || arguments_[0] === "--version") {
+            throw new Error("Exact versions must not look up latest or check the manager version")
+          }
+          await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
+          return success()
+        },
+      }
+
+      await expect(
+        upgrade({
+          currentVersion: "1.2.5",
+          target: "1.2.3",
+          restart: false,
+          dryRun: false,
+          entrypoint,
+          statePath: join(root, "receipt.json"),
+          runner,
+          resolveExecutable,
+        }),
+      ).resolves.toMatchObject({ installed_version: "1.2.3", requested_version: "1.2.3" })
+      expect(invocations.some((invocation) => invocation.includes(" view "))).toBe(false)
+    },
+  )
+
+  it.each(["1.2.14", "1.2.15-rc.1"])(
+    "refuses a latest lookup on unsupported Bun %s",
+    async (bunVersion) => {
+      const { root, entrypoint } = await installation("1.2.3", "bun")
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, arguments_) => {
+          invocations.push([command, ...arguments_].join(" "))
+          return command === "bun" && arguments_[0] === "--version"
+            ? { exitCode: 0, stdout: bunVersion, stderr: "" }
+            : { exitCode: 3, stdout: "", stderr: "" }
+        },
+      }
+
+      await expect(
+        upgrade({
+          currentVersion: "1.2.3",
+          restart: true,
+          dryRun: false,
+          entrypoint,
+          statePath: join(root, "receipt.json"),
+          runner,
+          resolveExecutable,
+        }),
+      ).rejects.toThrow("Latest upgrades require Bun 1.2.15 or newer")
+      expect(invocations.filter((invocation) => invocation.startsWith("bun "))).toEqual([
+        "bun --version",
+      ])
+    },
+  )
+
+  it("resolves latest through npm's custom global registry configuration", async () => {
+    const { root, entrypoint } = await installation("99.0.0")
+    const requests: Array<string> = []
+    const registry = createServer((request, response) => {
+      requests.push(request.url ?? "")
+      response.setHeader("content-type", "application/json")
+      response.end(
+        JSON.stringify({
+          name: "@akshar5/cohall",
+          "dist-tags": { latest: "1.2.3" },
+          versions: { "1.2.3": { name: "@akshar5/cohall", version: "1.2.3" } },
+        }),
+      )
+    })
+    registry.listen(0, "127.0.0.1")
+    await once(registry, "listening")
+    const address = registry.address()
+    if (address === null || typeof address === "string")
+      throw new Error("Registry did not bind a port")
+    const registryUrl = `http://127.0.0.1:${address.port}/`
+    await mkdir(join(root, "etc"))
+    await writeFile(
+      join(root, "etc", "npmrc"),
+      `registry=${registryUrl}\n@akshar5:registry=${registryUrl}\n`,
+    )
+    const userConfig = join(root, "user-npmrc")
+    await writeFile(userConfig, "")
+    vi.stubEnv("npm_config_userconfig", userConfig)
+    vi.stubEnv("npm_config_cache", join(root, "cache"))
+    vi.stubEnv("npm_config_update_notifier", "false")
     const runner: CommandRunner = {
       run: async (command, arguments_) => {
-        invocations.push([command, ...arguments_].join(" "))
         if (command !== "npm") return { exitCode: 3, stdout: "", stderr: "" }
-        await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
-        return success()
+        if (arguments_[0] !== "view") throw new Error("This test must never install a package")
+        const result = await execa(command, arguments_, { reject: false })
+        return { exitCode: result.exitCode ?? 1, stdout: result.stdout, stderr: result.stderr }
       },
     }
 
-    await expect(
-      upgrade({
-        currentVersion: "1.2.5",
-        target: "1.2.3",
-        restart: false,
-        dryRun: false,
-        entrypoint,
-        statePath: join(root, "receipt.json"),
-        runner,
-        resolveExecutable,
-        fetch: async () => {
-          throw new Error("Exact versions must not query latest")
-        },
-      }),
-    ).resolves.toMatchObject({ installed_version: "1.2.3", requested_version: "1.2.3" })
-    expect(invocations.some((invocation) => invocation.includes(" view "))).toBe(false)
+    try {
+      await expect(
+        upgrade({
+          currentVersion: "99.0.0",
+          restart: false,
+          dryRun: false,
+          entrypoint,
+          statePath: join(root, "receipt.json"),
+          runner,
+          resolveExecutable,
+        }),
+      ).resolves.toMatchObject({ installed_version: "99.0.0", upgraded: false })
+      expect(requests.map((path) => decodeURIComponent(path))).toContain("/@akshar5/cohall")
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        registry.close((error) => (error === undefined ? resolve() : reject(error))),
+      )
+    }
   })
 
   it("refuses latest when a stale process cannot verify the installed version", async () => {
@@ -320,7 +421,9 @@ describe("latest upgrades", () => {
     const runner: CommandRunner = {
       run: async (command, arguments_) => {
         invocations.push([command, ...arguments_].join(" "))
-        return { exitCode: 3, stdout: "", stderr: "" }
+        return arguments_[0] === "view"
+          ? { exitCode: 0, stdout: '"1.2.4"', stderr: "" }
+          : { exitCode: 3, stdout: "", stderr: "" }
       },
     }
 
@@ -333,20 +436,14 @@ describe("latest upgrades", () => {
         statePath: join(root, "receipt.json"),
         runner,
         resolveExecutable,
-        fetch: fetchLatest("1.2.4"),
       }),
     ).rejects.toThrow("Could not verify the installed version before upgrading latest")
     expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
   })
 
-  it.each([
-    { latest: "latest", status: 200 },
-    { latest: "1.2.3-01", status: 200 },
-    { latest: ["1.2.3"], status: 200 },
-    { latest: "1.2.4", status: 503 },
-  ])(
-    "leaves the installation and recovery state intact when latest lookup fails: %j",
-    async ({ latest, status }) => {
+  it.each(['"latest"', '"1.2.3-01"', '["1.2.3"]'])(
+    "leaves the installation and recovery state intact when latest is invalid: %s",
+    async (stdout) => {
       const { root, entrypoint, metadata } = await installation("1.2.3")
       const statePath = join(root, "receipt.json")
       const receipt = JSON.stringify({
@@ -361,7 +458,9 @@ describe("latest upgrades", () => {
       const runner: CommandRunner = {
         run: async (command, arguments_) => {
           invocations.push([command, ...arguments_].join(" "))
-          return { exitCode: 3, stdout: "", stderr: "" }
+          return arguments_[0] === "view"
+            ? { exitCode: 0, stdout, stderr: "" }
+            : { exitCode: 3, stdout: "", stderr: "" }
         },
       }
 
@@ -374,7 +473,6 @@ describe("latest upgrades", () => {
           statePath,
           runner,
           resolveExecutable,
-          fetch: fetchLatest(latest, status),
         }),
       ).rejects.toThrow("Could not resolve @akshar5/cohall@latest")
       expect(invocations.some((invocation) => invocation.includes(" install "))).toBe(false)
