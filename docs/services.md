@@ -234,13 +234,16 @@ Start with `cohall doctor`. It reports relay reachability, device connectivity,
 provider selection, executable discovery, and version information without
 printing credentials.
 
-Inspect a task's redacted lifecycle, including dispatches, reconnect-driven
-requeues, execution, cancellation, and completion:
+Inspect a task's lifecycle, including dispatches, reconnect-driven requeues,
+execution, clarification, cancellation, and completion:
 
 ```bash
 cohall trace <task-id>
 cohall trace <task-id> --follow
 ```
+
+Traces omit prompts, final results, credentials, and provider session IDs. They
+include progress and clarification text; inspect those fields before sharing.
 
 Use `journalctl --user -u cohall-device -f` for a Linux device and
 `journalctl -u cohall-relay -f` for a system relay. The trace is durable and

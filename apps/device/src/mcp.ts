@@ -5,6 +5,10 @@ import {
   Provider,
   TaskId,
   TaskProgressInput,
+  TaskRunId,
+  RequestTaskInput,
+  AnswerTaskInput,
+  maxClarificationBytes,
   maxProgressNoteBytes,
   ThreadId,
   version,
@@ -22,6 +26,7 @@ import {
   taskResult,
   threadContext,
   waitForTask,
+  requestInput,
 } from "./delegation.ts"
 import { readInputAttachments } from "./task-attachments.ts"
 import { createMcpBuildNotice } from "./mcp-build-notice.ts"
@@ -35,6 +40,57 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     token: configuration.token,
   })
   const server = new McpServer({ name: "cohall", version })
+
+  server.registerTool(
+    "task_request_input",
+    {
+      title: "Ask for task clarification",
+      description:
+        "Ask the original sender for essential missing information. After this succeeds, end the current worker turn immediately. Cohall pauses when the turn exits and resumes the same task after an answer. Inherits the delegated task and turn when omitted.",
+      inputSchema: {
+        task_id: z.string().uuid().optional(),
+        run_id: z.string().uuid().optional(),
+        question: z.string().min(1).max(maxClarificationBytes),
+      },
+    },
+    async ({ task_id, run_id, question }) =>
+      output(
+        await Effect.runPromise(
+          requestInput(
+            client,
+            configuration,
+            Schema.decodeUnknownSync(RequestTaskInput.fields.question)(question),
+            task_id === undefined ? undefined : Schema.decodeUnknownSync(TaskId)(task_id),
+            run_id === undefined ? undefined : Schema.decodeUnknownSync(TaskRunId)(run_id),
+          ),
+        ),
+      ),
+  )
+
+  server.registerTool(
+    "task_answer",
+    {
+      title: "Answer a worker's question",
+      description:
+        "Answer the current clarification and resume the same task. Use input_request.id from task_status or delegate as request_id, or inputRequest.id from completion_inbox. Only the original requester or relay owner can answer. Use wait_task to collect the resumed result.",
+      inputSchema: {
+        task_id: z.string().uuid(),
+        request_id: z.string().uuid(),
+        answer: z.string().min(1).max(maxClarificationBytes),
+      },
+    },
+    async ({ task_id, request_id, answer }) =>
+      output(
+        taskResult(
+          await Effect.runPromise(
+            client.answerTaskInput(
+              Schema.decodeUnknownSync(TaskId)(task_id),
+              Schema.decodeUnknownSync(AnswerTaskInput)({ requestId: request_id, answer }),
+            ),
+          ),
+        ),
+      ),
+  )
 
   server.registerTool(
     "task_progress",
@@ -162,9 +218,9 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
   server.registerTool(
     "completion_inbox",
     {
-      title: "List completed work",
+      title: "List pending questions and completed work",
       description:
-        "List up to 20 unacknowledged completed tasks sent by this client. hasMore signals additional entries. Use task_status for a full result, then acknowledge the task after handling it.",
+        "List up to 20 unanswered clarification requests and unacknowledged completed tasks sent by this client. hasMore signals additional entries. Answer questions with task_answer; use task_status for full results and acknowledge only handled completions.",
       inputSchema: {},
     },
     async () => output(await Effect.runPromise(client.inbox())),
@@ -244,7 +300,8 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     "wait_task",
     {
       title: "Wait for delegated work",
-      description: "Wait for a Cohall task to finish and return its final result.",
+      description:
+        "Wait for a Cohall task to finish or need input. Answer a needs_input result with task_answer, then wait again.",
       inputSchema: {
         task_id: z.string().uuid(),
         timeout_seconds: z.number().int().min(5).max(86_400).default(900),
@@ -261,7 +318,7 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     {
       title: "Cancel delegated work",
       description:
-        "Request cancellation of coding work or a queued Bot task. Active Grok Bot tasks must be stopped in Grok Bot.",
+        "Cancel coding work, a paused task, or a Bot task that has never been dispatched. Active Grok Bot tasks must be stopped in Grok Bot.",
       inputSchema: { task_id: z.string().uuid() },
     },
     async ({ task_id }) =>

@@ -29,6 +29,7 @@ export interface RunOptions {
   readonly provider: CliProvider
   readonly threadId: string
   readonly taskId?: string
+  readonly runId?: string
   readonly prompt: string
   readonly cwd: string
   readonly beforeSpawn?: () => Promise<void>
@@ -505,6 +506,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
             COHALL_PROVIDER: options.provider,
             COHALL_THREAD_ID: options.threadId,
             ...(options.taskId === undefined ? {} : { COHALL_TASK_ID: options.taskId }),
+            ...(options.runId === undefined ? {} : { COHALL_TASK_RUN_ID: options.runId }),
           },
           extendEnv: false,
           detached: platform() !== "win32",

@@ -164,6 +164,12 @@ See [Bot replies and cancellation](../README.md#talk-to-your-grok-bots) for
 how Cohall records the answer. The local gateway is experimental and may change
 with Grok Bot updates.
 
+Bots must preserve the task and `--run-id` in their supplied callback command.
+Use `--question 'Your question'` for essential missing information, then end the
+turn. The requester answers with `cohall answer`; Cohall sends a resumed handoff
+with the answer and a new callback. Paused tasks can be cancelled. See
+[clarification and resume](integrations.md#clarification-and-resume).
+
 ## Give the setup to a Bot
 
 Once you have added the Tailscale policy, you can send this to a Bot on the

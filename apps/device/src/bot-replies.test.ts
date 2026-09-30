@@ -1,4 +1,14 @@
-import { BotId, DeviceId, Task, TaskId, ThreadId, Timestamp } from "@cohall/protocol"
+import {
+  BotId,
+  DeviceId,
+  RequestTaskInput,
+  Task,
+  TaskId,
+  TaskRunId,
+  ThreadId,
+  Timestamp,
+} from "@cohall/protocol"
+import { Schema } from "effect"
 import { execFile } from "node:child_process"
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -41,6 +51,27 @@ afterEach(async () => {
 })
 
 describe("local bot replies", () => {
+  it("isolates resumed turns from old replies, dispatch receipts, and cleanup", async () => {
+    const oldRun = TaskRunId.make(crypto.randomUUID())
+    const newRun = TaskRunId.make(crypto.randomUUID())
+    await prepareBotReply(Task.make({ ...task, runId: oldRun }))
+    await claimBotDispatch(task.id, oldRun)
+    const question = Schema.decodeUnknownSync(RequestTaskInput)({
+      runId: oldRun,
+      question: "Which release?",
+    }).question
+    await writeBotReply(task.id, { question }, oldRun)
+    expect((await prepareBotReply(Task.make({ ...task, runId: newRun }))).dispatched).toBe(false)
+    expect(await readBotReply(task.id, newRun)).toBeUndefined()
+    expect(await claimBotDispatch(task.id, newRun)).toBe(true)
+    await writeBotReply(task.id, { result: "Released" }, newRun)
+    await cleanupBotReply(task.id, oldRun)
+    expect(await readBotReply(task.id, newRun)).toEqual({ result: "Released" })
+    await expect(writeBotReply(task.id, { result: "Stale result" }, oldRun)).rejects.toThrow(
+      "No pending",
+    )
+  })
+
   it("persists the original deadline and dispatch intent across resumed tasks", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000)
     const prepared = await prepareBotReply(task)

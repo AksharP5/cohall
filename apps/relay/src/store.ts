@@ -11,6 +11,11 @@ import {
   Provider,
   Task,
   TaskProgress,
+  TaskClarification,
+  TaskRunId,
+  ClarificationId,
+  type RequestTaskInput,
+  type AnswerTaskInput,
   type TaskProgressInput,
   TaskAttachment,
   TaskId,
@@ -33,6 +38,7 @@ import {
   makeThreadId,
   maxAttachmentBytes,
   maxTaskAttachments,
+  maxTaskClarifications,
   now,
   taskSlot,
   type AuthSessionId,
@@ -59,6 +65,11 @@ export class PersistenceError extends Schema.TaggedErrorClass<PersistenceError>(
 
 export class TaskProgressError extends Schema.TaggedErrorClass<TaskProgressError>()(
   "RelayStore.TaskProgressError",
+  { status: Schema.Literals([403, 409]), message: Schema.String },
+) {}
+
+export class TaskInputError extends Schema.TaggedErrorClass<TaskInputError>()(
+  "RelayStore.TaskInputError",
   { status: Schema.Literals([403, 409]), message: Schema.String },
 ) {}
 
@@ -101,6 +112,8 @@ interface DeviceRow {
 
 interface TaskRow {
   readonly id: string
+  readonly run_id: string | null
+  readonly clarifications_json: string | null
   readonly thread_id: string
   readonly prompt: string
   readonly context: string | null
@@ -134,7 +147,8 @@ interface InboxRow {
   readonly prompt_preview: string
   readonly result_preview: string | null
   readonly error_preview: string | null
-  readonly completed_at: string
+  readonly completed_at: string | null
+  readonly input_request_json: string | null
 }
 
 interface TaskTraceEventRow {
@@ -226,6 +240,16 @@ export interface Interface {
     deviceId: DeviceId,
     note: TaskProgressInput["note"],
   ) => Effect.Effect<TaskProgress, PersistenceError | TaskProgressError>
+  readonly requestTaskInput: (
+    taskId: TaskId,
+    deviceId: DeviceId,
+    input: RequestTaskInput,
+  ) => Effect.Effect<TaskClarification, PersistenceError | TaskInputError>
+  readonly answerTaskInput: (
+    taskId: TaskId,
+    principal: AuthSession | "owner",
+    input: AnswerTaskInput,
+  ) => Effect.Effect<Task, PersistenceError | TaskInputError>
   readonly listAttachments: (
     taskId: TaskId,
   ) => Effect.Effect<ReadonlyArray<TaskAttachment>, PersistenceError>
@@ -242,22 +266,29 @@ export interface Interface {
   readonly assignTask: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
   readonly markTaskDispatched: (taskId: TaskId) => Effect.Effect<void, PersistenceError>
   readonly rollbackAssignment: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
-  readonly acceptTask: (taskId: TaskId, deviceId: DeviceId) => Effect.Effect<Task, PersistenceError>
+  readonly acceptTask: (
+    taskId: TaskId,
+    deviceId: DeviceId,
+    runId?: TaskRunId,
+  ) => Effect.Effect<Task, PersistenceError>
   readonly finishTask: (
     taskId: TaskId,
     deviceId: DeviceId,
     result: string,
     providerSessionId?: string,
     attachments?: ReadonlyArray<InputAttachment>,
+    runId?: TaskRunId,
   ) => Effect.Effect<Task, PersistenceError>
   readonly failTask: (
     taskId: TaskId,
     deviceId: DeviceId,
     error: string,
+    runId?: TaskRunId,
   ) => Effect.Effect<Task, PersistenceError>
   readonly acknowledgeCancellation: (
     taskId: TaskId,
     deviceId: DeviceId,
+    runId?: TaskRunId,
   ) => Effect.Effect<Task, PersistenceError>
   readonly requestCancellation: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
   readonly requeueTasksFor: (deviceId: DeviceId) => Effect.Effect<void, PersistenceError>
@@ -389,6 +420,10 @@ const taskFromRow = (db: Database, row: TaskRow): Effect.Effect<Task, Persistenc
     Effect.flatMap((attachments) =>
       decode("RelayStore.decodeTask", Task, {
         id: row.id,
+        ...(row.run_id === null ? {} : { runId: row.run_id }),
+        ...(row.clarifications_json === null
+          ? {}
+          : { clarifications: JSON.parse(row.clarifications_json) as unknown }),
         threadId: row.thread_id,
         prompt: row.prompt,
         provider: row.provider,
@@ -425,7 +460,10 @@ const inboxItemFromRow = (row: InboxRow): Effect.Effect<TaskInboxItem, Persisten
     ...(row.bot_id === null ? {} : { botId: row.bot_id }),
     status: row.status,
     promptPreview: row.prompt_preview,
-    completedAt: row.completed_at,
+    ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
+    ...(row.input_request_json === null
+      ? {}
+      : { inputRequest: JSON.parse(row.input_request_json) as unknown }),
     ...(row.result_preview === null ? {} : { resultPreview: row.result_preview }),
     ...(row.error_preview === null ? {} : { errorPreview: row.error_preview }),
   })
@@ -451,6 +489,7 @@ const emptyStatusCounts = (): Record<TaskStatus, number> => ({
   queued: 0,
   assigned: 0,
   running: 0,
+  needs_input: 0,
   cancelling: 0,
   completed: 0,
   failed: 0,
@@ -550,6 +589,11 @@ const derivedTraceEvents = (task: Task): ReadonlyArray<TaskTraceEvent> => {
   return events
 }
 
+const interruptedTaskStatus = `CASE
+  WHEN json_array_length(clarifications_json) > 0
+    AND json_extract(clarifications_json, '$[#-1].answer') IS NULL THEN 'needs_input'
+  ELSE 'queued' END`
+
 const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => {
   const recordTaskTraceEvent = (
     taskId: TaskId,
@@ -609,7 +653,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     substr(prompt, 1, 160) AS prompt_preview,
     substr(result, 1, 512) AS result_preview,
     substr(error, 1, 512) AS error_preview,
-    COALESCE(completed_at, updated_at) AS completed_at`
+    CASE WHEN status = 'needs_input' THEN NULL ELSE COALESCE(completed_at, updated_at) END AS completed_at,
+    CASE WHEN status = 'needs_input' THEN json_extract(clarifications_json, '$[#-1]') END AS input_request_json`
 
   const queryOperation = (operationId: OperationId): DeviceOperationRow | null =>
     db
@@ -688,8 +733,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         db
           .query<InboxRow, [string]>(
             `SELECT ${inboxColumns} FROM tasks WHERE requester_id = ? AND completion_seen_at IS NULL
-             AND status IN ('completed', 'failed', 'cancelled')
-             ORDER BY completed_at ASC, id ASC LIMIT 21`,
+             AND status IN ('needs_input', 'completed', 'failed', 'cancelled')
+             ORDER BY COALESCE(completed_at, updated_at) ASC, id ASC LIMIT 21`,
           )
           .all(requesterId),
       catch: operationError("RelayStore.inboxFor"),
@@ -785,6 +830,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       ...(task.completedAt === undefined ? {} : { completedAt: task.completedAt }),
       ...(task.error === undefined ? {} : { error: task.error }),
       ...(task.progress === undefined ? {} : { progress: task.progress }),
+      ...(task.clarifications === undefined ? {} : { clarifications: task.clarifications }),
     })
   })
 
@@ -1163,13 +1209,13 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         db.transaction(() => {
           const timestamp = now()
           const interrupted = db
-            .query<{ readonly id: string }, []>(
-              "SELECT id FROM tasks WHERE status IN ('assigned', 'running')",
+            .query<{ readonly id: string; readonly status: "queued" | "needs_input" }, []>(
+              `SELECT id, ${interruptedTaskStatus} AS status FROM tasks WHERE status IN ('assigned', 'running')`,
             )
             .all()
           db.query("UPDATE devices SET status = 'offline'").run()
           db.query(
-            `UPDATE tasks SET status = 'queued', updated_at = ?, progress_note = NULL, progress_at = NULL
+            `UPDATE tasks SET status = ${interruptedTaskStatus}, updated_at = ?, progress_note = NULL, progress_at = NULL
              WHERE status IN ('assigned', 'running')`,
           ).run(timestamp)
           db.query(
@@ -1178,7 +1224,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           for (const task of interrupted) {
             recordTaskTraceEvent(
               TaskId.make(task.id),
-              "requeued",
+              task.status === "needs_input" ? "needs_input" : "requeued",
               "Relay restarted before the task completed",
               timestamp,
             )
@@ -1333,7 +1379,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           const outstanding = db
             .query<{ readonly count: number }, [string]>(
               `SELECT COUNT(*) AS count FROM tasks WHERE target_device_id = ?
-               AND status IN ('queued', 'assigned', 'running', 'cancelling')`,
+               AND status IN ('queued', 'assigned', 'running', 'needs_input', 'cancelling')`,
             )
             .get(targetDeviceId)
           if ((outstanding?.count ?? 0) >= 100) {
@@ -1535,7 +1581,15 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         db.transaction(() => {
           const result = db
             .query(
-              `UPDATE tasks SET status = 'assigned', updated_at = ?,
+              `UPDATE tasks SET status = 'assigned', updated_at = ?, run_id = CASE
+                 WHEN provider = 'grok-bot' AND (
+                   dispatched_at IS NOT NULL OR started_at IS NOT NULL OR NOT EXISTS (
+                     SELECT 1 FROM devices, json_each(devices.capabilities_json) capability
+                     WHERE devices.id = tasks.target_device_id
+                       AND json_extract(capability.value, '$.id') = 'task-clarification'
+                   )
+                 )
+                   THEN run_id ELSE COALESCE(run_id, ?) END,
                  provider_session_id = CASE
                    WHEN provider = 'grok-bot' THEN NULL
                    WHEN started_at IS NULL THEN COALESCE((
@@ -1558,6 +1612,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             )
             .run(
               timestamp,
+              crypto.randomUUID(),
               taskId,
               current.targetDeviceId,
               taskId,
@@ -1626,6 +1681,172 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return progress
   })
 
+  const requestTaskInput = Effect.fn("RelayStore.requestTaskInput")(function* (
+    taskId: TaskId,
+    deviceId: DeviceId,
+    input: RequestTaskInput,
+  ) {
+    const task = yield* getTask(taskId)
+    if (task.targetDeviceId !== deviceId) {
+      return yield* new TaskInputError({
+        status: 403,
+        message: "Only the target device can request input",
+      })
+    }
+    if (task.status !== "running" || task.runId !== input.runId) {
+      return yield* new TaskInputError({
+        status: 409,
+        message: "Input can only be requested by the current running turn",
+      })
+    }
+    const row = yield* Effect.try({
+      try: () => db.query<DeviceRow, [string]>("SELECT * FROM devices WHERE id = ?").get(deviceId),
+      catch: operationError("RelayStore.requestTaskInput.device"),
+    })
+    const device = row === null ? undefined : yield* deviceFromRow(row)
+    if (!device?.capabilities.some((capability) => capability.id === "task-clarification")) {
+      return yield* new TaskInputError({
+        status: 409,
+        message: "Upgrade the target worker before requesting clarification",
+      })
+    }
+    const history = task.clarifications ?? []
+    const pending = history.at(-1)
+    if (pending !== undefined && pending.answer === undefined) {
+      if (pending.question === input.question) return pending
+      return yield* new TaskInputError({
+        status: 409,
+        message: "This task already has an unanswered question",
+      })
+    }
+    if (history.length >= maxTaskClarifications) {
+      return yield* new TaskInputError({
+        status: 409,
+        message: `A task supports at most ${maxTaskClarifications} clarifications`,
+      })
+    }
+    const question = TaskClarification.make({
+      id: ClarificationId.make(crypto.randomUUID()),
+      question: input.question,
+      at: now(),
+    })
+    const changed = yield* Effect.try({
+      try: () =>
+        db.transaction(() => {
+          const result = db
+            .query(
+              `UPDATE tasks SET clarifications_json = ?, updated_at = ?
+           WHERE id = ? AND status = 'running' AND run_id = ?
+             AND COALESCE(clarifications_json, '[]') = ?`,
+            )
+            .run(
+              JSON.stringify([...history, question]),
+              question.at,
+              taskId,
+              input.runId,
+              JSON.stringify(history),
+            )
+          if (result.changes === 1)
+            recordTaskTraceEvent(
+              taskId,
+              "input_requested",
+              "Worker requested clarification and is ending its turn",
+              question.at,
+            )
+          return result.changes
+        })(),
+      catch: operationError("RelayStore.requestTaskInput"),
+    })
+    if (changed !== 1)
+      return yield* new TaskInputError({
+        status: 409,
+        message: "Task changed while requesting input; check its status",
+      })
+    return question
+  })
+
+  const answerTaskInput = Effect.fn("RelayStore.answerTaskInput")(function* (
+    taskId: TaskId,
+    principal: AuthSession | "owner",
+    input: AnswerTaskInput,
+  ) {
+    const task = yield* getTask(taskId)
+    const requester = yield* Effect.try({
+      try: () => queryTask(taskId)?.requester_id,
+      catch: operationError("RelayStore.answerTaskInput.requester"),
+    })
+    if (principal !== "owner" && (principal.role !== "client" || requester !== principal.id)) {
+      return yield* new TaskInputError({
+        status: 403,
+        message: "Only the original requester or relay owner can answer",
+      })
+    }
+    const history = task.clarifications ?? []
+    const question = history.at(-1)
+    if (
+      task.status !== "needs_input" ||
+      question?.id !== input.requestId ||
+      question.answer !== undefined
+    ) {
+      return yield* new TaskInputError({
+        status: 409,
+        message: "This question is no longer awaiting an answer; check task status",
+      })
+    }
+    const timestamp = now()
+    const answered = TaskClarification.make({
+      ...question,
+      answer: { text: input.answer, at: timestamp },
+    })
+    const changed = yield* Effect.try({
+      try: () =>
+        db.transaction(() => {
+          const result = db
+            .query(
+              `UPDATE tasks SET status = 'queued', run_id = ?, clarifications_json = ?, updated_at = ?,
+             result = NULL, error = NULL, completed_at = NULL, progress_note = NULL, progress_at = NULL,
+             started_at = CASE WHEN provider = 'grok-bot' THEN NULL ELSE started_at END,
+             dispatched_at = NULL
+           WHERE id = ? AND status = 'needs_input' AND clarifications_json = ?`,
+            )
+            .run(
+              crypto.randomUUID(),
+              JSON.stringify([...history.slice(0, -1), answered]),
+              timestamp,
+              taskId,
+              JSON.stringify(history),
+            )
+          if (result.changes === 1) {
+            recordTaskTraceEvent(
+              taskId,
+              "input_answered",
+              "Requester answered the worker's question",
+              timestamp,
+            )
+            recordTaskTraceEvent(
+              taskId,
+              "queued",
+              "Task queued to resume with the answer",
+              timestamp,
+            )
+          }
+          return result.changes
+        })(),
+      catch: operationError("RelayStore.answerTaskInput"),
+    })
+    if (changed !== 1)
+      return yield* new TaskInputError({
+        status: 409,
+        message: "Task changed while answering; check its status",
+      })
+    return yield* getTask(taskId)
+  })
+
+  const matchesTaskRun = (task: Task, runId: TaskRunId | undefined): boolean =>
+    task.runId === undefined ||
+    task.runId === runId ||
+    (runId === undefined && (task.clarifications?.length ?? 0) === 0)
+
   const terminal = Effect.fn("RelayStore.terminal")(function* (
     taskId: TaskId,
     deviceId: DeviceId,
@@ -1634,20 +1855,53 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     error?: string,
     providerSessionId?: string,
     attachments?: ReadonlyArray<InputAttachment>,
+    runId?: TaskRunId,
   ) {
     const current = yield* requireTarget(taskId, deviceId)
-    if (["completed", "failed", "cancelled"].includes(current.status)) {
+    if (
+      !matchesTaskRun(current, runId) ||
+      ["needs_input", "completed", "failed", "cancelled"].includes(current.status)
+    ) {
       return current
     }
     const timestamp = now()
     yield* Effect.try({
       try: () =>
         db.transaction(() => {
+          if (
+            status === "completed" &&
+            current.clarifications?.at(-1)?.answer === undefined &&
+            (current.clarifications?.length ?? 0) > 0 &&
+            current.status === "running"
+          ) {
+            const changed = db
+              .query(
+                `UPDATE tasks SET status = 'needs_input', provider_session_id = ?, updated_at = ?,
+               progress_note = NULL, progress_at = NULL
+               WHERE id = ? AND status = 'running' AND run_id IS ?`,
+              )
+              .run(
+                current.provider === "grok-bot"
+                  ? null
+                  : (providerSessionId ?? current.providerSessionId ?? null),
+                timestamp,
+                taskId,
+                current.runId ?? null,
+              )
+            if (changed.changes === 1)
+              recordTaskTraceEvent(
+                taskId,
+                "needs_input",
+                "Worker paused for clarification",
+                timestamp,
+              )
+            return
+          }
           const updated = db
             .query(
               `UPDATE tasks SET status = ?, result = ?, error = ?, provider_session_id = ?,
              completed_at = ?, updated_at = ?, progress_note = NULL, progress_at = NULL WHERE id = ?
-             AND status NOT IN ('completed', 'failed', 'cancelled')`,
+             AND status NOT IN ('needs_input', 'completed', 'failed', 'cancelled') AND run_id IS ?`,
             )
             .run(
               status,
@@ -1659,6 +1913,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
               timestamp,
               timestamp,
               taskId,
+              current.runId ?? null,
             )
           if (updated.changes !== 1) {
             return
@@ -1749,6 +2004,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       }))
     if (
       current.provider === "grok-bot" &&
+      current.status !== "needs_input" &&
       (current.status !== "queued" || current.startedAt !== undefined || dispatched)
     ) {
       return yield* new PersistenceError({
@@ -1761,10 +2017,10 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       return current
     }
     const timestamp = now()
-    return current.status === "queued"
+    return current.status === "queued" || current.status === "needs_input"
       ? yield* transition(
           taskId,
-          ["queued"],
+          ["queued", "needs_input"],
           { status: "cancelled", completedAt: timestamp },
           { kind: "cancelled", detail: "Client cancelled the task before dispatch" },
         )
@@ -1784,19 +2040,19 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       try: () =>
         db.transaction(() => {
           const interrupted = db
-            .query<{ readonly id: string }, [string]>(
-              `SELECT id FROM tasks WHERE target_device_id = ?
+            .query<{ readonly id: string; readonly status: "queued" | "needs_input" }, [string]>(
+              `SELECT id, ${interruptedTaskStatus} AS status FROM tasks WHERE target_device_id = ?
                AND status IN ('assigned', 'running')`,
             )
             .all(deviceId)
           db.query(
-            `UPDATE tasks SET status = 'queued', updated_at = ?, progress_note = NULL, progress_at = NULL
+            `UPDATE tasks SET status = ${interruptedTaskStatus}, updated_at = ?, progress_note = NULL, progress_at = NULL
              WHERE target_device_id = ? AND status IN ('assigned', 'running')`,
           ).run(timestamp, deviceId)
           for (const task of interrupted) {
             recordTaskTraceEvent(
               TaskId.make(task.id),
-              "requeued",
+              task.status === "needs_input" ? "needs_input" : "requeued",
               "Target device disconnected before task completion",
               timestamp,
             )
@@ -1999,6 +2255,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     createDelegation,
     getTask,
     reportTaskProgress,
+    requestTaskInput,
+    answerTaskInput,
     listAttachments,
     readAttachment,
     inboxFor,
@@ -2023,21 +2281,37 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         { status: "queued" },
         { kind: "requeued", detail: "Target device was unavailable during dispatch" },
       ),
-    acceptTask: (taskId, deviceId) =>
+    acceptTask: (taskId, deviceId, runId) =>
       requireTarget(taskId, deviceId).pipe(
-        Effect.flatMap(() =>
-          transition(
-            taskId,
-            ["assigned"],
-            { status: "running", startedAt: now() },
-            { kind: "running", detail: "Target device accepted the task and started the provider" },
-          ),
+        Effect.flatMap((task) =>
+          matchesTaskRun(task, runId)
+            ? transition(
+                taskId,
+                ["assigned"],
+                { status: "running", startedAt: now() },
+                {
+                  kind: "running",
+                  detail: "Target device accepted the task and started the provider",
+                },
+              )
+            : Effect.succeed(task),
         ),
       ),
-    finishTask: (taskId, deviceId, result, providerSessionId, attachments) =>
-      terminal(taskId, deviceId, "completed", result, undefined, providerSessionId, attachments),
-    failTask: (taskId, deviceId, error) => terminal(taskId, deviceId, "failed", undefined, error),
-    acknowledgeCancellation: (taskId, deviceId) => terminal(taskId, deviceId, "cancelled"),
+    finishTask: (taskId, deviceId, result, providerSessionId, attachments, runId) =>
+      terminal(
+        taskId,
+        deviceId,
+        "completed",
+        result,
+        undefined,
+        providerSessionId,
+        attachments,
+        runId,
+      ),
+    failTask: (taskId, deviceId, error, runId) =>
+      terminal(taskId, deviceId, "failed", undefined, error, undefined, undefined, runId),
+    acknowledgeCancellation: (taskId, deviceId, runId) =>
+      terminal(taskId, deviceId, "cancelled", undefined, undefined, undefined, undefined, runId),
     requestCancellation,
     requeueTasksFor,
     createUpgradeOperations,
@@ -2093,7 +2367,8 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           target_device_id TEXT NOT NULL REFERENCES devices(id), parent_task_id TEXT,
           workspace TEXT, provider_session_id TEXT, result TEXT, error TEXT,
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
-          dispatched_at TEXT, progress_note TEXT, progress_at TEXT
+          dispatched_at TEXT, progress_note TEXT, progress_at TEXT,
+          run_id TEXT, clarifications_json TEXT
         );
         CREATE INDEX IF NOT EXISTS tasks_thread_created ON tasks(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS tasks_target_status ON tasks(target_device_id, status);
@@ -2146,6 +2421,10 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         db.exec("ALTER TABLE devices ADD COLUMN bots_json TEXT")
       }
       const taskColumns = db.query<{ readonly name: string }, []>("PRAGMA table_info(tasks)").all()
+      if (!taskColumns.some((column) => column.name === "run_id"))
+        db.exec("ALTER TABLE tasks ADD COLUMN run_id TEXT")
+      if (!taskColumns.some((column) => column.name === "clarifications_json"))
+        db.exec("ALTER TABLE tasks ADD COLUMN clarifications_json TEXT")
       if (!taskColumns.some((column) => column.name === "progress_note")) {
         db.exec("ALTER TABLE tasks ADD COLUMN progress_note TEXT")
       }

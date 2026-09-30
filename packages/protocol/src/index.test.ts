@@ -7,6 +7,14 @@ import {
   SocketEvent,
   Task,
   TaskProgressInput,
+  AnswerTaskInput,
+  RequestTaskInput,
+  TaskClarification,
+  TaskInboxItem,
+  TaskRunId,
+  ClarificationId,
+  maxClarificationBytes,
+  maxTaskClarifications,
   maxProgressNoteBytes,
   assertDeviceOperationSupport,
   decodeCreateTaskInput,
@@ -19,6 +27,47 @@ import {
   supportsDeviceOperations,
   taskSlot,
 } from "./index.ts"
+
+it("bounds clarification text and rejects incomplete paused tasks at the boundary", () => {
+  const runId = TaskRunId.make(crypto.randomUUID())
+  const requestId = ClarificationId.make(crypto.randomUUID())
+  const question = "é".repeat(maxClarificationBytes / 2)
+  expect(Schema.decodeUnknownSync(RequestTaskInput)({ runId, question }).question).toBe(question)
+  for (const text of ["", " \n\t", `${question}é`]) {
+    expect(() => Schema.decodeUnknownSync(RequestTaskInput)({ runId, question: text })).toThrow()
+    expect(() => Schema.decodeUnknownSync(AnswerTaskInput)({ requestId, answer: text })).toThrow()
+  }
+  const inputRequest = Schema.decodeUnknownSync(TaskClarification)({
+    id: requestId,
+    question,
+    at: now(),
+  })
+  const task = {
+    id: makeTaskId(),
+    runId,
+    threadId: makeThreadId(),
+    targetDeviceId: makeDeviceId(),
+    provider: "codex",
+    status: "needs_input",
+    prompt: "Finish",
+    createdAt: now(),
+    updatedAt: now(),
+  }
+  expect(() => Schema.decodeUnknownSync(Task)(task)).toThrow("unanswered question")
+  expect(Schema.decodeUnknownSync(Task)({ ...task, clarifications: [inputRequest] }).status).toBe(
+    "needs_input",
+  )
+  expect(() =>
+    Schema.decodeUnknownSync(Task)({
+      ...task,
+      clarifications: Array.from({ length: maxTaskClarifications + 1 }, () => inputRequest),
+    }),
+  ).toThrow()
+  const inbox = { ...task, promptPreview: "Finish", inputRequest }
+  expect(Schema.decodeUnknownSync(TaskInboxItem)(inbox).inputRequest).toEqual(inputRequest)
+  expect(() => Schema.decodeUnknownSync(TaskInboxItem)({ ...inbox, completedAt: now() })).toThrow()
+  expect(() => Schema.decodeUnknownSync(TaskInboxItem)({ ...inbox, status: "completed" })).toThrow()
+})
 
 it("bounds progress notes by UTF-8 bytes and rejects blank updates", () => {
   const decode = Schema.decodeUnknownSync(TaskProgressInput)

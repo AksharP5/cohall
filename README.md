@@ -201,8 +201,8 @@ npx -y @akshar5/cohall delegate \
   --context 'Why: the deployment failed after local checks passed. Need: root cause, evidence, and recommended next step.'
 ```
 
-The command waits for a result by default. Queue longer work with `--no-wait`,
-then inspect it later:
+The command waits for a result or a clarification question by default. Queue
+longer work with `--no-wait`, then inspect it later:
 
 ```bash
 npx -y @akshar5/cohall wait <task-id> --timeout 1800
@@ -213,8 +213,8 @@ Task status and traces include the worker's latest progress note when it reports
 one. Workers can publish a brief milestone with `cohall progress --message
 "Running tests"`; the task ID is inherited during delegated work.
 
-Completed tasks also appear in the sending client's inbox. This covers queued
-work and tasks that finish after a wait times out:
+Questions awaiting answers and completed tasks appear in the sending client's
+inbox. This covers queued work and tasks that finish after a wait times out:
 
 ```bash
 npx -y @akshar5/cohall inbox
@@ -223,13 +223,30 @@ npx -y @akshar5/cohall inbox ack <task-id>
 ```
 
 The inbox shows short previews; `status` returns the full result. Acknowledge a
-task after handling it. Synchronous `delegate` calls acknowledge their own
-results automatically. The inbox shows up to 20 oldest entries and sets
-`hasMore` when more are waiting; acknowledge handled entries to reveal the rest.
+completed task after handling it. Synchronous `delegate` calls acknowledge their
+completed results automatically. Questions require an answer or cancellation.
+The inbox shows up to 20 oldest entries and sets `hasMore` when more are waiting;
+handle entries to reveal the rest.
 Each client credential has its own inbox, including
 client-only pairings. The relay keeps at most 1,000 completed tasks by default,
 so an old unacknowledged result can leave the inbox when history is pruned.
 Tasks created before the inbox was added have no inbox entry.
+
+If essential information is missing, a worker can run
+`cohall request-input --question 'Which branch should I use?'` and end its turn.
+The task becomes `needs_input`, frees the worker slot, and returns the question
+as `input_request` in `status` or a waiting command. The original requester or
+relay owner answers using its question ID:
+
+```bash
+cohall answer <task-id> --request-id <question-id> --message 'Use main.'
+cohall wait <task-id> --timeout 1800
+```
+
+The same task resumes on the same target with its saved provider session when
+available. Answers remain in its resumed prompt after a restart. Upgrade the
+relay, requester, and worker first. See [clarification and resume](docs/integrations.md#clarification-and-resume)
+for MCP, limits, and worker instructions.
 
 Attach up to two explicit files to a coding task. Each file may be up to 256 KiB.
 The target receives them as temporary files and can return up to two files by
@@ -318,7 +335,8 @@ A Cohall thread records the exchange and lets follow-ups find the same Bot.
 It does not create an isolated Grok Bot conversation: messages sent in the
 Grok Bot app share that Bot's history. Bot tasks use the Bot's own permissions
 and computer context, so omit `--workspace`. Queued Bot tasks that have never
-been dispatched can be cancelled; active Bot turns must be stopped in Grok Bot because
+been dispatched and tasks paused for clarification can be cancelled. Active Bot
+turns must be stopped in Grok Bot because
 the gateway cannot safely cancel a specific Cohall turn.
 A dispatched Bot request remains non-cancellable through Cohall if a disconnect
 or relay restart puts it back in the queue, even if its acceptance message was lost.
@@ -326,13 +344,16 @@ When upgrading an older relay without dispatch records, outstanding Bot requests
 are conservatively treated as potentially dispatched.
 
 Cohall includes a local callback command in each Bot request. After finishing,
-the Bot hands its result back by running `cohall reply <task-id> --message-file
-<path>` on its computer. The callback also accepts `--message -` for stdin,
-`--message <text>`, or `--error <text>` when the Bot cannot complete the task.
+the Bot hands its result back by running the supplied command,
+`cohall reply <task-id> --run-id <run-id> --message-file <path>`, on its computer.
+Preserve the supplied task and run IDs. The callback also accepts `--message -`
+for stdin, `--message <text>`, or `--error <text>` when the Bot cannot complete
+the task. Use `--question <text>` to ask for essential missing information, then
+end the Bot turn; the sender's answer resumes the same task with a new callback.
 It records the result locally without relay credentials or transcript scraping.
 The task becomes completed when the worker receives this callback; a reply in
 the Grok Bot chat alone does not complete it. If no callback arrives within six
-hours of the first dispatch, Cohall reports failure. That deadline does not
+hours of that turn's first dispatch, Cohall reports failure. That deadline does not
 stop the Bot's ongoing work.
 
 Pending or uncertain prompt acceptance is checked until the gateway confirms
@@ -429,7 +450,8 @@ configuration.
   authority. Pair only devices and users you trust.
 - Workspace roots are enforced after resolving symlinks, credentials are
   role-separated, and task traces omit prompts, results, tokens, and provider
-  session IDs.
+  session IDs. Traces include worker progress and clarification text; inspect
+  those fields before sharing them.
 
 ## Documentation
 

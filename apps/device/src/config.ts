@@ -1,4 +1,10 @@
-import { DeviceId, Provider, makeDeviceId, type Provider as ProviderName } from "@cohall/protocol"
+import {
+  DeviceId,
+  Provider,
+  TaskRunId,
+  makeDeviceId,
+  type Provider as ProviderName,
+} from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { access, chmod, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises"
 import { homedir, hostname, platform } from "node:os"
@@ -30,6 +36,7 @@ export const ClientConfiguration = Schema.Struct({
   token: Schema.NonEmptyString,
   mcpThreadId: Schema.optionalKey(Schema.String),
   mcpTaskId: Schema.optionalKey(Schema.String),
+  mcpTaskRunId: Schema.optionalKey(TaskRunId),
 })
 export interface ClientConfiguration extends Schema.Schema.Type<typeof ClientConfiguration> {}
 
@@ -279,6 +286,9 @@ export const loadClientConfiguration = Effect.tryPromise({
       ...(process.env.COHALL_TASK_ID === undefined
         ? {}
         : { mcpTaskId: process.env.COHALL_TASK_ID }),
+      ...(process.env.COHALL_TASK_RUN_ID === undefined
+        ? {}
+        : { mcpTaskRunId: Schema.decodeUnknownSync(TaskRunId)(process.env.COHALL_TASK_RUN_ID) }),
     })
   },
   catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),

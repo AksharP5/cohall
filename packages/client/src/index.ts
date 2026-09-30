@@ -11,6 +11,9 @@ import {
   PairingResult,
   Task,
   TaskProgress,
+  TaskClarification,
+  type RequestTaskInput,
+  type AnswerTaskInput,
   type TaskProgressInput,
   TaskAttachment,
   maxAttachmentBytes,
@@ -59,6 +62,14 @@ export interface Interface {
     taskId: TaskId,
     input: TaskProgressInput,
   ) => Effect.Effect<TaskProgress, RelayClientError>
+  readonly requestTaskInput: (
+    taskId: TaskId,
+    input: RequestTaskInput,
+  ) => Effect.Effect<TaskClarification, RelayClientError>
+  readonly answerTaskInput: (
+    taskId: TaskId,
+    input: AnswerTaskInput,
+  ) => Effect.Effect<Task, RelayClientError>
   readonly listAttachments: (
     taskId: TaskId,
   ) => Effect.Effect<ReadonlyArray<TaskAttachment>, RelayClientError>
@@ -214,6 +225,32 @@ export const make = (options: RelayClientOptions): Interface => {
           body: JSON.stringify(input),
         })
       }),
+    requestTaskInput: (taskId, input) =>
+      Effect.gen(function* () {
+        const health = yield* request(
+          "RelayClient.clarificationSupport",
+          "/api/health",
+          Schema.Struct({ taskClarification: Schema.optionalKey(Schema.Boolean) }),
+        )
+        if (health.taskClarification !== true)
+          return yield* new RelayRequestError({
+            operation: "RelayClient.requestTaskInput",
+            message: "Upgrade the Cohall relay before requesting clarification",
+          })
+        return yield* request(
+          "RelayClient.requestTaskInput",
+          `/api/tasks/${encodeURIComponent(taskId)}/input`,
+          TaskClarification,
+          { method: "POST", body: JSON.stringify(input) },
+        )
+      }),
+    answerTaskInput: (taskId, input) =>
+      request(
+        "RelayClient.answerTaskInput",
+        `/api/tasks/${encodeURIComponent(taskId)}/answer`,
+        Task,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
     getTask: (taskId) =>
       request("RelayClient.getTask", `/api/tasks/${encodeURIComponent(taskId)}`, Task),
     reportTaskProgress: (taskId, input) =>

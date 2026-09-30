@@ -91,7 +91,9 @@ owner create a new client-only pairing token, repeat `join` with that new token
 file, and run `doctor` again. Each pairing has a separate completion inbox;
 results from earlier pairings remain accessible through `status <task-id>` while
 the relay retains those tasks. Preserving the configuration does not extend the
-credential's expiry.
+credential's expiry. Clarification answers require the original requester
+credential or relay owner; ask the owner to answer outstanding questions from
+an expired pairing.
 
 ## Delegate and collect results
 
@@ -114,7 +116,21 @@ Replace `@workstation` with a name or ID from `devices`. Send the question,
 relevant facts, prior findings, and constraints in the prompt and context files.
 Cohall cannot read the Muse conversation automatically.
 
-Fetch the full result with `status` and acknowledge it after handling it.
+Fetch the full result with `status` and acknowledge it after handling it. If
+`status`, `wait`, or `delegate` returns `needs_input`, read `input_request` and
+answer its question using known conversation facts:
+
+```bash
+npx -y @akshar5/cohall answer <task-id> \
+  --request-id <input-request-id> --message-file /absolute/path/answer.txt
+npx -y @akshar5/cohall wait <task-id> --timeout 900
+```
+
+The same task resumes on its worker. Questions appear in `inbox` as
+`inputRequest`; answer or cancel them instead of acknowledging them. Upgrade
+the requester, relay, and worker first; see
+[clarification and resume](integrations.md#clarification-and-resume).
+
 `wait <task-id> --timeout <seconds>` polls a specific task; it does not listen
 for incoming requests or wake Muse. A wait timeout leaves the task running.
 If the host ends long commands or does not deliver background output, check
@@ -135,5 +151,6 @@ Use only the client credential. Cohall's MCP transport is stdio; the relay URL
 is not a remote MCP endpoint.
 
 For queued work, call `delegate` with `wait: false`, then `task_status` or
-`completion_inbox`; use `acknowledge_completion` after handling the result.
+`completion_inbox`. Answer `needs_input` with `task_answer`, then `wait_task`.
+Use `acknowledge_completion` after handling a completed result.
 See [agent integrations](integrations.md) for the common CLI and MCP behavior.

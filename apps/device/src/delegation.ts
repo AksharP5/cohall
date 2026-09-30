@@ -6,6 +6,9 @@ import {
   TaskId,
   TaskStatus,
   TaskProgress,
+  TaskClarification,
+  TaskRunId,
+  type RequestTaskInput,
   ThreadId,
   terminalTaskStatuses,
   isTerminalTask,
@@ -51,6 +54,7 @@ export const TaskResult = Schema.Struct({
   error: Schema.optionalKey(Schema.String),
   inbox_warning: Schema.optionalKey(Schema.String),
   progress: Schema.optionalKey(TaskProgress),
+  input_request: Schema.optionalKey(TaskClarification),
 })
 export interface TaskResult extends Schema.Schema.Type<typeof TaskResult> {}
 
@@ -117,8 +121,9 @@ const selectTarget = Effect.fn("Cohall.selectTarget")(function* (
   })
 })
 
-export const taskResult = (task: Task): TaskResult =>
-  TaskResult.make({
+export const taskResult = (task: Task): TaskResult => {
+  const question = task.clarifications?.at(-1)
+  return TaskResult.make({
     task_id: task.id,
     thread_id: task.threadId,
     status: task.status,
@@ -128,13 +133,16 @@ export const taskResult = (task: Task): TaskResult =>
     ...(task.result === undefined ? {} : { result: task.result }),
     ...(task.error === undefined ? {} : { error: task.error }),
     ...(task.progress === undefined ? {} : { progress: task.progress }),
+    ...(task.status === "needs_input" && question !== undefined ? { input_request: question } : {}),
   })
+}
 
 export const acknowledgedTaskResult = async (
   client: RelayClient,
   task: Task,
 ): Promise<TaskResult> => {
   const result = taskResult(task)
+  if (!isTerminalTask(task)) return result
   const acknowledgementError = await Effect.runPromise(client.acknowledgeCompletion(task.id))
     .then(() => undefined)
     .catch((cause: unknown) => {
@@ -148,6 +156,33 @@ export const acknowledgedTaskResult = async (
         inbox_warning: `Result received, but the inbox could not be cleared: ${acknowledgementError}`,
       })
 }
+
+export const requestInput = Effect.fn("Cohall.requestInput")(function* (
+  client: RelayClient,
+  configuration: ClientConfiguration,
+  question: RequestTaskInput["question"],
+  taskId?: TaskId,
+  runId?: TaskRunId,
+) {
+  const id =
+    taskId ??
+    (configuration.mcpTaskId === undefined
+      ? undefined
+      : yield* Schema.decodeUnknownEffect(TaskId)(configuration.mcpTaskId))
+  if (id === undefined)
+    return yield* new RelayRequestError({
+      operation: "Cohall.requestInput",
+      message: "Task id is required outside delegated work",
+    })
+  const inheritedRun = id === configuration.mcpTaskId ? configuration.mcpTaskRunId : undefined
+  const turn = runId ?? inheritedRun ?? (yield* client.getTask(id)).runId
+  if (turn === undefined)
+    return yield* new RelayRequestError({
+      operation: "Cohall.requestInput",
+      message: "Task has no current worker turn; upgrade the relay and worker",
+    })
+  return yield* client.requestTaskInput(id, { runId: turn, question })
+})
 
 export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
   client: RelayClient,
@@ -226,7 +261,7 @@ export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
 ) {
   const deadline = Date.now() + timeoutSeconds * 1_000
   let task = initial
-  while (!isTerminalTask(task)) {
+  while (!isTerminalTask(task) && task.status !== "needs_input") {
     if (Date.now() >= deadline) {
       return yield* new TaskWaitTimeoutError({
         message: `Task ${task.id} is still ${task.status} after ${timeoutSeconds} seconds`,
@@ -249,7 +284,7 @@ export const followTaskTrace = Effect.fn("Cohall.followTaskTrace")(function* (
   const poll = client.traceTask(taskId).pipe(
     Effect.tap((trace) => {
       const latest = trace.events.at(-1)
-      const nextRevision = `${trace.status}:${latest?.kind ?? "none"}:${latest?.at ?? "none"}:${trace.progress?.at ?? ""}:${trace.progress?.note ?? ""}`
+      const nextRevision = `${trace.status}:${latest?.kind ?? "none"}:${latest?.at ?? "none"}:${trace.progress?.at ?? ""}:${trace.progress?.note ?? ""}:${JSON.stringify(trace.clarifications)}`
       if (nextRevision === revision) {
         return Effect.succeed(undefined)
       }

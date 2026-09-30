@@ -271,10 +271,17 @@ it("preserves uncertain dispatch across restarts and migrates outstanding bot ta
     )
     await original.dispose()
     database.exec("ALTER TABLE tasks DROP COLUMN dispatched_at")
+    database.exec("ALTER TABLE tasks DROP COLUMN run_id")
+    database.exec("ALTER TABLE tasks DROP COLUMN clarifications_json")
 
     migrated = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
     const restored = await migrated.runPromise(RelayStore.Service)
     await expect(Effect.runPromise(restored.requestCancellation(legacy.id))).rejects.toBeDefined()
+    const oldDispatch = await Effect.runPromise(restored.assignTask(legacy.id))
+    expect(oldDispatch.runId).toBeUndefined()
+    await Effect.runPromise(restored.requeueTasksFor(device.id))
+    expect((await Effect.runPromise(restored.assignTask(legacy.id))).runId).toBeUndefined()
+    await Effect.runPromise(restored.finishTask(legacy.id, device.id, "Original callback"))
     const fresh = await Effect.runPromise(
       restored.createDelegation({ prompt: "New queued work", botId: scout.id }, device.id, "owner"),
     )
@@ -285,7 +292,7 @@ it("preserves uncertain dispatch across restarts and migrates outstanding bot ta
     const dispatched = await Effect.runPromise(
       restored.createDelegation({ prompt: "Lost acceptance", botId: scout.id }, device.id, "owner"),
     )
-    await Effect.runPromise(restored.assignTask(dispatched.id))
+    expect((await Effect.runPromise(restored.assignTask(dispatched.id))).runId).toBeUndefined()
     Effect.runSync(restored.markTaskDispatched(dispatched.id))
     await migrated.dispose()
     restarted = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
@@ -295,6 +302,23 @@ it("preserves uncertain dispatch across restarts and migrates outstanding bot ta
     await expect(
       Effect.runPromise(recovered.requestCancellation(dispatched.id)),
     ).rejects.toBeDefined()
+    await Effect.runPromise(
+      recovered.upsertDevice(
+        Device.make({
+          ...device,
+          capabilities: [{ id: "task-clarification", label: "Clarification" }],
+        }),
+      ),
+    )
+    expect((await Effect.runPromise(recovered.assignTask(dispatched.id))).runId).toBeUndefined()
+    const modern = await Effect.runPromise(
+      recovered.createDelegation(
+        { prompt: "New turn-aware work", botId: reacher.id },
+        device.id,
+        "owner",
+      ),
+    )
+    expect((await Effect.runPromise(recovered.assignTask(modern.id))).runId).toBeDefined()
   } finally {
     await original.dispose()
     await migrated?.dispose()

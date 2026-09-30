@@ -13,6 +13,8 @@ import {
   decodeCreatePairingInput,
   decodeCreateTaskInput,
   decodeTaskProgressInput,
+  decodeRequestTaskInput,
+  decodeAnswerTaskInput,
   decodeCreateUpgradeOperationsInput,
   decodeExchangePairingInput,
   decodeSocketEvent,
@@ -269,7 +271,10 @@ export const resolveDelegation = (
     })
     const blocked = new Set(
       ancestors
-        .filter((task) => !isTerminalTask(task) && taskSlot(task) === slot)
+        .filter(
+          (task) =>
+            !isTerminalTask(task) && task.status !== "needs_input" && taskSlot(task) === slot,
+        )
         .map((task) => task.targetDeviceId),
     )
     if (input.targetDeviceId !== undefined) {
@@ -356,11 +361,13 @@ export const canReadTaskAttachments = (
   principal === "owner" || principal.role === "client" || principal.deviceId === task.targetDeviceId
 
 export const canDispatchTaskToDevice = (
-  task: Pick<Task, "inputAttachmentNames">,
+  task: Pick<Task, "inputAttachmentNames" | "clarifications">,
   device: Pick<Device, "capabilities"> | undefined,
 ): boolean =>
-  (task.inputAttachmentNames?.length ?? 0) === 0 ||
-  device?.capabilities.some((capability) => capability.id === "task-attachments") === true
+  ((task.inputAttachmentNames?.length ?? 0) === 0 ||
+    device?.capabilities.some((capability) => capability.id === "task-attachments") === true) &&
+  ((task.clarifications?.length ?? 0) === 0 ||
+    device?.capabilities.some((capability) => capability.id === "task-clarification") === true)
 
 export const runRelay = async (): Promise<void> => {
   const configuration = await Effect.runPromise(loadEnvironmentConfiguration)
@@ -424,15 +431,21 @@ export const runRelay = async (): Promise<void> => {
 
   const dispatch = async (task: Task): Promise<Task> => {
     const store = await run(RelayStore.Service)
-    if ((task.inputAttachmentNames?.length ?? 0) > 0) {
+    if ((task.inputAttachmentNames?.length ?? 0) > 0 || (task.clarifications?.length ?? 0) > 0) {
       const devices = await Effect.runPromise(store.listDevices())
       const target = devices.find((device) => device.id === task.targetDeviceId)
+      if (
+        (task.clarifications?.length ?? 0) > 0 &&
+        !target?.capabilities.some((capability) => capability.id === "task-clarification")
+      )
+        return task
       if (!canDispatchTaskToDevice(task, target)) {
         return Effect.runPromise(
           store.failTask(
             task.id,
             task.targetDeviceId,
             "Target worker no longer supports task file attachments. Upgrade the worker and retry.",
+            task.runId,
           ),
         )
       }
@@ -502,7 +515,14 @@ export const runRelay = async (): Promise<void> => {
     )
     for (const task of tasks) {
       if (task.status === "cancelling") {
-        hub.sendToDevice(deviceId, SocketEvent.make({ _tag: "CancelTask", taskId: task.id }))
+        hub.sendToDevice(
+          deviceId,
+          SocketEvent.make({
+            _tag: "CancelTask",
+            taskId: task.id,
+            ...(task.runId === undefined ? {} : { runId: task.runId }),
+          }),
+        )
       } else {
         await dispatch(task)
       }
@@ -577,6 +597,7 @@ export const runRelay = async (): Promise<void> => {
             serverVersion: version,
             connectedAt: now(),
             taskAttachments: true,
+            taskClarification: true,
           }),
         ),
       )
@@ -620,8 +641,16 @@ export const runRelay = async (): Promise<void> => {
       return
     }
 
-    const settle = (taskId: TaskId): void => {
-      socket.send(JSON.stringify(SocketEvent.make({ _tag: "TaskSettled", taskId })))
+    const settle = (taskId: TaskId, runId?: Task["runId"]): void => {
+      socket.send(
+        JSON.stringify(
+          SocketEvent.make({
+            _tag: "TaskSettled",
+            taskId,
+            ...(runId === undefined ? {} : { runId }),
+          }),
+        ),
+      )
     }
     const settleOperation = (operationId: OperationId): void => {
       socket.send(JSON.stringify(SocketEvent.make({ _tag: "OperationSettled", operationId })))
@@ -640,7 +669,7 @@ export const runRelay = async (): Promise<void> => {
             }
             return
           case "TaskAccepted":
-            yield* store.acceptTask(event.taskId, deviceId)
+            yield* store.acceptTask(event.taskId, deviceId, event.runId)
             return
           case "TaskFinished":
             yield* store.finishTask(
@@ -649,13 +678,24 @@ export const runRelay = async (): Promise<void> => {
               event.result,
               event.providerSessionId,
               event.attachments,
+              event.runId,
             )
             return
+          case "TaskInputRequested": {
+            const task = yield* store.getTask(event.taskId)
+            if (task.runId !== event.runId || task.status !== "running") return
+            yield* store.requestTaskInput(event.taskId, deviceId, {
+              runId: event.runId,
+              question: event.question,
+            })
+            yield* store.finishTask(event.taskId, deviceId, "", undefined, undefined, event.runId)
+            return
+          }
           case "TaskFailed":
-            yield* store.failTask(event.taskId, deviceId, event.error)
+            yield* store.failTask(event.taskId, deviceId, event.error, event.runId)
             return
           case "TaskCancelled":
-            yield* store.acknowledgeCancellation(event.taskId, deviceId)
+            yield* store.acknowledgeCancellation(event.taskId, deviceId, event.runId)
             return
           case "OperationAccepted":
             yield* store.acceptOperation(event.operationId, deviceId)
@@ -685,10 +725,11 @@ export const runRelay = async (): Promise<void> => {
     if (
       processed &&
       (event._tag === "TaskFinished" ||
+        event._tag === "TaskInputRequested" ||
         event._tag === "TaskFailed" ||
         event._tag === "TaskCancelled")
     ) {
-      settle(event.taskId)
+      settle(event.taskId, event.runId)
       await dispatchPending(deviceId)
     }
     if (processed && (event._tag === "OperationFinished" || event._tag === "OperationFailed")) {
@@ -699,7 +740,13 @@ export const runRelay = async (): Promise<void> => {
 
   const api = async (request: Request, url: URL): Promise<Response> => {
     if (url.pathname === "/api/health" && request.method === "GET") {
-      return json({ ok: true, version, taskAttachments: true, taskProgress: true })
+      return json({
+        ok: true,
+        version,
+        taskAttachments: true,
+        taskProgress: true,
+        taskClarification: true,
+      })
     }
     if (url.pathname === "/api/auth/pair" && request.method === "POST") {
       return run(
@@ -720,7 +767,9 @@ export const runRelay = async (): Promise<void> => {
       /^\/api\/tasks\/[^/]+\/attachments(?:\/[^/]+)?$/.test(url.pathname)
     const progressRoute =
       request.method === "POST" && /^\/api\/tasks\/[^/]+\/progress$/.test(url.pathname)
-    const principal = await principalFor(request, attachmentRoute || progressRoute)
+    const inputRoute =
+      request.method === "POST" && /^\/api\/tasks\/[^/]+\/input$/.test(url.pathname)
+    const principal = await principalFor(request, attachmentRoute || progressRoute || inputRoute)
     if (principal === undefined) {
       return json({ error: "Unauthorized" }, 401)
     }
@@ -877,13 +926,48 @@ export const runRelay = async (): Promise<void> => {
         return json(yield* store.reportTaskProgress(id, deviceId, input.note))
       }
       const cancel = url.pathname.match(/^\/api\/tasks\/([^/]+)\/cancel$/)
+      const inputRequest = url.pathname.match(/^\/api\/tasks\/([^/]+)\/input$/)
+      if (request.method === "POST" && inputRequest?.[1] !== undefined) {
+        const id = yield* pathId(TaskId, inputRequest[1])
+        const input = yield* body(request, decodeRequestTaskInput)
+        const task = yield* store.getTask(id)
+        const deviceId = principal === "owner" ? task.targetDeviceId : principal.deviceId
+        if (deviceId === undefined)
+          return yield* new RequestError({
+            status: 403,
+            message: "Only the target device can request input",
+          })
+        return json(yield* store.requestTaskInput(id, deviceId, input))
+      }
+      const answer = url.pathname.match(/^\/api\/tasks\/([^/]+)\/answer$/)
+      if (request.method === "POST" && answer?.[1] !== undefined) {
+        const task = yield* store.answerTaskInput(
+          yield* pathId(TaskId, answer[1]),
+          principal,
+          yield* body(request, decodeAnswerTaskInput),
+        )
+        return json(
+          yield* Effect.tryPromise({
+            try: () => dispatch(task),
+            catch: (cause) =>
+              new RequestError({
+                status: 500,
+                message: cause instanceof Error ? cause.message : String(cause),
+              }),
+          }),
+        )
+      }
       if (request.method === "POST" && cancel?.[1] !== undefined) {
         const id = yield* pathId(TaskId, cancel[1])
         const updated = yield* store.requestCancellation(id)
         if (updated.status === "cancelling") {
           hub.sendToDevice(
             updated.targetDeviceId,
-            SocketEvent.make({ _tag: "CancelTask", taskId: id }),
+            SocketEvent.make({
+              _tag: "CancelTask",
+              taskId: id,
+              ...(updated.runId === undefined ? {} : { runId: updated.runId }),
+            }),
           )
         }
         return json(updated)
@@ -897,7 +981,8 @@ export const runRelay = async (): Promise<void> => {
       Effect.mapError((cause) =>
         cause instanceof RequestError
           ? cause
-          : cause._tag === "RelayStore.TaskProgressError"
+          : cause._tag === "RelayStore.TaskProgressError" ||
+              cause._tag === "RelayStore.TaskInputError"
             ? new RequestError({ status: cause.status, message: cause.message })
             : new RequestError({
                 status:

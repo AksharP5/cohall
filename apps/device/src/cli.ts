@@ -8,6 +8,9 @@ import {
   Provider,
   TaskId,
   TaskProgressInput,
+  RequestTaskInput,
+  AnswerTaskInput,
+  TaskRunId,
   ThreadId,
   assertDeviceOperationSupport,
   makeDeviceId,
@@ -40,6 +43,7 @@ import {
   taskResult,
   threadContext,
   waitForTask,
+  requestInput,
 } from "./delegation.ts"
 import { allDeviceHealth, deviceVersions } from "./device-overview.ts"
 import { discoverGrokBots } from "./grok-bot.ts"
@@ -72,9 +76,12 @@ const valueOptions = new Set([
   "parent",
   "prompt",
   "prompt-file",
+  "question",
+  "request-id",
   "provider",
   "providers",
   "relay",
+  "run-id",
   "sandbox",
   "target",
   "thread",
@@ -112,6 +119,8 @@ Usage:
   cohall config
   cohall devices
   cohall progress [task-id] --message <note>
+  cohall request-input [task-id] --question <text> [--run-id uuid]
+  cohall answer <task-id> --request-id uuid --message <text>
   cohall bots
   cohall send [@device-or-bot] [prompt] [delegate options]
   cohall delegate [prompt] [--target @device-or-bot] [--provider provider]
@@ -124,7 +133,7 @@ Usage:
   cohall attachments <task-id>
   cohall download <task-id> <name> --output path [--direction input|output]
   cohall cancel <task-id>
-  cohall reply <task-id> --message-file path | --message text | --message - | --error text
+  cohall reply <task-id> [--run-id uuid] --message-file path | --message text | --message - | --error text | --question text
   cohall thread <thread-id>
   cohall pair [--label name] [--client-only]
   cohall sessions
@@ -355,21 +364,34 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   const arguments_ = parseArguments(raw)
 
   if (command === "reply") {
-    allowOptions(arguments_, ["message", "message-file", "error"])
+    allowOptions(arguments_, ["message", "message-file", "error", "question", "run-id"])
     const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
     const error = option(arguments_, "error")
+    const question = option(arguments_, "question")
+    const rawRunId = option(arguments_, "run-id")
+    const runId = rawRunId === undefined ? undefined : Schema.decodeUnknownSync(TaskRunId)(rawRunId)
     if (
-      error !== undefined &&
+      (error !== undefined || question !== undefined) &&
       (option(arguments_, "message") !== undefined ||
-        option(arguments_, "message-file") !== undefined)
+        option(arguments_, "message-file") !== undefined ||
+        (error !== undefined && question !== undefined))
     ) {
-      throw new Error("Use either --error or --message/--message-file, not both")
+      throw new Error("Use one of --question, --error, or --message/--message-file")
     }
-    const message = error === undefined ? await readInput(arguments_, "message") : undefined
-    if (error === undefined && message === undefined) {
-      throw new Error("A bot reply requires --message, --message-file, or --error")
+    const message =
+      error === undefined && question === undefined
+        ? await readInput(arguments_, "message")
+        : undefined
+    if (error === undefined && question === undefined && message === undefined) {
+      throw new Error("A bot reply requires --message, --message-file, --error, or --question")
     }
-    await writeBotReply(id, error === undefined ? { result: message ?? "" } : { error })
+    const reply =
+      question !== undefined
+        ? { question: Schema.decodeUnknownSync(RequestTaskInput.fields.question)(question) }
+        : error === undefined
+          ? { result: message ?? "" }
+          : { error }
+    await writeBotReply(id, reply, runId)
     print({ submitted: true, task_id: id })
     return
   }
@@ -937,6 +959,33 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   }
 
   const { configuration, relay } = await client()
+  if (command === "request-input") {
+    allowOptions(arguments_, ["question", "run-id"])
+    const rawQuestion = option(arguments_, "question")
+    if (rawQuestion === undefined) throw new Error("--question is required")
+    const question = Schema.decodeUnknownSync(RequestTaskInput.fields.question)(rawQuestion)
+    const id =
+      arguments_.positionals.length === 0
+        ? undefined
+        : Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
+    const rawRunId = option(arguments_, "run-id")
+    const runId = rawRunId === undefined ? undefined : Schema.decodeUnknownSync(TaskRunId)(rawRunId)
+    print(await Effect.runPromise(requestInput(relay, configuration, question, id, runId)))
+    return
+  }
+  if (command === "answer") {
+    allowOptions(arguments_, ["request-id", "message", "message-file"])
+    const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
+    const requestId = option(arguments_, "request-id")
+    if (requestId === undefined)
+      throw new Error("--request-id is required; use the input request id from status or inbox")
+    const input = Schema.decodeUnknownSync(AnswerTaskInput)({
+      requestId,
+      answer: await readInput(arguments_, "message"),
+    })
+    print(taskResult(await Effect.runPromise(relay.answerTaskInput(id, input))))
+    return
+  }
   if (command === "progress") {
     allowOptions(arguments_, ["message"])
     const rawId =

@@ -1,4 +1,4 @@
-import { Bot, type Task } from "@cohall/protocol"
+import { Bot, type RequestTaskInput, type Task } from "@cohall/protocol"
 import { Effect, Schedule, Schema } from "effect"
 import { open } from "node:fs/promises"
 import { isIP } from "node:net"
@@ -172,34 +172,50 @@ const requireTime = (deadline: number): void => {
 
 const finishReply = (
   reply: NonNullable<Awaited<ReturnType<typeof readBotReply>>>,
-): { result: string } => {
+): { result: string; question?: RequestTaskInput["question"] } => {
+  if (reply.question !== undefined) return { result: "", question: reply.question }
   if (reply.error !== undefined) throw new Error(reply.error)
   if (reply.result === undefined) throw new Error("Grok Bot returned an invalid Cohall reply")
   return { result: reply.result }
 }
 
-const taskPrompt = (task: Task, command: string): string =>
-  [
+const taskPrompt = (task: Task, command: string, supportsClarification: boolean): string => {
+  const reply = `${command} reply ${task.id}${task.runId === undefined ? "" : ` --run-id ${task.runId}`}`
+  return [
     task.prompt,
     task.context === undefined ? "" : `Context:\n${task.context}`,
     `This request came through Cohall. Thread: ${task.threadId}. Task: ${task.id}.`,
     `You may use your own tools and delegate work to another Cohall device when the request calls for it. Discover devices with: ${command} devices`,
     `Delegation example: ${command} delegate --thread ${task.threadId} --parent ${task.id} --target @device --provider codex --prompt 'Concrete task' --context 'Relevant context'`,
     "When finished, hand the final answer back to Cohall so it reaches the requesting device. Write it to a UTF-8 file on this computer, then run:",
-    `${command} reply ${task.id} --message-file /absolute/path/to/your-answer.txt`,
-    `Alternatively pipe your answer into: ${command} reply ${task.id} --message -`,
-    `If you cannot complete this task, report the reason with: ${command} reply ${task.id} --error 'Reason'`,
-    "The reply command must succeed. Then send the same answer in this chat. A normal chat message alone does not complete the Cohall task.",
+    `${reply} --message-file /absolute/path/to/your-answer.txt`,
+    `Alternatively pipe your answer into: ${reply} --message -`,
+    `If you cannot complete this task, report the reason with: ${reply} --error 'Reason'`,
+    ...(supportsClarification && task.runId !== undefined
+      ? [
+          `If essential information is missing, run ${reply} --question 'Your question' and end this turn. Cohall will pause the task and send a new turn with the answer. Do not send a final reply after asking.`,
+          ...(task.clarifications ?? []).flatMap((question) =>
+            question.answer === undefined
+              ? []
+              : [
+                  `Clarification question:\n${question.question}\nSender's answer:\n${question.answer.text}`,
+                ],
+          ),
+        ]
+      : []),
+    "The callback command must succeed. After submitting a final result, send the same answer in this chat. After submitting a question, end the turn. A normal chat message alone does not complete the Cohall task.",
   ]
     .filter(Boolean)
     .join("\n\n")
+}
 
 export const runGrokBot = async (
   path: string | undefined,
   task: Task,
   signal: AbortSignal,
-): Promise<{ result: string }> => {
-  const existing = await readBotReply(task.id)
+  supportsClarification = false,
+): Promise<{ result: string; question?: RequestTaskInput["question"] }> => {
+  const existing = await readBotReply(task.id, task.runId)
   if (existing !== undefined) return finishReply(existing)
   const { deadline, command, dispatched } = await prepareBotReply(task)
   requireTime(deadline)
@@ -211,14 +227,14 @@ export const runGrokBot = async (
     return rpc(
       await readConnection(path),
       "promptAcceptanceStatus",
-      { accountSlot: "host", agentId, clientNonce: task.id },
+      { accountSlot: "host", agentId, clientNonce: task.runId ?? task.id },
       Acceptance,
       lookupSignal,
     )
   }
   const waitForReply = (reconcile = false) => {
     const receipt = poll(async () => {
-      const receipt = await readBotReply(task.id)
+      const receipt = await readBotReply(task.id, task.runId)
       if (receipt !== undefined) return finishReply(receipt)
       requireTime(deadline)
       return undefined
@@ -244,7 +260,7 @@ export const runGrokBot = async (
       "Grok Bot cannot confirm whether this task was accepted; check its conversation before retrying",
     )
   if (acceptance.outcome === "not-found") {
-    const receipt = await readBotReply(task.id)
+    const receipt = await readBotReply(task.id, task.runId)
     if (receipt !== undefined) return finishReply(receipt)
     requireTime(deadline)
     const roster = await rpc(connection, "listAgents", {}, Roster, signal)
@@ -255,7 +271,7 @@ export const runGrokBot = async (
     acceptance = await lookup()
     if (acceptance.outcome === "not-found") {
       requireTime(deadline)
-      if (!(await claimBotDispatch(task.id))) {
+      if (!(await claimBotDispatch(task.id, task.runId))) {
         return waitForReply(true)
       }
       try {
@@ -264,8 +280,8 @@ export const runGrokBot = async (
           "sendPrompt",
           {
             agentId,
-            prompt: taskPrompt(task, command),
-            clientNonce: task.id,
+            prompt: taskPrompt(task, command, supportsClarification),
+            clientNonce: task.runId ?? task.id,
             directAddressedAcceptance: true,
           },
           SendResult,
@@ -274,7 +290,7 @@ export const runGrokBot = async (
       } catch {
         if (signal.aborted)
           throw new Error("Stopped waiting for Grok Bot; its run may still be active")
-        const receipt = await readBotReply(task.id)
+        const receipt = await readBotReply(task.id, task.runId)
         if (receipt !== undefined) return finishReply(receipt)
         return waitForReply(true)
       }

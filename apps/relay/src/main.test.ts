@@ -7,6 +7,7 @@ import {
   AuthSession,
   AttachmentName,
   CreateTaskInput,
+  TaskClarification,
   maxAttachmentBytes,
 } from "@cohall/protocol"
 import {
@@ -32,6 +33,27 @@ it("accepts a schema-valid task with maximum escaped text and two maximum files"
   })
 
   expect(Buffer.byteLength(JSON.stringify(task))).toBeLessThan(maxTaskRequestBodyBytes)
+})
+
+it("holds resumed clarification work until the worker advertises support", () => {
+  const clarifications = [
+    Schema.decodeUnknownSync(TaskClarification)({
+      id: crypto.randomUUID(),
+      question: "Which branch?",
+      at: now(),
+      answer: { text: "main", at: now() },
+    }),
+  ]
+  expect(canDispatchTaskToDevice({ clarifications }, { capabilities: [] })).toBe(false)
+  expect(canDispatchTaskToDevice({ clarifications }, undefined)).toBe(false)
+  expect(
+    canDispatchTaskToDevice(
+      { clarifications },
+      {
+        capabilities: [{ id: "task-clarification", label: "Clarification" }],
+      },
+    ),
+  ).toBe(true)
 })
 
 describe("relay listener", () => {

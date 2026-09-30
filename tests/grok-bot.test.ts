@@ -1,7 +1,7 @@
 import { TaskResult } from "../apps/device/src/delegation.ts"
 import { StoredConfiguration } from "../apps/device/src/config.ts"
 import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
-import { BotId, TaskId, ThreadId } from "../packages/protocol/src/index.ts"
+import { BotId, TaskId, TaskRunId, ThreadId } from "../packages/protocol/src/index.ts"
 import { Effect, Schedule, Schema } from "effect"
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -16,7 +16,7 @@ const executeFile = promisify(execFile)
 const Prompt = Schema.Struct({
   agentId: BotId,
   prompt: Schema.String,
-  clientNonce: TaskId,
+  clientNonce: TaskRunId,
   directAddressedAcceptance: Schema.Literal(true),
 })
 
@@ -40,14 +40,14 @@ const availablePort = async (): Promise<number> => {
   return address.port
 }
 
-it("routes native bot replies, same-device Codex delegation, and follow-ups through the real CLI", async () => {
+it("routes native bot replies, child delegation, follow-ups, and clarification through the real CLI", async () => {
   const root = process.cwd()
   const directory = await mkdtemp(join(tmpdir(), "cohall-native-bots-"))
   const children: Array<ChildProcess> = []
   const nativeRuns: Array<Promise<void>> = []
   const errors: Array<unknown> = []
   const prompts: Array<typeof Prompt.Type> = []
-  const accepted = new Set<TaskId>()
+  const accepted = new Set<TaskRunId>()
   const childTasks: Array<TaskResult> = []
   const gatewayToken = "fixture-native-gateway-token"
   const configPath = join(directory, "worker.json")
@@ -71,14 +71,32 @@ it("routes native bot replies, same-device Codex delegation, and follow-ups thro
     return output.stdout
   }
   const taskResult = (output: string) => Schema.decodeUnknownSync(TaskResult)(JSON.parse(output))
+  const replyCommand = (input: typeof Prompt.Type) => {
+    const callback = /cohall reply ([0-9a-f-]+) --run-id ([0-9a-f-]+) --message-file/.exec(
+      input.prompt,
+    )
+    const taskId = Schema.decodeUnknownSync(TaskId)(callback?.[1])
+    const runId = Schema.decodeUnknownSync(TaskRunId)(callback?.[2])
+    expect(runId).toBe(input.clientNonce)
+    return ["reply", taskId, "--run-id", runId]
+  }
   const nativeReply = async (input: typeof Prompt.Type) => {
+    const callback = replyCommand(input)
+    const taskId = Schema.decodeUnknownSync(TaskId)(callback[1])
     const threadId = Schema.decodeUnknownSync(ThreadId)(
       /Thread: ([0-9a-f-]+)\. Task:/.exec(input.prompt)?.[1],
     )
-    expect(input.prompt).toContain(`cohall reply ${input.clientNonce}`)
-    expect(input.prompt).toContain(`--parent ${input.clientNonce}`)
+    expect(input.prompt).toContain(`Task: ${taskId}.`)
+    expect(input.prompt).toContain(`--parent ${taskId}`)
     for (const command of ["devices", "delegate", "reply"]) {
       expect(input.prompt).toContain(`COHALL_CONFIG='${configPath}' cohall ${command}`)
+    }
+    if (input.agentId === "writer-id") {
+      if (!input.prompt.includes("Sender's answer:\nFor maintainers.")) {
+        await run([...callback, "--question", "Who is the outline for?"], workerEnvironment)
+        return
+      }
+      expect(input.prompt).toContain("Clarification question:\nWho is the outline for?")
     }
     let answer = input.agentId === "writer-id" ? "Writer replied." : "Research follow-up received."
     if (input.agentId === "research-id" && childTasks.length === 0) {
@@ -93,7 +111,7 @@ it("routes native bot replies, same-device Codex delegation, and follow-ups thro
             "--thread",
             threadId,
             "--parent",
-            input.clientNonce,
+            taskId,
             "--workspace",
             root,
             "--prompt",
@@ -110,7 +128,7 @@ it("routes native bot replies, same-device Codex delegation, and follow-ups thro
     }
     const answerPath = join(directory, `${input.clientNonce}.txt`)
     await writeFile(answerPath, answer)
-    await run(["reply", input.clientNonce, "--message-file", answerPath], workerEnvironment)
+    await run([...callback, "--message-file", answerPath], workerEnvironment)
   }
   const gateway = createServer((request, response) => {
     const handle = async () => {
@@ -128,7 +146,7 @@ it("routes native bot replies, same-device Codex delegation, and follow-ups thro
         return
       }
       if (request.url === "/api/promptAcceptanceStatus") {
-        const { clientNonce } = Schema.decodeUnknownSync(Schema.Struct({ clientNonce: TaskId }))(
+        const { clientNonce } = Schema.decodeUnknownSync(Schema.Struct({ clientNonce: TaskRunId }))(
           JSON.parse(body),
         )
         response.end(
@@ -151,7 +169,7 @@ it("routes native bot replies, same-device Codex delegation, and follow-ups thro
         nativeReply(input).catch(async (cause: unknown) => {
           errors.push(cause)
           await run(
-            ["reply", input.clientNonce, "--error", "Native fixture failed"],
+            [...replyCommand(input), "--error", "Native fixture failed"],
             workerEnvironment,
           ).catch((replyError: unknown) => {
             errors.push(replyError)
@@ -329,20 +347,45 @@ console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_messag
       bot_id: "research-id",
       result: "Research follow-up received.",
     })
-    const writer = taskResult(
+    const writerQuestion = taskResult(
       await run(["send", "@Writer", "Draft an outline", "--timeout", "15"], callerEnvironment),
+    )
+    expect(writerQuestion).toMatchObject({
+      status: "needs_input",
+      bot_id: "writer-id",
+      input_request: { question: "Who is the outline for?" },
+    })
+    const inputRequest = writerQuestion.input_request
+    if (inputRequest === undefined) throw new Error("Missing bot clarification")
+    await run(
+      [
+        "answer",
+        writerQuestion.task_id,
+        "--request-id",
+        inputRequest.id,
+        "--message",
+        "For maintainers.",
+      ],
+      callerEnvironment,
+    )
+    const writer = taskResult(
+      await run(["wait", writerQuestion.task_id, "--timeout", "15"], callerEnvironment),
     )
     expect(writer).toMatchObject({
       status: "completed",
       bot_id: "writer-id",
       result: "Writer replied.",
+      task_id: writerQuestion.task_id,
+      thread_id: writerQuestion.thread_id,
     })
     await Promise.all(nativeRuns)
-    expect(prompts.map((prompt) => prompt.clientNonce)).toEqual([
+    expect(prompts.map((prompt) => replyCommand(prompt)[1])).toEqual([
       research.task_id,
       followup.task_id,
       writer.task_id,
+      writer.task_id,
     ])
+    expect(new Set(prompts.map((prompt) => prompt.clientNonce)).size).toBe(4)
     expect(errors).toEqual([])
   } finally {
     await Promise.all(nativeRuns)
