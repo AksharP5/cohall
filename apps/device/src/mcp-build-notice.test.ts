@@ -145,7 +145,9 @@ else setInterval(() => {}, 1000)`,
             timeout: 5_000,
           }),
         )
-      expect(JSON.parse(output.content[0]!.text)).toEqual([])
+      const first = output.content[0]
+      if (first === undefined) throw new Error("MCP result omitted its tool output")
+      expect(JSON.parse(first.text)).toEqual([])
       expect(output.content[1]?.text).toContain(`still running ${runningVersion}`)
       expect(output.content[1]?.text).toContain("now 99.0.0")
       const next = await client.callTool({ name: "list_devices", arguments: {} }, undefined, {
