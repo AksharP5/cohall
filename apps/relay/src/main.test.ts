@@ -8,6 +8,7 @@ import {
   AttachmentName,
   CreateTaskInput,
   TaskClarification,
+  TaskRunId,
   maxAttachmentBytes,
 } from "@cohall/protocol"
 import {
@@ -44,16 +45,29 @@ it("holds resumed clarification work until the worker advertises support", () =>
       answer: { text: "main", at: now() },
     }),
   ]
-  expect(canDispatchTaskToDevice({ clarifications }, { capabilities: [] })).toBe(false)
-  expect(canDispatchTaskToDevice({ clarifications }, undefined)).toBe(false)
+  expect(canDispatchTaskToDevice({ provider: "codex", clarifications }, { capabilities: [] })).toBe(
+    false,
+  )
+  expect(canDispatchTaskToDevice({ provider: "codex", clarifications }, undefined)).toBe(false)
   expect(
     canDispatchTaskToDevice(
-      { clarifications },
+      { provider: "codex", clarifications },
       {
         capabilities: [{ id: "task-clarification", label: "Clarification" }],
       },
     ),
   ).toBe(true)
+})
+
+it("keeps a Bot turn's callback identity when the worker is downgraded", () => {
+  const task = { provider: "grok-bot" as const, runId: TaskRunId.make(crypto.randomUUID()) }
+  expect(canDispatchTaskToDevice(task, { capabilities: [] })).toBe(false)
+  expect(
+    canDispatchTaskToDevice(task, {
+      capabilities: [{ id: "task-clarification", label: "Clarification" }],
+    }),
+  ).toBe(true)
+  expect(canDispatchTaskToDevice({ provider: "grok-bot" }, { capabilities: [] })).toBe(true)
 })
 
 describe("relay listener", () => {
@@ -116,11 +130,16 @@ it("limits device file reads to its target tasks", () => {
 })
 
 it("holds attached work when a reconnected worker no longer advertises file support", () => {
-  const task = { inputAttachmentNames: [AttachmentName.make("report.txt")] }
+  const task = {
+    provider: "codex" as const,
+    inputAttachmentNames: [AttachmentName.make("report.txt")],
+  }
   const capable = { capabilities: [{ id: "task-attachments", label: "Task files" }] }
   const downgraded = { capabilities: [] }
   expect(canDispatchTaskToDevice(task, capable)).toBe(true)
   expect(canDispatchTaskToDevice(task, downgraded)).toBe(false)
   expect(canDispatchTaskToDevice(task, undefined)).toBe(false)
-  expect(canDispatchTaskToDevice({ inputAttachmentNames: [] }, downgraded)).toBe(true)
+  expect(canDispatchTaskToDevice({ provider: "codex", inputAttachmentNames: [] }, downgraded)).toBe(
+    true,
+  )
 })

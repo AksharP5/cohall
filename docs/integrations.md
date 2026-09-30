@@ -55,7 +55,8 @@ must fit the 1 MiB transfer limit. Oversized assignments fail with an explicit
 error; retry with a shorter prompt or context.
 
 Upgrade the relay, requester, and worker before using clarification. Resumed
-tasks remain queued while the worker lacks clarification support. Inbox checks
+tasks and Bot turns using a run ID remain queued while the worker lacks
+clarification support. Inbox checks
 and waits poll the relay; Cohall does not wake a requester to deliver a question.
 
 ## Worker progress

@@ -360,13 +360,17 @@ export const canReadTaskAttachments = (
 ): boolean =>
   principal === "owner" || principal.role === "client" || principal.deviceId === task.targetDeviceId
 
+const requiresClarificationSupport = (task: Pick<Task, "provider" | "runId" | "clarifications">) =>
+  (task.clarifications?.length ?? 0) > 0 ||
+  (task.provider === "grok-bot" && task.runId !== undefined)
+
 export const canDispatchTaskToDevice = (
-  task: Pick<Task, "inputAttachmentNames" | "clarifications">,
+  task: Pick<Task, "provider" | "runId" | "inputAttachmentNames" | "clarifications">,
   device: Pick<Device, "capabilities"> | undefined,
 ): boolean =>
   ((task.inputAttachmentNames?.length ?? 0) === 0 ||
     device?.capabilities.some((capability) => capability.id === "task-attachments") === true) &&
-  ((task.clarifications?.length ?? 0) === 0 ||
+  (!requiresClarificationSupport(task) ||
     device?.capabilities.some((capability) => capability.id === "task-clarification") === true)
 
 export const runRelay = async (): Promise<void> => {
@@ -431,11 +435,11 @@ export const runRelay = async (): Promise<void> => {
 
   const dispatch = async (task: Task): Promise<Task> => {
     const store = await run(RelayStore.Service)
-    if ((task.inputAttachmentNames?.length ?? 0) > 0 || (task.clarifications?.length ?? 0) > 0) {
+    if ((task.inputAttachmentNames?.length ?? 0) > 0 || requiresClarificationSupport(task)) {
       const devices = await Effect.runPromise(store.listDevices())
       const target = devices.find((device) => device.id === task.targetDeviceId)
       if (
-        (task.clarifications?.length ?? 0) > 0 &&
+        requiresClarificationSupport(task) &&
         !target?.capabilities.some((capability) => capability.id === "task-clarification")
       )
         return task
