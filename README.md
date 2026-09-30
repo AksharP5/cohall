@@ -8,6 +8,16 @@ One npm package provides a durable self-hosted relay, outbound-only device
 workers, a CLI, an installable agent skill, an optional MCP server, and local
 Codex, Claude Code, and OpenCode adapters, plus an experimental Grok Bot adapter.
 
+<details>
+<summary>Video music credits</summary>
+
+Music: ["Hang Low" by Rewob (feat. DustyZonda)](https://ccmixter.org/files/rewob/69753),
+including ["Hang Low a capella - Ashes and Dreams - main vox" by DustyZonda (feat. Liv Mircea)](https://ccmixter.org/files/DustyZonda/60053).
+Both licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+Trimmed and mixed for this video.
+
+</details>
+
 ## How it works
 
 ```text
