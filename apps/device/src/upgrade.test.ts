@@ -2,6 +2,8 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { DeviceId, DeviceOperation, OperationId, now } from "@cohall/protocol"
+import { performDeviceOperation } from "./daemon.ts"
 import {
   deviceVersionWarning,
   isTrustedGroupWritablePath,
@@ -14,6 +16,7 @@ import {
   upgrade,
   type CommandResult,
   type CommandRunner,
+  type PackageManager,
 } from "./upgrade.ts"
 
 const temporaryDirectories: Array<string> = []
@@ -117,6 +120,235 @@ describe("upgrade target", () => {
     expect(isTrustedSystemPath("linux", "/home/other-user/bin/npm")).toBe(false)
     expect(isTrustedSystemPath("linux", "/home-attacker")).toBe(false)
   })
+})
+
+describe("latest upgrades", () => {
+  const installation = async (version: string, manager: PackageManager = "npm") => {
+    const root = await temporaryDirectory()
+    const prefix =
+      manager === "bun"
+        ? join(root, ".bun", "install", "global")
+        : manager === "pnpm"
+          ? join(root, "pnpm", "global", "5")
+          : join(root, "lib")
+    const entrypoint = join(prefix, "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
+    const metadata = join(dirname(dirname(entrypoint)), "package.json")
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "#!/usr/bin/env node\n")
+    await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version }))
+    return { root, entrypoint, metadata }
+  }
+
+  it.each([
+    ["2.0.0", "1.99.99"],
+    ["1.10.0", "1.9.99"],
+    ["1.2.10", "1.2.9"],
+    ["1.2.3", "1.2.3-rc.10"],
+    ["1.2.3-rc.10", "1.2.3-rc.9"],
+    ["1.2.3-beta", "1.2.3-99"],
+    ["1.2.3-beta.1", "1.2.3-beta"],
+    ["1.2.4-rc.1+build.1", "1.2.3+build.99"],
+  ])("leaves %s installed when latest is older (%s)", async (currentVersion, latest) => {
+    const { root, entrypoint, metadata } = await installation(currentVersion)
+    const invocations: Array<string> = []
+    const runner: CommandRunner = {
+      run: async (command, arguments_) => {
+        const invocation = [command, ...arguments_].join(" ")
+        invocations.push(invocation)
+        if (arguments_[0] === "view") {
+          return { exitCode: 0, stdout: JSON.stringify(latest), stderr: "" }
+        }
+        if (arguments_.includes("show")) {
+          return {
+            exitCode: 0,
+            stdout: `{ path=${entrypoint} ; argv[]=${entrypoint} device ; }`,
+            stderr: "",
+          }
+        }
+        if (command === "npm") {
+          await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: latest }))
+        }
+        return success()
+      },
+    }
+
+    const result = await upgrade({
+      currentVersion,
+      restart: true,
+      dryRun: false,
+      entrypoint,
+      platform: "linux",
+      statePath: join(root, "receipt.json"),
+      runner,
+      resolveExecutable,
+    })
+
+    expect(result).toMatchObject({
+      upgraded: false,
+      installed_version: currentVersion,
+      requested_version: "latest",
+      services_restarted: [],
+    })
+    expect(invocations).toContain("npm view @akshar5/cohall@latest version --json")
+    expect(invocations.some((invocation) => invocation.includes(" install "))).toBe(false)
+    expect(invocations.some((invocation) => invocation.includes(" restart "))).toBe(false)
+    expect(JSON.parse(await readFile(metadata, "utf8"))).toMatchObject({ version: currentVersion })
+  })
+
+  it.each(["npm", "bun", "pnpm"] as const)(
+    "pins a newer latest version before installing with %s",
+    async (manager) => {
+      const { root, entrypoint, metadata } = await installation("1.2.3-rc.1", manager)
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, arguments_) => {
+          const invocation = [command, ...arguments_].join(" ")
+          invocations.push(invocation)
+          if (arguments_.includes("view")) {
+            return { exitCode: 0, stdout: '"1.2.3"', stderr: "" }
+          }
+          if (command === manager) {
+            await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
+            return success()
+          }
+          return { exitCode: 3, stdout: "", stderr: "" }
+        },
+      }
+
+      const result = await upgrade({
+        currentVersion: "1.2.3-rc.1",
+        target: "latest",
+        restart: false,
+        dryRun: false,
+        entrypoint,
+        statePath: join(root, "receipt.json"),
+        runner,
+        resolveExecutable,
+      })
+
+      expect(result).toMatchObject({ upgraded: true, installed_version: "1.2.3" })
+      const install = packageInstallCommand(
+        packageInstallation(await realpath(entrypoint)),
+        "1.2.3",
+      )
+      expect(invocations).toContain([install.command, ...install.arguments].join(" "))
+      expect(invocations.some((invocation) => /(?:install|add).*@latest$/.test(invocation))).toBe(
+        false,
+      )
+    },
+  )
+
+  it.each([
+    ["1.2.3", "1.2.5"],
+    ["1.2.5", "1.2.3"],
+  ])(
+    "guards a delegated latest operation with running %s and installed %s",
+    async (running, installed) => {
+      const { root, entrypoint } = await installation(installed)
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, arguments_) => {
+          invocations.push([command, ...arguments_].join(" "))
+          return arguments_[0] === "view"
+            ? { exitCode: 0, stdout: '"1.2.4"', stderr: "" }
+            : { exitCode: 3, stdout: "", stderr: "" }
+        },
+      }
+      const operation = DeviceOperation.make({
+        id: OperationId.make("66666666-6666-4666-8666-666666666666"),
+        kind: "upgrade",
+        status: "assigned",
+        targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        requestedVersion: "latest",
+        restart: true,
+        createdAt: now(),
+        updatedAt: now(),
+      })
+
+      const output = await performDeviceOperation(operation, running, (options) =>
+        upgrade({
+          ...options,
+          entrypoint,
+          statePath: join(root, "receipt.json"),
+          runner,
+          resolveExecutable,
+        }),
+      )
+
+      expect(JSON.parse(output)).toMatchObject({
+        installed_version: installed,
+        requested_version: "latest",
+      })
+      expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
+    },
+  )
+
+  it("allows an exact version to intentionally roll back without a latest lookup", async () => {
+    const { root, entrypoint, metadata } = await installation("1.2.5")
+    const invocations: Array<string> = []
+    const runner: CommandRunner = {
+      run: async (command, arguments_) => {
+        invocations.push([command, ...arguments_].join(" "))
+        if (command !== "npm") return { exitCode: 3, stdout: "", stderr: "" }
+        await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
+        return success()
+      },
+    }
+
+    await expect(
+      upgrade({
+        currentVersion: "1.2.5",
+        target: "1.2.3",
+        restart: false,
+        dryRun: false,
+        entrypoint,
+        statePath: join(root, "receipt.json"),
+        runner,
+        resolveExecutable,
+      }),
+    ).resolves.toMatchObject({ installed_version: "1.2.3", requested_version: "1.2.3" })
+    expect(invocations.some((invocation) => invocation.includes(" view "))).toBe(false)
+  })
+
+  it.each(['"latest"', '"1.2.3-01"', '["1.2.3"]'])(
+    "leaves the installation and recovery state intact when latest is invalid: %s",
+    async (stdout) => {
+      const { root, entrypoint, metadata } = await installation("1.2.3")
+      const statePath = join(root, "receipt.json")
+      const receipt = JSON.stringify({
+        version: "1.2.2",
+        fromVersion: "1.2.1",
+        packageManager: "npm",
+        pendingServices: [],
+        restartedServices: [],
+      })
+      await writeFile(statePath, receipt)
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, arguments_) => {
+          invocations.push([command, ...arguments_].join(" "))
+          return arguments_[0] === "view"
+            ? { exitCode: 0, stdout, stderr: "" }
+            : { exitCode: 3, stdout: "", stderr: "" }
+        },
+      }
+
+      await expect(
+        upgrade({
+          currentVersion: "1.2.3",
+          restart: true,
+          dryRun: false,
+          entrypoint,
+          statePath,
+          runner,
+          resolveExecutable,
+        }),
+      ).rejects.toThrow("Could not resolve @akshar5/cohall@latest")
+      expect(invocations.some((invocation) => invocation.includes(" install "))).toBe(false)
+      expect(JSON.parse(await readFile(metadata, "utf8"))).toMatchObject({ version: "1.2.3" })
+      expect(await readFile(statePath, "utf8")).toBe(receipt)
+    },
+  )
 })
 
 describe("package installation", () => {
