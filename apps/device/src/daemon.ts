@@ -31,6 +31,11 @@ import { prepareTaskFiles, type TaskFiles } from "./task-attachments.ts"
 
 const maxQueuedRelayMessages = 8
 
+type TaskTerminalEvent = Extract<
+  SocketEvent,
+  { readonly _tag: "TaskFinished" | "TaskFailed" | "TaskCancelled" | "TaskInputRequested" }
+>
+
 export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnectionError>()(
   "Device.ConnectionError",
   { message: Schema.String },
@@ -41,11 +46,11 @@ interface State {
   supportsAttachments: boolean
   supportsClarification: boolean
   processing: Promise<void>
-  readonly terminal: Map<TaskId, SocketEvent>
+  readonly terminal: Map<string, TaskTerminalEvent>
   readonly queue: Array<Task>
   readonly sessions: Map<string, string>
   readonly tasks: Map<TaskId, { readonly task: Task; readonly controller: AbortController }>
-  readonly completed: Map<TaskId, TaskRunId | undefined>
+  readonly completed: Set<string>
   operation: DeviceOperation | undefined
   readonly operationQueue: Array<DeviceOperation>
   readonly operationTerminal: Map<OperationId, string>
@@ -257,12 +262,15 @@ const send = (state: State, event: SocketEvent): void => {
   }
 }
 
-const omitOutputFiles = (event: SocketEvent, note: string): SocketEvent => {
+const taskRunKey = (taskId: TaskId, runId: TaskRunId | undefined): string =>
+  `${taskId}:${runId ?? ""}`
+
+const omitOutputFiles = (event: TaskTerminalEvent, note: string): TaskTerminalEvent => {
   if (event._tag !== "TaskFinished" || (event.attachments?.length ?? 0) === 0) {
     return event
   }
   const message = `\n\n[Output files omitted: ${note}]`
-  return SocketEvent.make({
+  return SocketEvent.cases.TaskFinished.make({
     _tag: "TaskFinished",
     taskId: event.taskId,
     ...(event.runId === undefined ? {} : { runId: event.runId }),
@@ -273,11 +281,11 @@ const omitOutputFiles = (event: SocketEvent, note: string): SocketEvent => {
   })
 }
 
-const sendTerminal = (state: State, taskId: TaskId, event: SocketEvent): void => {
+const sendTerminal = (state: State, event: TaskTerminalEvent): void => {
   const safeEvent = state.supportsAttachments
     ? event
     : omitOutputFiles(event, "the relay does not support attachments. Upgrade the relay and retry.")
-  state.terminal.set(taskId, safeEvent)
+  state.terminal.set(taskRunKey(event.taskId, event.runId), safeEvent)
   if (state.socket?.readyState === WebSocket.OPEN) {
     state.socket.send(JSON.stringify(safeEvent))
   }
@@ -296,7 +304,7 @@ const sendOperationTerminal = (
 }
 
 const remember = (state: State, task: Pick<Task, "id" | "runId">): void => {
-  state.completed.set(task.id, task.runId)
+  state.completed.add(taskRunKey(task.id, task.runId))
   if (state.completed.size <= 1_000) {
     return
   }
@@ -321,7 +329,7 @@ const rememberOperation = (state: State, operationId: OperationId): void => {
 
 const sessionKey = (task: Task): string => `${task.threadId}:${task.provider}`
 const hasCompletedRun = (state: State, task: Task): boolean =>
-  state.completed.has(task.id) && state.completed.get(task.id) === task.runId
+  state.completed.has(taskRunKey(task.id, task.runId))
 
 const drain = (configuration: DeviceConfiguration, state: State): void => {
   if (state.operation !== undefined) {
@@ -439,18 +447,18 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
 
   void Effect.runPromise(workflow, { signal: controller.signal })
     .then((result) => {
-      let finished: SocketEvent
+      let finished: TaskTerminalEvent
       if (result.question !== undefined) {
         if (!state.supportsClarification || task.runId === undefined)
           throw new Error("Upgrade the relay before requesting clarification")
-        finished = SocketEvent.make({
+        finished = SocketEvent.cases.TaskInputRequested.make({
           _tag: "TaskInputRequested",
           taskId: task.id,
           runId: task.runId,
           question: result.question,
         })
       } else {
-        finished = SocketEvent.make({
+        finished = SocketEvent.cases.TaskFinished.make({
           _tag: "TaskFinished",
           taskId: task.id,
           ...(task.runId === undefined ? {} : { runId: task.runId }),
@@ -472,20 +480,19 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
         state.sessions.set(sessionKey(task), result.sessionId)
       }
       remember(state, task)
-      sendTerminal(state, task.id, bounded)
+      sendTerminal(state, bounded)
     })
     .catch((cause: unknown) => {
       remember(state, task)
       sendTerminal(
         state,
-        task.id,
         controller.signal.aborted
-          ? SocketEvent.make({
+          ? SocketEvent.cases.TaskCancelled.make({
               _tag: "TaskCancelled",
               taskId: task.id,
               ...(task.runId === undefined ? {} : { runId: task.runId }),
             })
-          : SocketEvent.make({
+          : SocketEvent.cases.TaskFailed.make({
               _tag: "TaskFailed",
               taskId: task.id,
               ...(task.runId === undefined ? {} : { runId: task.runId }),
@@ -618,8 +625,11 @@ const cancel = (state: State, taskId: TaskId, runId?: TaskRunId): void => {
   remember(state, { id: taskId, ...(runId === undefined ? {} : { runId }) })
   sendTerminal(
     state,
-    taskId,
-    SocketEvent.make({ _tag: "TaskCancelled", taskId, ...(runId === undefined ? {} : { runId }) }),
+    SocketEvent.cases.TaskCancelled.make({
+      _tag: "TaskCancelled",
+      taskId,
+      ...(runId === undefined ? {} : { runId }),
+    }),
   )
 }
 
@@ -738,14 +748,14 @@ const connect = (
                     }),
                   ),
                 )
-                for (const [taskId, pending] of state.terminal) {
+                for (const [key, pending] of state.terminal) {
                   const safeEvent = state.supportsAttachments
                     ? pending
                     : omitOutputFiles(
                         pending,
                         "the relay does not support attachments. Upgrade the relay and retry.",
                       )
-                  state.terminal.set(taskId, safeEvent)
+                  state.terminal.set(key, safeEvent)
                   socket.send(JSON.stringify(safeEvent))
                 }
                 for (const payload of state.operationTerminal.values()) {
@@ -763,12 +773,7 @@ const connect = (
                 return
               }
               if (event._tag === "TaskSettled") {
-                const pending = state.terminal.get(event.taskId)
-                if (
-                  pending !== undefined &&
-                  ("runId" in pending ? pending.runId : undefined) === event.runId
-                )
-                  state.terminal.delete(event.taskId)
+                state.terminal.delete(taskRunKey(event.taskId, event.runId))
                 void cleanupBotReply(event.taskId, event.runId).catch(() => {
                   console.error(`Could not remove local bot reply for settled task ${event.taskId}`)
                 })
@@ -816,7 +821,7 @@ export const runDaemon = (
     queue: [],
     sessions: new Map(),
     tasks: new Map(),
-    completed: new Map(),
+    completed: new Set(),
     operation: undefined,
     operationQueue: [],
     operationTerminal: new Map(),
