@@ -16,6 +16,24 @@ import { RelayStore } from "./store.ts"
 
 afterEach(() => vi.useRealTimers())
 
+const worker = () =>
+  Device.make({
+    id: makeDeviceId(),
+    name: "deadline-worker",
+    hostname: "localhost",
+    platform: "linux",
+    architecture: "x64",
+    status: "online",
+    providers: ["codex"],
+    capabilities: [
+      { id: "task-deadlines", label: "Deadlines" },
+      { id: "task-clarification", label: "Clarification" },
+    ],
+    workspaces: [],
+    version: "test",
+    lastSeenAt: now(),
+  })
+
 it("preserves deadlines through clarification and restart, expires queued work, and waits for active cancellation", async () => {
   vi.useFakeTimers({ toFake: ["Date"] })
   vi.setSystemTime("2030-01-01T00:00:00Z")
@@ -24,22 +42,7 @@ it("preserves deadlines through clarification and restart, expires queued work, 
   let runtime = ManagedRuntime.make(RelayStore.layer(database))
   try {
     const store = await runtime.runPromise(RelayStore.Service)
-    const target = Device.make({
-      id: makeDeviceId(),
-      name: "deadline-worker",
-      hostname: "localhost",
-      platform: "linux",
-      architecture: "x64",
-      status: "online",
-      providers: ["codex"],
-      capabilities: [
-        { id: "task-deadlines", label: "Deadlines" },
-        { id: "task-clarification", label: "Clarification" },
-      ],
-      workspaces: [],
-      version: "test",
-      lastSeenAt: now(),
-    })
+    const target = worker()
     await Effect.runPromise(store.upsertDevice(target))
     const expiresAt = Timestamp.make("2030-01-01T00:00:01.000Z")
     const resumed = await Effect.runPromise(
@@ -140,13 +143,55 @@ it("preserves deadlines through clarification and restart, expires queued work, 
     ).toBe("cancelled")
     expect((await Effect.runPromise(restored.traceTask(resumed.id))).expiresAt).toBe(expiresAt)
     expect(
-      (await Effect.runPromise(restored.inboxFor("owner"))).items.map((item) => item.status),
-    ).toEqual(expect.arrayContaining(["failed", "failed", "cancelled"]))
+      (await Effect.runPromise(restored.inboxFor("owner"))).items.map((item) => item.status).sort(),
+    ).toEqual(["cancelled", "failed", "failed"])
   } finally {
     await runtime.dispose()
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+it.each(["queued", "running"] as const)(
+  "honors a %s task's elapsed deadline before manual cancellation",
+  async (status) => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime("2030-01-01T00:00:00Z")
+    const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+    try {
+      const store = await runtime.runPromise(RelayStore.Service)
+      const target = worker()
+      await Effect.runPromise(store.upsertDevice(target))
+      const task = await Effect.runPromise(
+        store.createDelegation(
+          {
+            prompt: "Work",
+            expiresAt: Timestamp.make("2030-01-01T00:00:01.000Z"),
+          },
+          target.id,
+          "owner",
+        ),
+      )
+      const assigned =
+        status === "running" ? await Effect.runPromise(store.assignTask(task.id)) : task
+      if (status === "running")
+        await Effect.runPromise(store.acceptTask(task.id, target.id, assigned.runId))
+      vi.setSystemTime("2030-01-01T00:00:01.001Z")
+      const cancelled = await Effect.runPromise(store.requestCancellation(task.id))
+      expect(cancelled).toMatchObject({
+        status: status === "running" ? "cancelling" : "failed",
+        error: taskDeadlineError,
+      })
+      expect(
+        await Effect.runPromise(store.acknowledgeCancellation(task.id, target.id, assigned.runId)),
+      ).toMatchObject({
+        status: "failed",
+        error: taskDeadlineError,
+      })
+    } finally {
+      await runtime.dispose()
+    }
+  },
+)
 
 it("rejects past deadlines and Bot deadlines before creating work", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))

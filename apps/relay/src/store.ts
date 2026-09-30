@@ -2082,7 +2082,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   const requestCancellation = Effect.fn("RelayStore.requestCancellation")(function* (
     taskId: TaskId,
   ) {
-    const current = yield* getTask(taskId)
+    const current = yield* getTask(taskId).pipe(Effect.flatMap(expireTask))
     if (["completed", "failed", "cancelled"].includes(current.status)) {
       return current
     }
