@@ -454,10 +454,21 @@ export const runRelay = async (): Promise<void> => {
     if (assigned.status !== "assigned") {
       return assigned
     }
+    const assignment = SocketEvent.make({ _tag: "TaskAssigned", task: assigned })
+    if (Buffer.byteLength(JSON.stringify(assignment)) > maxSocketPayloadBytes) {
+      return Effect.runPromise(
+        store.failTask(
+          assigned.id,
+          assigned.targetDeviceId,
+          "Task prompt, context, and clarification history exceed the 1 MiB transfer limit. Retry with a shorter prompt or context.",
+          assigned.runId,
+        ),
+      )
+    }
     if (
       hub.sendToDevice(
         assigned.targetDeviceId,
-        SocketEvent.make({ _tag: "TaskAssigned", task: assigned }),
+        assignment,
         assigned.provider === "grok-bot"
           ? () => Effect.runSync(store.markTaskDispatched(assigned.id))
           : undefined,

@@ -1114,6 +1114,31 @@ if (!process.argv.includes('resume')) {
       expect(runs[1]?.args.at(-2)).toBe("22222222-2222-4222-8222-222222222222")
       expect(runs[1]?.prompt).toContain("Which branch should I inspect?")
       expect(runs[1]?.prompt).toContain("Inspect release/next.")
+      const largeTask = await callTask({
+        name: "delegate",
+        arguments: {
+          target: "clarification-worker",
+          workspace: root,
+          prompt: "\0".repeat(86_000),
+          context: "\0".repeat(87_000),
+          wait: true,
+          timeout_seconds: 10,
+        },
+      })
+      const largeQuestion = largeTask.input_request
+      if (largeQuestion === undefined) throw new Error("Missing large-task clarification")
+      const rejected = await callTask({
+        name: "task_answer",
+        arguments: {
+          task_id: largeTask.task_id,
+          request_id: largeQuestion.id,
+          answer: `main${"\0".repeat(4092)}`,
+        },
+      })
+      expect(rejected).toMatchObject({
+        status: "failed",
+        error: expect.stringContaining("1 MiB transfer limit"),
+      })
     } finally {
       await mcp.close()
     }

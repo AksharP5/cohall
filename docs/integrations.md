@@ -50,6 +50,10 @@ prompt, including after a restart. An offline target waits in the queue. Each
 task permits ten questions; each question and answer must be nonblank and at most
 4096 UTF-8 bytes. Cancel a paused task with `cohall cancel <task-id>`.
 
+The assigned task, including its prompt, context, and clarification history,
+must fit the 1 MiB transfer limit. Oversized assignments fail with an explicit
+error; retry with a shorter prompt or context.
+
 Upgrade the relay, requester, and worker before using clarification. Resumed
 tasks remain queued while the worker lacks clarification support. Inbox checks
 and waits poll the relay; Cohall does not wake a requester to deliver a question.

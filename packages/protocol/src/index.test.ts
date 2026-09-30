@@ -221,6 +221,14 @@ it("fits every maximum task transport event inside the shared socket budget", ()
       status: "queued",
       targetDeviceId: makeDeviceId(),
       workspace: "w".repeat(4_096),
+      clarifications: Array.from({ length: maxTaskClarifications }, () =>
+        Schema.decodeUnknownSync(TaskClarification)({
+          id: crypto.randomUUID(),
+          question: `?${"\0".repeat(maxClarificationBytes - 1)}`,
+          at: now(),
+          answer: { text: `!${"\0".repeat(maxClarificationBytes - 1)}`, at: now() },
+        }),
+      ),
       createdAt: now(),
       updatedAt: now(),
     }),
