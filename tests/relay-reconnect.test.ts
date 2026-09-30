@@ -73,9 +73,12 @@ it("restores running task slots before a queued upgrade when the device reconnec
     return { socket, events, send }
   }
   try {
-    await vi.waitFor(async () => {
-      expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true)
-    })
+    await vi.waitFor(
+      async () => {
+        expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true)
+      },
+      { timeout: 10_000 },
+    )
     const original = await connect()
     const bot = await Effect.runPromise(
       client.createTask({

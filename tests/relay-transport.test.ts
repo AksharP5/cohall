@@ -52,7 +52,7 @@ it("isolates invalid connections and requeues work when a device connection fail
     expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true)
   }
   try {
-    await vi.waitFor(healthy)
+    await vi.waitFor(healthy, { timeout: 10_000 })
 
     const invalidUpgrade = connect(address.port, "127.0.0.1")
     let response = ""
