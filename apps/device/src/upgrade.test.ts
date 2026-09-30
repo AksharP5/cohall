@@ -310,6 +310,33 @@ describe("latest upgrades", () => {
     expect(invocations.some((invocation) => invocation.includes(" view "))).toBe(false)
   })
 
+  it("refuses latest when a stale process cannot verify the installed version", async () => {
+    const { root, entrypoint, metadata } = await installation("1.2.5")
+    await rm(metadata)
+    const invocations: Array<string> = []
+    const runner: CommandRunner = {
+      run: async (command, arguments_) => {
+        invocations.push([command, ...arguments_].join(" "))
+        return arguments_[0] === "view"
+          ? { exitCode: 0, stdout: '"1.2.4"', stderr: "" }
+          : { exitCode: 3, stdout: "", stderr: "" }
+      },
+    }
+
+    await expect(
+      upgrade({
+        currentVersion: "1.2.3",
+        restart: false,
+        dryRun: false,
+        entrypoint,
+        statePath: join(root, "receipt.json"),
+        runner,
+        resolveExecutable,
+      }),
+    ).rejects.toThrow("Could not verify the installed version before upgrading latest")
+    expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
+  })
+
   it.each(['"latest"', '"1.2.3-01"', '["1.2.3"]'])(
     "leaves the installation and recovery state intact when latest is invalid: %s",
     async (stdout) => {

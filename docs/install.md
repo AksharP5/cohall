@@ -215,8 +215,9 @@ instead of restarting the wrong job.
 The default target, `latest`, is resolved through that package manager and pinned
 before installation. If it is older than the running or installed version,
 Cohall leaves the installation and services untouched. Version ordering includes
-prereleases and ignores build metadata. A failed or invalid lookup stops the
-upgrade before installation.
+prereleases and ignores build metadata. A failed or invalid lookup, or unreadable
+installed package metadata, stops the upgrade before installation. Use an exact
+`--to` version to repair damaged metadata.
 
 Use `cohall upgrade --to 1.2.3` for an exact version, including an intentional
 rollback. Use `--dry-run` to inspect the plan, or `--no-restart` to leave services

@@ -763,7 +763,15 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
     resolvedTarget = latest
   }
-  let nextVersion = await installedVersion(entrypoint).catch(() => undefined)
+  let nextVersion = await installedVersion(entrypoint).catch((cause: unknown) => {
+    if (target === "latest") {
+      throw new Error(
+        "Could not verify the installed version before upgrading latest; use --to <version> to repair this installation",
+        { cause },
+      )
+    }
+    return undefined
+  })
   if (
     target === "latest" &&
     (compareVersions(resolvedTarget, options.currentVersion) < 0 ||
