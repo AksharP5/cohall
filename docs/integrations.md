@@ -17,7 +17,7 @@ otherwise supply the task ID explicitly. Notes must be nonblank and at most
 running task. Use milestones, never logs or secrets.
 
 `cohall status <task-id>`, `cohall trace <task-id> --follow`, and MCP `task_status`
-and `trace_task` include the latest note and timestamp. Notes replace one another
+and `task_trace` include the latest note and timestamp. Notes replace one another
 and clear when work is requeued or finishes.
 Reporting progress requires an updated relay; it does not change task status
 or acknowledge a completion.
