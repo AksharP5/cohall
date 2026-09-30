@@ -209,6 +209,13 @@ npx -y @akshar5/cohall wait <task-id> --timeout 1800
 npx -y @akshar5/cohall trace <task-id> --follow
 ```
 
+If a submission response is lost, retry with a UUID v4 generated before the
+first attempt. Supply it through `--request-id` or MCP `delegate.request_id` and
+keep the input and client credential unchanged. Cohall returns the original
+task's current status. Use a device ID or `@device-id/bot-id` target so discovery
+changes cannot affect the retry. See [retrying submissions](docs/integrations.md#retrying-submissions)
+for limits and retention.
+
 Task status and traces include the worker's latest progress note when it reports
 one. Workers can publish a brief milestone with `cohall progress --message
 "Running tests"`; the task ID is inherited during delegated work.

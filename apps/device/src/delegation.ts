@@ -10,6 +10,7 @@ import {
   TaskRunId,
   TaskDeadline,
   type Timestamp,
+  TaskRequestId,
   type RequestTaskInput,
   ThreadId,
   terminalTaskStatuses,
@@ -35,6 +36,7 @@ export class TaskWaitTimeoutError extends Schema.TaggedErrorClass<TaskWaitTimeou
 ) {}
 
 export interface DelegateOptions {
+  readonly requestId?: TaskRequestId
   readonly prompt: string
   readonly target?: string
   readonly context?: string
@@ -194,17 +196,35 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
   configuration: ClientConfiguration,
   options: DelegateOptions,
 ) {
-  const devices = yield* client.devices()
-  if (devices.length === 0) {
+  const directTarget = (() => {
+    if (options.requestId === undefined || options.target === undefined) return undefined
+    const value = options.target.replace(/^@/, "")
+    const separator = value.indexOf("/")
+    const id = Schema.decodeUnknownOption(DeviceId)(
+      separator < 0 ? value : value.slice(0, separator),
+    )
+    if (id._tag === "None") return undefined
+    return {
+      deviceId: id.value,
+      botId:
+        separator < 0 ? undefined : Schema.decodeUnknownSync(BotId)(value.slice(separator + 1)),
+    }
+  })()
+  const needsDiscovery =
+    directTarget === undefined && (options.requestId === undefined || options.target !== undefined)
+  const devices = needsDiscovery ? yield* client.devices() : []
+  if (needsDiscovery && devices.length === 0) {
     return yield* new DeviceSelectionError({
       message: "No Cohall devices are registered",
       devices: [],
     })
   }
   let target =
-    options.target === undefined ? undefined : yield* selectTarget(devices, options.target)
+    directTarget ??
+    (options.target === undefined ? undefined : yield* selectTarget(devices, options.target))
   if (
     target === undefined &&
+    options.requestId === undefined &&
     options.threadId !== undefined &&
     options.provider === undefined &&
     options.parentTaskId === undefined &&
@@ -244,6 +264,7 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
       : yield* Schema.decodeUnknownEffect(TaskId)(configuration.mcpTaskId))
   return yield* client.createTask({
     prompt: options.prompt,
+    ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
     ...(target === undefined ? {} : { targetDeviceId: target.deviceId }),
     ...(botId === undefined ? {} : { botId }),
     ...(options.threadId !== undefined

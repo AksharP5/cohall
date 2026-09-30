@@ -10,6 +10,42 @@ result with `cohall status <task-id>` or `task_status`, then use
 `cohall inbox ack <task-id>` or `acknowledge_completion` to remove it from the inbox. A synchronous `delegate`
 call acknowledges its result automatically.
 
+## Retrying submissions
+
+Generate and save a UUID v4 before submitting work. Pass it as `--request-id`
+on `send` or `delegate`, or as `request_id` on the MCP `delegate` tool:
+
+```bash
+cohall delegate --target @<device-id> \
+  --request-id 11111111-1111-4111-8111-111111111111 \
+  --prompt 'Inspect deployment 184.' --no-wait
+```
+
+After a lost response, repeat the submission with the same ID, input, and client
+credential. The relay returns the original task's current state, including
+after a relay restart. It creates no second task, thread message, or provider
+run. Requests without an ID continue to create a new task each time.
+
+Use a device UUID or `@device-uuid/bot-id` from `cohall bots` for retries. These
+targets bypass live name discovery when a request ID is supplied, so the original
+task can still be recovered after its target is forgotten or stops advertising
+the provider. Names need discovery on each call. With a request ID, a follow-up
+to a Bot must select that Bot explicitly; an omitted target requests a coding
+provider. Cohall does not retry submissions automatically.
+
+IDs belong to the original requester credential. Another pairing or the relay
+owner has a separate ID namespace. Keep all task input unchanged, including
+context, thread and parent IDs, workspace, target, provider, and attachment names
+and bytes. Reusing an ID with changed input returns HTTP 409. Default Codex and
+an empty attachment list normalize to their omitted forms.
+
+Used IDs and input hashes remain in the relay database and its backups after
+terminal task history is pruned. They have no expiry. The retained record has no
+prompt, context, or attachment content. If the original task was pruned, retrying
+returns HTTP 410 and the ID stays consumed. Check whether that work completed
+before deciding to submit new work with a new ID. Upgrade older relays before
+using request IDs; clients reject unsupported relays before submission.
+
 ## Clarification and resume
 
 A worker missing essential information can ask the sender, then end its current

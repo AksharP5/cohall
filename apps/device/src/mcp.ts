@@ -7,6 +7,7 @@ import {
   TaskDeadline,
   TaskProgressInput,
   TaskRunId,
+  TaskRequestId,
   RequestTaskInput,
   AnswerTaskInput,
   maxClarificationBytes,
@@ -145,6 +146,13 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
         "Send focused work to a Cohall device or named Grok Bot. When the request depends on the current conversation, distill its motivation, relevant facts, prior findings, constraints, and desired decision into context; Cohall cannot read the host transcript. Never forward unrelated transcript content. Reuse thread_id for related follow-ups. Grok Bots use their existing conversation; a Cohall thread does not isolate it.",
       inputSchema: {
         prompt: z.string().min(1).max(131_072),
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe(
+            "A UUID v4 generated before submitting. Reuse with identical input and the same client credential after a lost response to recover the original task. Use stable device IDs or device/bot IDs for retries.",
+          ),
         target: z
           .string()
           .optional()
@@ -192,6 +200,7 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     },
     async ({
       prompt,
+      request_id,
       target,
       provider,
       context,
@@ -207,6 +216,9 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
       const task = await Effect.runPromise(
         createDelegation(client, configuration, {
           prompt,
+          ...(request_id === undefined
+            ? {}
+            : { requestId: Schema.decodeUnknownSync(TaskRequestId)(request_id) }),
           ...(provider === undefined ? {} : { provider }),
           ...(target === undefined ? {} : { target }),
           ...(context === undefined ? {} : { context }),

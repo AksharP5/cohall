@@ -8,6 +8,7 @@ import {
   Provider,
   TaskId,
   TaskDeadline,
+  TaskRequestId,
   TaskProgressInput,
   RequestTaskInput,
   AnswerTaskInput,
@@ -127,7 +128,7 @@ Usage:
   cohall send [@device-or-bot] [prompt] [delegate options]
   cohall delegate [prompt] [--target @device-or-bot] [--provider provider]
                   [--context text] [--thread uuid] [--parent task-id] [--workspace path]
-                  [--attach path] [--timeout seconds] [--deadline UTC-timestamp] [--no-wait]
+                  [--attach path] [--request-id uuid] [--timeout seconds] [--deadline UTC-timestamp] [--no-wait]
   cohall status <task-id>
   cohall inbox [ack <task-id>]
   cohall trace <task-id> [--follow]
@@ -1028,6 +1029,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       "prompt",
       "prompt-file",
       "provider",
+      "request-id",
       "target",
       "thread",
       "timeout",
@@ -1062,9 +1064,13 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const provider = option(arguments_, "provider")
     const parent = option(arguments_, "parent")
     const deadline = option(arguments_, "deadline")
+    const requestId = option(arguments_, "request-id")
     const task = await Effect.runPromise(
       createDelegation(relay, configuration, {
         prompt,
+        ...(requestId === undefined
+          ? {}
+          : { requestId: Schema.decodeUnknownSync(TaskRequestId)(requestId) }),
         ...(target === undefined ? {} : { target }),
         ...(context === undefined ? {} : { context }),
         ...(thread === undefined ? {} : { threadId: Schema.decodeUnknownSync(ThreadId)(thread) }),

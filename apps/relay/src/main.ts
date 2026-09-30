@@ -796,6 +796,7 @@ export const runRelay = async (): Promise<void> => {
         taskProgress: true,
         taskClarification: true,
         taskDeadlines: true,
+        taskIdempotency: true,
       })
     }
     if (url.pathname === "/api/auth/pair" && request.method === "POST") {
@@ -891,15 +892,24 @@ export const runRelay = async (): Promise<void> => {
         return json(forgotten)
       }
       if (url.pathname === "/api/tasks" && request.method === "POST") {
+        const requestedInput = yield* body(request, decodeCreateTaskInput)
+        const existing = yield* store.findDelegation(requestedInput, principal)
+        if (existing !== undefined) return json(existing)
         const { input, targetDeviceId: target } = yield* resolveDelegation(
-          yield* body(request, decodeCreateTaskInput),
+          requestedInput,
           sourceDeviceId,
         )
         const providerSessionId =
           input.threadId === undefined || input.provider === "grok-bot"
             ? undefined
             : yield* store.sessionFor(input.threadId, target, input.provider ?? "codex")
-        const task = yield* store.createDelegation(input, target, principal, providerSessionId)
+        const task = yield* store.createDelegation(
+          input,
+          target,
+          principal,
+          providerSessionId,
+          requestedInput,
+        )
         return json(yield* Effect.tryPromise(() => dispatch(task)), 201)
       }
       if (url.pathname === "/api/inbox" && request.method === "GET") {
@@ -1026,7 +1036,8 @@ export const runRelay = async (): Promise<void> => {
           ? cause
           : cause._tag === "RelayStore.TaskProgressError" ||
               cause._tag === "RelayStore.TaskInputError" ||
-              cause._tag === "RelayStore.TaskDeadlineError"
+              cause._tag === "RelayStore.TaskDeadlineError" ||
+              cause._tag === "RelayStore.TaskRequestError"
             ? new RequestError({ status: cause.status, message: cause.message })
             : new RequestError({
                 status:
