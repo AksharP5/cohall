@@ -3,10 +3,10 @@ import { type AddressInfo } from "node:net"
 import { Effect } from "effect"
 import { expect, it } from "vitest"
 import { make } from "./index.ts"
-import { TaskProgressInput, makeTaskId } from "@cohall/protocol"
+import { RequestTaskInput, TaskProgressInput, makeTaskId } from "@cohall/protocol"
 import { Schema } from "effect"
 
-it("refuses progress updates against older relays", async () => {
+it("refuses progress and clarification updates against older relays", async () => {
   let posted = false
   const server = createServer((request, response) => {
     response.setHeader("content-type", "application/json")
@@ -31,6 +31,19 @@ it("refuses progress updates against older relays", async () => {
       ),
     ).rejects.toMatchObject({
       message: "Upgrade the Cohall relay before reporting task progress",
+    })
+    await expect(
+      Effect.runPromise(
+        client.requestTaskInput(
+          makeTaskId(),
+          Schema.decodeUnknownSync(RequestTaskInput)({
+            runId: crypto.randomUUID(),
+            question: "Which branch?",
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      message: "Upgrade the Cohall relay before requesting clarification",
     })
     expect(posted).toBe(false)
   } finally {

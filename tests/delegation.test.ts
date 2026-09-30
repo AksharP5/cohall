@@ -8,6 +8,7 @@ import {
   SocketEvent,
   Task,
   TaskId,
+  TaskRunId,
   TaskTrace,
   ThreadId,
   Timestamp,
@@ -15,6 +16,7 @@ import {
   type AuthSession,
 } from "../packages/protocol/src/index.ts"
 import { TaskResult } from "../apps/device/src/delegation.ts"
+import { StoredConfiguration } from "../apps/device/src/config.ts"
 import { Effect, Schedule, Schema } from "effect"
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
@@ -528,6 +530,8 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     await mcp.connect(transport)
     const tools = (await mcp.listTools()).tools
     expect(tools.map((tool) => tool.name)).toEqual([
+      "task_request_input",
+      "task_answer",
       "task_progress",
       "list_devices",
       "list_bots",
@@ -912,4 +916,231 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     const sessions: ReadonlyArray<AuthSession> = await Effect.runPromise(owner.authSessions())
     expect(sessions.filter((session) => session.label === "Test machine")).toHaveLength(2)
   }, 40_000)
+
+  it("pauses for a worker question and resumes the same provider session through MCP", async () => {
+    const root = process.cwd()
+    const directory = await mkdtemp(join(tmpdir(), "cohall-task-input-"))
+    directories.push(directory)
+    const configPath = join(directory, "worker.json")
+    const runsPath = join(directory, "runs.jsonl")
+    const bin = join(directory, "bin")
+    const baseEnvironment = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith("COHALL_")),
+    )
+    await mkdir(bin)
+    const codex = join(bin, "codex")
+    await writeFile(
+      codex,
+      `#!/usr/bin/env node
+import { appendFileSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+const prompt = readFileSync(0, 'utf8');
+appendFileSync(${JSON.stringify(runsPath)}, JSON.stringify({
+  args: process.argv.slice(2), prompt,
+  taskId: process.env.COHALL_TASK_ID,
+  runId: process.env.COHALL_TASK_RUN_ID,
+  threadId: process.env.COHALL_THREAD_ID,
+}) + '\\n');
+console.log(JSON.stringify({ type: 'thread.started', thread_id: '22222222-2222-4222-8222-222222222222' }));
+if (!process.argv.includes('resume')) {
+  execFileSync(process.execPath, [${JSON.stringify(join(root, "bin/cohall.js"))}, 'request-input', '--question', 'Which branch should I inspect?'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Waiting for a branch.' } }));
+} else {
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Inspected release/next.' } }));
+}
+`,
+    )
+    await chmod(codex, 0o755)
+    const relayPort = await port()
+    const relayUrl = `http://127.0.0.1:${relayPort}`
+    const ownerToken = "clarification-test-owner".padEnd(64, "0")
+    children.push(
+      spawn("node", ["bin/cohall.js", "relay"], {
+        cwd: root,
+        env: {
+          ...baseEnvironment,
+          COHALL_CONFIG: join(directory, "relay-config.json"),
+          COHALL_DATA_DIR: join(directory, "relay"),
+          COHALL_RELAY_PORT: String(relayPort),
+          COHALL_TOKEN: ownerToken,
+        },
+        stdio: "ignore",
+      }),
+    )
+    await waitForRelay(relayUrl)
+    const owner = RelayClient.make({ baseUrl: relayUrl, token: ownerToken })
+    const pairing = await Effect.runPromise(
+      owner.createPairing({ label: "Worker", roles: ["client", "device"] }),
+    )
+    const paired = await Effect.runPromise(exchangePairing(relayUrl, { token: pairing.token }))
+    const workerClient = paired.credentials.find((value) => value.session.role === "client")
+    const workerDevice = paired.credentials.find((value) => value.session.role === "device")
+    const deviceId = workerDevice?.session.deviceId
+    if (workerClient === undefined || workerDevice === undefined || deviceId === undefined)
+      throw new Error("Missing worker credentials")
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        StoredConfiguration.make({
+          version: 1,
+          relayUrl,
+          deviceId,
+          deviceName: "clarification-worker",
+          workspaces: [root],
+          clientToken: workerClient.token,
+          deviceToken: workerDevice.token,
+          providers: ["codex"],
+        }),
+      ),
+      { mode: 0o600 },
+    )
+    children.push(
+      spawn("node", ["bin/cohall.js", "device"], {
+        cwd: root,
+        env: {
+          ...baseEnvironment,
+          PATH: `${bin}:${baseEnvironment.PATH ?? ""}`,
+          COHALL_CONFIG: configPath,
+        },
+        stdio: "ignore",
+      }),
+    )
+    await Effect.runPromise(
+      owner.devices().pipe(
+        Effect.repeat({
+          until: (devices) => devices.some((device) => device.id === deviceId),
+          schedule: Schedule.spaced("50 millis"),
+        }),
+        Effect.timeout("10 seconds"),
+      ),
+    )
+    const senderPairing = await Effect.runPromise(
+      owner.createPairing({ label: "Requester", roles: ["client"] }),
+    )
+    const sender = await Effect.runPromise(
+      exchangePairing(relayUrl, { token: senderPairing.token }),
+    )
+    const senderToken = sender.credentials.find((value) => value.session.role === "client")?.token
+    if (senderToken === undefined) throw new Error("Missing requester credential")
+    const requester = RelayClient.make({ baseUrl: relayUrl, token: senderToken })
+    const mcp = new McpClient({ name: "clarification-test", version: "1.0.0" })
+    const callTask = async (input: Parameters<McpClient["callTool"]>[0]) => {
+      const response = await mcp.callTool(input)
+      expect(response.isError).not.toBe(true)
+      const text = response.content.find((part) => part.type === "text")?.text
+      if (typeof text !== "string") throw new Error("Missing MCP task JSON")
+      return Schema.decodeUnknownSync(TaskResult)(JSON.parse(text))
+    }
+    try {
+      await mcp.connect(
+        new StdioClientTransport({
+          command: "node",
+          args: ["bin/cohall.js", "mcp"],
+          cwd: root,
+          env: {
+            PATH: baseEnvironment.PATH ?? "",
+            COHALL_CONFIG: join(directory, "requester.json"),
+            COHALL_RELAY_URL: relayUrl,
+            COHALL_CLIENT_TOKEN: senderToken,
+          },
+          stderr: "ignore",
+        }),
+      )
+      const paused = await callTask({
+        name: "delegate",
+        arguments: {
+          target: "clarification-worker",
+          workspace: root,
+          prompt: "Inspect the requested branch",
+          wait: true,
+          timeout_seconds: 10,
+        },
+      })
+      expect(paused).toMatchObject({
+        status: "needs_input",
+        input_request: { question: "Which branch should I inspect?" },
+      })
+      expect(paused).not.toHaveProperty("result")
+      const question = paused.input_request
+      if (question === undefined) throw new Error("Missing clarification question")
+      const pausedTask = await Effect.runPromise(requester.getTask(paused.task_id))
+      expect(pausedTask.providerSessionId).toBe("22222222-2222-4222-8222-222222222222")
+      expect((await Effect.runPromise(requester.inbox())).items).toEqual([
+        expect.objectContaining({
+          id: paused.task_id,
+          status: "needs_input",
+          inputRequest: question,
+        }),
+      ])
+      await callTask({
+        name: "task_answer",
+        arguments: {
+          task_id: paused.task_id,
+          request_id: question.id,
+          answer: "Inspect release/next.",
+        },
+      })
+      const completed = await callTask({
+        name: "wait_task",
+        arguments: { task_id: paused.task_id, timeout_seconds: 10 },
+      })
+      expect(completed).toMatchObject({
+        task_id: paused.task_id,
+        thread_id: paused.thread_id,
+        status: "completed",
+        result: "Inspected release/next.",
+      })
+      const runs = Schema.decodeUnknownSync(
+        Schema.Array(
+          Schema.Struct({
+            args: Schema.Array(Schema.String),
+            prompt: Schema.String,
+            taskId: TaskId,
+            runId: TaskRunId,
+            threadId: ThreadId,
+          }),
+        ),
+      )(
+        (await readFile(runsPath, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line)),
+      )
+      expect(runs).toHaveLength(2)
+      expect(runs.map((run) => run.taskId)).toEqual([paused.task_id, paused.task_id])
+      expect(runs.map((run) => run.threadId)).toEqual([paused.thread_id, paused.thread_id])
+      expect(runs[1]?.runId).not.toBe(runs[0]?.runId)
+      expect(runs[1]?.args.slice(0, 2)).toEqual(["exec", "resume"])
+      expect(runs[1]?.args.at(-2)).toBe("22222222-2222-4222-8222-222222222222")
+      expect(runs[1]?.prompt).toContain("Which branch should I inspect?")
+      expect(runs[1]?.prompt).toContain("Inspect release/next.")
+      const largeTask = await callTask({
+        name: "delegate",
+        arguments: {
+          target: "clarification-worker",
+          workspace: root,
+          prompt: "\0".repeat(86_000),
+          context: "\0".repeat(87_000),
+          wait: true,
+          timeout_seconds: 10,
+        },
+      })
+      const largeQuestion = largeTask.input_request
+      if (largeQuestion === undefined) throw new Error("Missing large-task clarification")
+      const rejected = await callTask({
+        name: "task_answer",
+        arguments: {
+          task_id: largeTask.task_id,
+          request_id: largeQuestion.id,
+          answer: `main${"\0".repeat(4092)}`,
+        },
+      })
+      expect(rejected).toMatchObject({
+        status: "failed",
+        error: expect.stringContaining("1 MiB transfer limit"),
+      })
+    } finally {
+      await mcp.close()
+    }
+  }, 30_000)
 })

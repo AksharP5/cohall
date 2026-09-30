@@ -1,4 +1,4 @@
-import { BotId, TaskId, ThreadId, type Task } from "@cohall/protocol"
+import { BotId, TaskId, TaskRunId, RequestTaskInput, ThreadId, type Task } from "@cohall/protocol"
 import { Schema } from "effect"
 import { randomUUID } from "node:crypto"
 import { chmod, link, mkdir, open, unlink } from "node:fs/promises"
@@ -18,10 +18,17 @@ const Reply = Schema.Union([
   Schema.Struct({
     result: Schema.String.check(Schema.isMaxLength(131_072)),
     error: Schema.optionalKey(Schema.Never),
+    question: Schema.optionalKey(Schema.Never),
   }),
   Schema.Struct({
     error: Schema.NonEmptyString.check(Schema.isMaxLength(16_384)),
     result: Schema.optionalKey(Schema.Never),
+    question: Schema.optionalKey(Schema.Never),
+  }),
+  Schema.Struct({
+    question: RequestTaskInput.fields.question,
+    result: Schema.optionalKey(Schema.Never),
+    error: Schema.optionalKey(Schema.Never),
   }),
 ])
 export type BotReply = typeof Reply.Type
@@ -36,14 +43,15 @@ const isMissing = (cause: unknown) =>
 const alreadyExists = (cause: unknown) =>
   cause instanceof Error && "code" in cause && cause.code === "EEXIST"
 
-const paths = (taskId: TaskId) => {
+const paths = (taskId: TaskId, runId?: TaskRunId) => {
   const id = Schema.decodeUnknownSync(TaskId)(taskId)
   const directory = join(dirname(configurationPath()), "bot-replies")
+  const key = runId === undefined ? id : `${id}.${Schema.decodeUnknownSync(TaskRunId)(runId)}`
   return {
     directory,
-    pending: join(directory, `${id}.pending.json`),
-    receipt: join(directory, `${id}.reply.json`),
-    dispatch: join(directory, `${id}.dispatch.json`),
+    pending: join(directory, `${key}.pending.json`),
+    receipt: join(directory, `${key}.reply.json`),
+    dispatch: join(directory, `${key}.dispatch.json`),
   }
 }
 
@@ -70,8 +78,8 @@ const readJson = async (path: string, limit: number): Promise<unknown | undefine
   }
 }
 
-const pendingReply = async (taskId: TaskId) => {
-  const value = await readJson(paths(taskId).pending, 4096)
+const pendingReply = async (taskId: TaskId, runId?: TaskRunId) => {
+  const value = await readJson(paths(taskId, runId).pending, 4096)
   if (value === undefined) return undefined
   const decoded = Schema.decodeUnknownResult(Pending)(value)
   if (decoded._tag === "Failure" || decoded.success.taskId !== taskId) {
@@ -116,7 +124,7 @@ export const prepareBotReply = async (
   if (task.provider !== "grok-bot" || task.botId === undefined) {
     throw new Error("Only a named Grok Bot task can receive a bot reply")
   }
-  const files = paths(task.id)
+  const files = paths(task.id, task.runId)
   await mkdir(files.directory, { recursive: true, mode: 0o700 })
   await chmod(files.directory, 0o700)
   const record = Pending.make({
@@ -126,7 +134,7 @@ export const prepareBotReply = async (
     deadline: Date.now() + replyLifetimeMs,
   })
   await publish(files.pending, record)
-  const pending = await pendingReply(task.id)
+  const pending = await pendingReply(task.id, task.runId)
   if (pending === undefined || pending.botId !== task.botId || pending.threadId !== task.threadId) {
     throw new Error("Bot reply manifest does not match this task")
   }
@@ -144,17 +152,20 @@ export const prepareBotReply = async (
   }
 }
 
-export const claimBotDispatch = async (taskId: TaskId): Promise<boolean> => {
-  const pending = await pendingReply(taskId)
+export const claimBotDispatch = async (taskId: TaskId, runId?: TaskRunId): Promise<boolean> => {
+  const pending = await pendingReply(taskId, runId)
   if (pending === undefined) throw new Error("No pending bot reply for this task")
   if (Date.now() >= pending.deadline) throw new Error("Bot reply deadline has expired")
-  return publish(paths(taskId).dispatch, { taskId })
+  return publish(paths(taskId, runId).dispatch, { taskId })
 }
 
-export const readBotReply = async (taskId: TaskId): Promise<BotReply | undefined> => {
-  const pending = await pendingReply(taskId)
+export const readBotReply = async (
+  taskId: TaskId,
+  runId?: TaskRunId,
+): Promise<BotReply | undefined> => {
+  const pending = await pendingReply(taskId, runId)
   if (pending === undefined) return undefined
-  const value = await readJson(paths(taskId).receipt, 1024 * 1024)
+  const value = await readJson(paths(taskId, runId).receipt, 1024 * 1024)
   if (value === undefined) return undefined
   const decoded = Schema.decodeUnknownResult(Receipt)(value)
   if (decoded._tag === "Failure" || decoded.success.taskId !== taskId) {
@@ -166,31 +177,36 @@ export const readBotReply = async (taskId: TaskId): Promise<BotReply | undefined
   return decoded.success.reply
 }
 
-export const writeBotReply = async (taskId: TaskId, reply: BotReply): Promise<void> => {
+export const writeBotReply = async (
+  taskId: TaskId,
+  reply: BotReply,
+  runId?: TaskRunId,
+): Promise<void> => {
   const decoded = Schema.decodeUnknownResult(Reply)(reply)
   if (decoded._tag === "Failure") {
     throw new Error(
-      "Provide a result of at most 131072 characters or a nonempty error of at most 16384 characters",
+      "Provide a result of at most 131072 characters, a nonempty error of at most 16384 characters, or a clarification question of at most 4096 UTF-8 bytes",
     )
   }
-  const pending = await pendingReply(taskId)
+  const pending = await pendingReply(taskId, runId)
   if (pending === undefined) throw new Error("No pending bot reply for this task")
-  const existing = await readBotReply(taskId)
+  const existing = await readBotReply(taskId, runId)
   if (existing !== undefined) {
     if (JSON.stringify(existing) === JSON.stringify(decoded.success)) return
     throw new Error("A different reply has already been submitted for this task")
   }
   const submittedAt = Date.now()
   if (submittedAt >= pending.deadline) throw new Error("Bot reply deadline has expired")
-  if (await publish(paths(taskId).receipt, { taskId, submittedAt, reply: decoded.success })) return
-  const winner = await readBotReply(taskId)
+  if (await publish(paths(taskId, runId).receipt, { taskId, submittedAt, reply: decoded.success }))
+    return
+  const winner = await readBotReply(taskId, runId)
   if (JSON.stringify(winner) !== JSON.stringify(decoded.success)) {
     throw new Error("A different reply has already been submitted for this task")
   }
 }
 
-export const cleanupBotReply = async (taskId: TaskId): Promise<void> => {
-  const files = paths(taskId)
+export const cleanupBotReply = async (taskId: TaskId, runId?: TaskRunId): Promise<void> => {
+  const files = paths(taskId, runId)
   for (const path of [files.pending, files.receipt, files.dispatch]) {
     await unlink(path).catch((cause: unknown) => {
       if (!isMissing(cause)) throw cause

@@ -7,7 +7,8 @@ description: Delegate through Cohall to another user-owned device or an existing
 
 Cohall sends a focused task to a coding agent or an existing named Grok Bot. The target
 keeps its local files, credentials, browser state, provider login, skills, and
-permissions. The relay carries prompts, final results, task state, and explicitly attached files.
+permissions. The relay carries prompts, questions and answers, final results,
+task state, and explicitly attached files.
 
 Use the installed `cohall` executable when it is available. Fall back to
 `npx -y @akshar5/cohall` only when Cohall is not installed globally.
@@ -66,7 +67,8 @@ Do not delegate ordinary local work when the other device provides no advantage.
 
 5. The command waits by default and returns JSON. Treat work as successful only
    when `status` is `completed`; use `result` in the current task. Report a
-   `failed`, `cancelled`, or `cancelling` state accurately.
+   `failed`, `cancelled`, or `cancelling` state accurately. Handle `needs_input`
+   through the clarification workflow below.
 
    Pass an explicit local file with `--attach path` when the coding task needs
    it. The MCP `delegate` tool takes `attachment_paths`. A task accepts up to
@@ -93,9 +95,32 @@ and `COHALL_TASK_ID` carry its thread and parent task. Pass `--thread` and
 `--parent` explicitly from a Grok Bot using the IDs in its handoff.
 
 For work sent with `--no-wait`, check `cohall inbox` when returning to the task.
-Read the full result with `cohall status <task-id>`, use it in the current work,
-then run `cohall inbox ack <task-id>`. Results that arrive after a wait times
-out appear in the same inbox.
+Answer pending questions using the workflow below. Read completed results with
+`cohall status <task-id>`, use them in the current work, then run
+`cohall inbox ack <task-id>`. Results that arrive after a wait times out appear
+in the same inbox.
+
+## Clarification
+
+When `delegate`, `send`, `status`, or `wait` returns `needs_input`, read
+`input_request.question` and `input_request.id`. Inbox entries use `inputRequest`.
+Answer from known conversation facts; ask the user if the answer is missing.
+Resume the existing task with the original requester credential:
+
+```bash
+cohall answer <task-id> --request-id <question-id> --message 'Use main.'
+cohall wait <task-id> --timeout 1800
+```
+
+MCP uses `task_answer` with `task_id`, `request_id`, and `answer`, then `wait_task`.
+Only a terminal result completes the handoff. Questions require an answer or
+cancellation, not an inbox acknowledgement. A stale question ID is rejected;
+read status again before answering.
+
+When receiving a delegated coding task and essential information is missing,
+run `cohall request-input --question 'Your question'` or `task_request_input`.
+The task and turn IDs are inherited. After the request succeeds, end the worker
+turn immediately; Cohall resumes the same task after the sender answers.
 
 ## Message named bots
 
@@ -125,11 +150,13 @@ Different bots and the computer's coding agent can run concurrently. Each
 individual bot processes one Cohall request at a time.
 
 When receiving a Cohall request inside a Grok Bot, finish with the `cohall reply`
-command supplied in the handoff. Pass the final answer through `--message-file`
-or `--message -` on stdin, then reply normally in chat. Use `--error` if unable
+command supplied in the handoff, including its `--run-id`. Pass the final answer
+through `--message-file` or `--message -` on stdin, then reply normally in chat. Use `--error` if unable
 to finish. This local receipt is what returns the result to the sending device;
 a chat message alone does not complete the Cohall task. The receipt survives
-worker restarts and works while the relay is temporarily unreachable.
+worker restarts and works while the relay is temporarily unreachable. For
+essential missing information, use that callback with `--question`, then end
+the Bot turn. Its resumed handoff supplies a new run ID and the sender's answer.
 
 ## Context and safety
 
@@ -137,7 +164,7 @@ worker restarts and works while the relay is temporarily unreachable.
 - Add new relevant developments to `--context` when following up from another chat.
 - Never send provider credentials, Cohall tokens, cookies, or browser-profile data.
 - Request a path only when the target advertises a matching workspace root.
-- Use the same thread for clarification instead of creating duplicate tasks.
+- Resume a clarification on its existing task instead of creating duplicate work.
 - Do not submit the same work through both CLI and MCP.
 - Respect user confirmation requirements for consequential actions on the target.
 
@@ -167,7 +194,8 @@ cohall cancel <task-id>
 
 For coding agents, active cancellation is acknowledged by the target device;
 `cancelling` means the provider process has not confirmed termination yet.
-Queued bot tasks can be cancelled. Stop an active bot in Grok Bot; its gateway
+Paused tasks and bot tasks that have never been dispatched can be cancelled.
+Stop an active bot in Grok Bot; its gateway
 cannot safely cancel an individual Cohall request.
 
 ## Read shared context
@@ -201,9 +229,10 @@ Trace a known task before inspecting machine-local service logs:
 cohall trace <task-id> --follow
 ```
 
-The trace is redacted and reports relay dispatch, device execution, retries,
-and terminal state. Use `cohall thread <thread-id>` when prompt and result
-history is relevant.
+The trace reports relay dispatch, device execution, retries, progress, questions,
+and terminal state. It omits prompts, final results, credentials, and provider
+session IDs; inspect progress and clarification text before sharing it.
+Use `cohall thread <thread-id>` when prompt and result history is relevant.
 
 If Cohall cannot connect or no target is available, run:
 

@@ -42,6 +42,10 @@ export const MessageId = uuid("MessageId")
 export type MessageId = typeof MessageId.Type
 export const TaskId = uuid("TaskId")
 export type TaskId = typeof TaskId.Type
+export const TaskRunId = uuid("TaskRunId")
+export type TaskRunId = typeof TaskRunId.Type
+export const ClarificationId = uuid("ClarificationId")
+export type ClarificationId = typeof ClarificationId.Type
 export const AuthSessionId = uuid("AuthSessionId")
 export type AuthSessionId = typeof AuthSessionId.Type
 export const OperationId = uuid("OperationId")
@@ -59,6 +63,7 @@ export const TaskStatus = Schema.Literals([
   "queued",
   "assigned",
   "running",
+  "needs_input",
   "cancelling",
   "completed",
   "failed",
@@ -73,7 +78,12 @@ export const OperationStatus = Schema.Literals([
   "failed",
 ])
 export type OperationStatus = typeof OperationStatus.Type
-export const TaskTraceEventKind = Schema.Literals([...TaskStatus.literals, "requeued"])
+export const TaskTraceEventKind = Schema.Literals([
+  ...TaskStatus.literals,
+  "requeued",
+  "input_requested",
+  "input_answered",
+])
 export type TaskTraceEventKind = typeof TaskTraceEventKind.Type
 export const MessageRole = Schema.Literals(["human", "agent", "system"])
 export type MessageRole = typeof MessageRole.Type
@@ -304,8 +314,46 @@ export interface TaskProgressInput extends Schema.Schema.Type<typeof TaskProgres
 export const TaskProgress = Schema.Struct({ ...TaskProgressInput.fields, at: Timestamp })
 export interface TaskProgress extends Schema.Schema.Type<typeof TaskProgress> {}
 
+export const maxClarificationBytes = 4096
+export const maxTaskClarifications = 10
+const clarificationText = bounded(maxClarificationBytes)
+  .check(
+    Schema.makeFilter((value) =>
+      value.trim().length > 0 && new TextEncoder().encode(value).byteLength <= maxClarificationBytes
+        ? undefined
+        : `Expected nonblank text of at most ${maxClarificationBytes} UTF-8 bytes`,
+    ),
+  )
+  .pipe(Schema.brand("ClarificationText"))
+
+export const RequestTaskInput = Schema.Struct({ runId: TaskRunId, question: clarificationText })
+export interface RequestTaskInput extends Schema.Schema.Type<typeof RequestTaskInput> {}
+export const AnswerTaskInput = Schema.Struct({
+  requestId: ClarificationId,
+  answer: clarificationText,
+})
+export interface AnswerTaskInput extends Schema.Schema.Type<typeof AnswerTaskInput> {}
+export const TaskClarification = Schema.Struct({
+  id: ClarificationId,
+  question: RequestTaskInput.fields.question,
+  at: Timestamp,
+  answer: Schema.optionalKey(Schema.Struct({ text: AnswerTaskInput.fields.answer, at: Timestamp })),
+})
+export interface TaskClarification extends Schema.Schema.Type<typeof TaskClarification> {}
+const clarifications = boundedArray(TaskClarification, maxTaskClarifications)
+
+const validClarificationState = (task: {
+  readonly status: TaskStatus
+  readonly clarifications?: ReadonlyArray<TaskClarification>
+}) =>
+  task.status !== "needs_input" ||
+  (task.clarifications?.at(-1) !== undefined && task.clarifications.at(-1)?.answer === undefined)
+    ? undefined
+    : "A task awaiting input must have an unanswered question"
+
 export const Task = Schema.Struct({
   id: TaskId,
+  runId: Schema.optionalKey(TaskRunId),
   threadId: ThreadId,
   prompt: bounded(131_072),
   context: Schema.optionalKey(optionalText(131_072)),
@@ -321,11 +369,12 @@ export const Task = Schema.Struct({
   inputAttachmentNames: Schema.optionalKey(boundedArray(AttachmentName, maxTaskAttachments)),
   error: Schema.optionalKey(optionalText(16_384)),
   progress: Schema.optionalKey(TaskProgress),
+  clarifications: Schema.optionalKey(clarifications),
   createdAt: Timestamp,
   updatedAt: Timestamp,
   startedAt: Schema.optionalKey(Timestamp),
   completedAt: Schema.optionalKey(Timestamp),
-}).check(Schema.makeFilter(validBotTarget))
+}).check(Schema.makeFilter(validBotTarget), Schema.makeFilter(validClarificationState))
 export interface Task extends Schema.Schema.Type<typeof Task> {}
 
 export const TaskInboxItem = Schema.Struct({
@@ -334,12 +383,25 @@ export const TaskInboxItem = Schema.Struct({
   targetDeviceId: DeviceId,
   provider: Provider,
   botId: Schema.optionalKey(BotId),
-  status: Schema.Literals(["completed", "failed", "cancelled"]),
+  status: Schema.Literals(["needs_input", "completed", "failed", "cancelled"]),
   promptPreview: optionalText(320),
   resultPreview: Schema.optionalKey(optionalText(1024)),
   errorPreview: Schema.optionalKey(optionalText(1024)),
-  completedAt: Timestamp,
-})
+  completedAt: Schema.optionalKey(Timestamp),
+  inputRequest: Schema.optionalKey(TaskClarification),
+}).check(
+  Schema.makeFilter((item) =>
+    item.status === "needs_input"
+      ? item.inputRequest !== undefined &&
+        item.inputRequest.answer === undefined &&
+        item.completedAt === undefined
+        ? undefined
+        : "An input request must have an unanswered question and no completion time"
+      : item.completedAt !== undefined && item.inputRequest === undefined
+        ? undefined
+        : "A completion must have a completion time and no input request",
+  ),
+)
 export interface TaskInboxItem extends Schema.Schema.Type<typeof TaskInboxItem> {}
 
 export const TaskInbox = Schema.Struct({
@@ -384,6 +446,7 @@ export const TaskStatusCounts = Schema.Struct({
   queued: count,
   assigned: count,
   running: count,
+  needs_input: Schema.optionalKey(count),
   cancelling: count,
   completed: count,
   failed: count,
@@ -439,7 +502,8 @@ export const TaskTrace = Schema.Struct({
   truncated: Schema.Boolean,
   error: Schema.optionalKey(optionalText(16_384)),
   progress: Schema.optionalKey(TaskProgress),
-}).check(Schema.makeFilter(validBotTarget))
+  clarifications: Schema.optionalKey(clarifications),
+}).check(Schema.makeFilter(validBotTarget), Schema.makeFilter(validClarificationState))
 export interface TaskTrace extends Schema.Schema.Type<typeof TaskTrace> {}
 
 export const ThreadContext = Schema.Struct({
@@ -470,6 +534,7 @@ export const SocketEvent = Schema.TaggedUnion({
     serverVersion: bounded(32),
     connectedAt: Timestamp,
     taskAttachments: Schema.optionalKey(Schema.Boolean),
+    taskClarification: Schema.optionalKey(Schema.Boolean),
   },
   DeviceHello: { device: Device },
   DeviceHeartbeat: {
@@ -478,17 +543,22 @@ export const SocketEvent = Schema.TaggedUnion({
     bots: Schema.optionalKey(boundedArray(Bot, 256)),
   },
   TaskAssigned: { task: Task },
-  TaskAccepted: { taskId: TaskId },
+  TaskAccepted: { taskId: TaskId, runId: Schema.optionalKey(TaskRunId) },
   TaskFinished: {
     taskId: TaskId,
+    runId: Schema.optionalKey(TaskRunId),
     result: optionalText(131_072),
     attachments: Schema.optionalKey(attachments),
     providerSessionId: Schema.optionalKey(bounded(4096)),
   },
-  TaskFailed: { taskId: TaskId, error: bounded(16_384) },
-  TaskCancelled: { taskId: TaskId },
-  TaskSettled: { taskId: TaskId },
-  CancelTask: { taskId: TaskId },
+  TaskInputRequested: {
+    taskId: TaskId,
+    ...RequestTaskInput.fields,
+  },
+  TaskFailed: { taskId: TaskId, runId: Schema.optionalKey(TaskRunId), error: bounded(16_384) },
+  TaskCancelled: { taskId: TaskId, runId: Schema.optionalKey(TaskRunId) },
+  TaskSettled: { taskId: TaskId, runId: Schema.optionalKey(TaskRunId) },
+  CancelTask: { taskId: TaskId, runId: Schema.optionalKey(TaskRunId) },
   OperationAssigned: { operation: DeviceOperation },
   OperationAccepted: { operationId: OperationId },
   OperationFinished: { operationId: OperationId, result: optionalText(16_384) },
@@ -519,6 +589,8 @@ export const makeOperationId = (): OperationId => OperationId.make(crypto.random
 
 export const decodeCreatePairingInput = Schema.decodeUnknownEffect(CreatePairingInput)
 export const decodeTaskProgressInput = Schema.decodeUnknownEffect(TaskProgressInput)
+export const decodeRequestTaskInput = Schema.decodeUnknownEffect(RequestTaskInput)
+export const decodeAnswerTaskInput = Schema.decodeUnknownEffect(AnswerTaskInput)
 export const decodeExchangePairingInput = Schema.decodeUnknownEffect(ExchangePairingInput)
 export const decodeCreateTaskInput = (input: unknown) =>
   Schema.decodeUnknownEffect(CreateTaskInput)(input).pipe(

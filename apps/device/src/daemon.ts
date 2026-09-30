@@ -13,6 +13,8 @@ import {
   type OperationId,
   type Task,
   type TaskId,
+  type TaskRunId,
+  type RequestTaskInput,
 } from "@cohall/protocol"
 import * as Providers from "@cohall/providers"
 import { Effect, Schedule, Schema } from "effect"
@@ -37,12 +39,13 @@ export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnect
 interface State {
   socket: WebSocket | undefined
   supportsAttachments: boolean
+  supportsClarification: boolean
   processing: Promise<void>
   readonly terminal: Map<TaskId, SocketEvent>
   readonly queue: Array<Task>
   readonly sessions: Map<string, string>
   readonly tasks: Map<TaskId, { readonly task: Task; readonly controller: AbortController }>
-  readonly completed: Set<TaskId>
+  readonly completed: Map<TaskId, TaskRunId | undefined>
   operation: DeviceOperation | undefined
   readonly operationQueue: Array<DeviceOperation>
   readonly operationTerminal: Map<OperationId, string>
@@ -81,6 +84,7 @@ const capabilities = (providers: ReadonlyArray<Provider>): Device["capabilities"
   if (providers.some((provider) => provider !== "grok-bot")) {
     values.push({ id: "task-attachments", label: "Task file attachments" })
   }
+  values.push({ id: "task-clarification", label: "Task clarification and resume" })
   if (
     Providers.findExecutable("google-chrome") !== undefined ||
     Providers.findExecutable("chromium") !== undefined ||
@@ -203,7 +207,12 @@ export const openAllowedWorkspace = async (
   }
 }
 
-const promptFor = (task: Task, deviceName: string, files?: TaskFiles): string => {
+const promptFor = (
+  task: Task,
+  deviceName: string,
+  supportsClarification: boolean,
+  files?: TaskFiles,
+): string => {
   const context =
     task.context === undefined
       ? ""
@@ -214,6 +223,11 @@ const promptFor = (task: Task, deviceName: string, files?: TaskFiles): string =>
     "Never read, reveal, copy, or use Cohall configuration files or Cohall authentication tokens.",
     "Return a concise, complete result with the evidence the sending agent needs.",
     "For long tasks, optionally report a brief milestone with `cohall progress --message 'Running tests'`. Do not include logs or secrets in progress notes.",
+    ...(supportsClarification
+      ? [
+          "If essential information is missing, run `cohall request-input --question 'Your question'` or the task_request_input MCP tool, then end this turn immediately. Cohall will pause the task and resume it when the sender answers. Do not guess, keep working, or report a final result after requesting input.",
+        ]
+      : []),
     ...(files === undefined
       ? []
       : [
@@ -227,6 +241,13 @@ const promptFor = (task: Task, deviceName: string, files?: TaskFiles): string =>
           "To return files, write at most 2 regular files of up to 256 KiB each in the output directory and mention them in your result.",
         ]),
     `\nTask:\n${task.prompt}${context}`,
+    ...(task.clarifications ?? []).flatMap((question) =>
+      question.answer === undefined
+        ? []
+        : [
+            `Clarification question:\n${question.question}\nSender's answer:\n${question.answer.text}`,
+          ],
+    ),
   ].join("\n")
 }
 
@@ -244,6 +265,7 @@ const omitOutputFiles = (event: SocketEvent, note: string): SocketEvent => {
   return SocketEvent.make({
     _tag: "TaskFinished",
     taskId: event.taskId,
+    ...(event.runId === undefined ? {} : { runId: event.runId }),
     result: `${event.result.slice(0, 131_072 - message.length)}${message}`,
     ...(event.providerSessionId === undefined
       ? {}
@@ -273,12 +295,12 @@ const sendOperationTerminal = (
   }
 }
 
-const remember = (state: State, taskId: TaskId): void => {
-  state.completed.add(taskId)
+const remember = (state: State, task: Pick<Task, "id" | "runId">): void => {
+  state.completed.set(task.id, task.runId)
   if (state.completed.size <= 1_000) {
     return
   }
-  const oldest = state.completed.values().next()
+  const oldest = state.completed.keys().next()
   if (!oldest.done) {
     state.completed.delete(oldest.value)
     state.terminal.delete(oldest.value)
@@ -298,6 +320,8 @@ const rememberOperation = (state: State, operationId: OperationId): void => {
 }
 
 const sessionKey = (task: Task): string => `${task.threadId}:${task.provider}`
+const hasCompletedRun = (state: State, task: Task): boolean =>
+  state.completed.has(task.id) && state.completed.get(task.id) === task.runId
 
 const drain = (configuration: DeviceConfiguration, state: State): void => {
   if (state.operation !== undefined) {
@@ -324,20 +348,31 @@ const drain = (configuration: DeviceConfiguration, state: State): void => {
 }
 
 const execute = (configuration: DeviceConfiguration, state: State, task: Task): void => {
-  if (state.tasks.has(task.id) || state.completed.has(task.id)) {
+  if (state.tasks.has(task.id) || hasCompletedRun(state, task)) {
     return
   }
   const controller = new AbortController()
   state.tasks.set(task.id, { task, controller })
-  send(state, SocketEvent.make({ _tag: "TaskAccepted", taskId: task.id }))
+  send(
+    state,
+    SocketEvent.make({
+      _tag: "TaskAccepted",
+      taskId: task.id,
+      ...(task.runId === undefined ? {} : { runId: task.runId }),
+    }),
+  )
 
   const workflow: Effect.Effect<
-    Providers.RunResult & { readonly attachments?: ReadonlyArray<InputAttachment> },
+    Providers.RunResult & {
+      readonly attachments?: ReadonlyArray<InputAttachment>
+      readonly question?: RequestTaskInput["question"]
+    },
     Providers.ProviderError
   > = Effect.gen(function* () {
     if (task.provider === "grok-bot") {
       return yield* Effect.tryPromise({
-        try: (signal) => runGrokBot(configuration.grokGateway, task, signal),
+        try: (signal) =>
+          runGrokBot(configuration.grokGateway, task, signal, state.supportsClarification),
         catch: (cause) =>
           new Providers.ProviderRunError({
             provider: task.provider,
@@ -377,10 +412,11 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
         provider,
         threadId: task.threadId,
         taskId: task.id,
-        prompt: promptFor(task, configuration.name, files),
+        prompt: promptFor(task, configuration.name, state.supportsClarification, files),
         cwd: workspace.cwd,
         beforeSpawn: workspace.validate,
         ...(sessionId === undefined ? {} : { sessionId }),
+        ...(task.runId === undefined ? {} : { runId: task.runId }),
         ...(configuration.model === undefined ? {} : { model: configuration.model }),
         ...(configuration.sandbox === undefined ? {} : { sandbox: configuration.sandbox }),
       }).pipe(
@@ -403,15 +439,28 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
 
   void Effect.runPromise(workflow, { signal: controller.signal })
     .then((result) => {
-      const finished = SocketEvent.make({
-        _tag: "TaskFinished",
-        taskId: task.id,
-        result: result.result,
-        ...(result.sessionId === undefined ? {} : { providerSessionId: result.sessionId }),
-        ...(result.attachments === undefined || result.attachments.length === 0
-          ? {}
-          : { attachments: result.attachments }),
-      })
+      let finished: SocketEvent
+      if (result.question !== undefined) {
+        if (!state.supportsClarification || task.runId === undefined)
+          throw new Error("Upgrade the relay before requesting clarification")
+        finished = SocketEvent.make({
+          _tag: "TaskInputRequested",
+          taskId: task.id,
+          runId: task.runId,
+          question: result.question,
+        })
+      } else {
+        finished = SocketEvent.make({
+          _tag: "TaskFinished",
+          taskId: task.id,
+          ...(task.runId === undefined ? {} : { runId: task.runId }),
+          result: result.result,
+          ...(result.sessionId === undefined ? {} : { providerSessionId: result.sessionId }),
+          ...(result.attachments === undefined || result.attachments.length === 0
+            ? {}
+            : { attachments: result.attachments }),
+        })
+      }
       const bounded =
         Buffer.byteLength(JSON.stringify(finished)) > maxSocketPayloadBytes
           ? omitOutputFiles(
@@ -422,19 +471,24 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
       if (result.sessionId !== undefined) {
         state.sessions.set(sessionKey(task), result.sessionId)
       }
-      remember(state, task.id)
+      remember(state, task)
       sendTerminal(state, task.id, bounded)
     })
     .catch((cause: unknown) => {
-      remember(state, task.id)
+      remember(state, task)
       sendTerminal(
         state,
         task.id,
         controller.signal.aborted
-          ? SocketEvent.make({ _tag: "TaskCancelled", taskId: task.id })
+          ? SocketEvent.make({
+              _tag: "TaskCancelled",
+              taskId: task.id,
+              ...(task.runId === undefined ? {} : { runId: task.runId }),
+            })
           : SocketEvent.make({
               _tag: "TaskFailed",
               taskId: task.id,
+              ...(task.runId === undefined ? {} : { runId: task.runId }),
               error: (cause instanceof Error ? cause.message : String(cause)).slice(0, 16_384),
             }),
       )
@@ -524,9 +578,9 @@ export const performDeviceOperation = (
 
 const schedule = (configuration: DeviceConfiguration, state: State, task: Task): void => {
   if (
-    state.tasks.has(task.id) ||
-    state.completed.has(task.id) ||
-    state.queue.some((queued) => queued.id === task.id)
+    (state.tasks.get(task.id)?.task.runId === task.runId && state.tasks.has(task.id)) ||
+    hasCompletedRun(state, task) ||
+    state.queue.some((queued) => queued.id === task.id && queued.runId === task.runId)
   ) {
     return
   }
@@ -547,20 +601,26 @@ const schedule = (configuration: DeviceConfiguration, state: State, task: Task):
   execute(configuration, state, task)
 }
 
-const cancel = (state: State, taskId: TaskId): void => {
+const cancel = (state: State, taskId: TaskId, runId?: TaskRunId): void => {
   const running = state.tasks.get(taskId)
-  if (running !== undefined) {
+  if (running !== undefined && (runId === undefined || running.task.runId === runId)) {
     if (running.task.provider !== "grok-bot") {
       running.controller.abort()
     }
     return
   }
-  const index = state.queue.findIndex((task) => task.id === taskId)
+  const index = state.queue.findIndex(
+    (task) => task.id === taskId && (runId === undefined || task.runId === runId),
+  )
   if (index !== -1) {
     state.queue.splice(index, 1)
   }
-  remember(state, taskId)
-  sendTerminal(state, taskId, SocketEvent.make({ _tag: "TaskCancelled", taskId }))
+  remember(state, { id: taskId, ...(runId === undefined ? {} : { runId }) })
+  sendTerminal(
+    state,
+    taskId,
+    SocketEvent.make({ _tag: "TaskCancelled", taskId, ...(runId === undefined ? {} : { runId }) }),
+  )
 }
 
 const connect = (
@@ -664,6 +724,7 @@ const connect = (
               )
               if (event._tag === "Connected") {
                 state.supportsAttachments = event.taskAttachments === true
+                state.supportsClarification = event.taskClarification === true
                 state.socket = socket
                 socket.send(
                   JSON.stringify(
@@ -698,12 +759,17 @@ const connect = (
                 return
               }
               if (event._tag === "CancelTask") {
-                cancel(state, event.taskId)
+                cancel(state, event.taskId, event.runId)
                 return
               }
               if (event._tag === "TaskSettled") {
-                state.terminal.delete(event.taskId)
-                void cleanupBotReply(event.taskId).catch(() => {
+                const pending = state.terminal.get(event.taskId)
+                if (
+                  pending !== undefined &&
+                  ("runId" in pending ? pending.runId : undefined) === event.runId
+                )
+                  state.terminal.delete(event.taskId)
+                void cleanupBotReply(event.taskId, event.runId).catch(() => {
                   console.error(`Could not remove local bot reply for settled task ${event.taskId}`)
                 })
                 return
@@ -744,12 +810,13 @@ export const runDaemon = (
   const state: State = {
     socket: undefined,
     supportsAttachments: false,
+    supportsClarification: false,
     processing: Promise.resolve(),
     terminal: new Map(),
     queue: [],
     sessions: new Map(),
     tasks: new Map(),
-    completed: new Set(),
+    completed: new Map(),
     operation: undefined,
     operationQueue: [],
     operationTerminal: new Map(),

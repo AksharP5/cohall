@@ -12,8 +12,8 @@ npm pack --dry-run
 ```
 
 The Check workflow runs when manually dispatched or when a non-draft pull
-request is opened or marked ready for review. Synchronizing later commits does
-not start another run automatically.
+request is opened, reopened, updated, or marked ready for review. New commits
+cancel an earlier run for the same pull request and start a fresh check.
 
 After releasable conventional commits reach `main`, Release Please opens or
 updates one release pull request. Merging it creates the version tag and GitHub
