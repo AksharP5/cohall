@@ -8,6 +8,8 @@ One npm package provides a durable self-hosted relay, outbound-only device
 workers, a CLI, an installable agent skill, an optional MCP server, and local
 Codex, Claude Code, and OpenCode adapters, plus an experimental Grok Bot adapter.
 
+https://github.com/user-attachments/assets/7db8ebb2-da77-484f-bba9-703a44f95f4a
+
 <details>
 <summary>Video music credits</summary>
 
