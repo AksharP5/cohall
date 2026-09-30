@@ -24,12 +24,12 @@ import {
   waitForTask,
 } from "./delegation.ts"
 import { readInputAttachments } from "./task-attachments.ts"
-
-const output = (value: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-})
+import { createMcpBuildNotice } from "./mcp-build-notice.ts"
 
 export const runMcp = async (configuration: ClientConfiguration): Promise<void> => {
+  const buildNotice = await createMcpBuildNotice(process.argv[1], version)
+  const output = (value: unknown) =>
+    buildNotice({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] })
   const client = RelayClient.make({
     baseUrl: configuration.relayUrl,
     token: configuration.token,
