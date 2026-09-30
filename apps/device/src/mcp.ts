@@ -151,7 +151,7 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
           .uuid()
           .optional()
           .describe(
-            "A UUID v4 generated before submitting. Reuse with identical input and the same client credential after a lost response to recover the original task. Use stable device IDs or device/bot IDs for retries.",
+            "A UUID v4 generated before submitting. Reuse with identical input and the same client credential after a lost response to recover the original task. Use stable device IDs or device/bot IDs for retries. For thread follow-ups, select a target or provider explicitly; select Bots explicitly.",
           ),
         target: z
           .string()

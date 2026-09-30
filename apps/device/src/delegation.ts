@@ -196,6 +196,18 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
   configuration: ClientConfiguration,
   options: DelegateOptions,
 ) {
+  if (
+    options.requestId !== undefined &&
+    options.threadId !== undefined &&
+    options.target === undefined &&
+    options.provider === undefined &&
+    options.parentTaskId === undefined &&
+    configuration.mcpTaskId === undefined
+  )
+    return yield* new DeviceSelectionError({
+      message: "With a request ID, select a target or provider explicitly for thread follow-ups",
+      devices: [],
+    })
   const directTarget = (() => {
     if (options.requestId === undefined || options.target === undefined) return undefined
     const value = options.target.replace(/^@/, "")

@@ -23,15 +23,16 @@ cohall delegate --target @<device-id> \
 
 After a lost response, repeat the submission with the same ID, input, and client
 credential. The relay returns the original task's current state, including
-after a relay restart. It creates no second task, thread message, or provider
-run. Requests without an ID continue to create a new task each time.
+after a relay restart. Retries create no second task or thread message. Worker
+execution remains at least once: a run interrupted by a disconnect can restart.
+Requests without an ID continue to create a new task each time.
 
 Use a device UUID or `@device-uuid/bot-id` from `cohall bots` for retries. These
 targets bypass live name discovery when a request ID is supplied, so the original
 task can still be recovered after its target is forgotten or stops advertising
-the provider. Names need discovery on each call. With a request ID, a follow-up
-to a Bot must select that Bot explicitly; an omitted target requests a coding
-provider. Cohall does not retry submissions automatically.
+the provider. Names need discovery on each call. With a request ID, a thread
+follow-up must select a target or provider explicitly. Select the Bot explicitly
+for a Bot follow-up. Cohall does not retry submissions automatically.
 
 IDs belong to the original requester credential. Another pairing or the relay
 owner has a separate ID namespace. Keep all task input unchanged, including

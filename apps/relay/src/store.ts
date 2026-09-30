@@ -632,7 +632,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return createHash("sha256")
       .update(
         JSON.stringify(
-          Object.entries(normalized).sort(([left], [right]) => left.localeCompare(right)),
+          Object.entries(normalized).sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0,
+          ),
         ),
       )
       .digest("hex")
@@ -647,7 +649,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       .query<{ readonly input_hash: string; readonly task_id: string | null }, [string, string]>(
         "SELECT input_hash, task_id FROM task_requests WHERE requester_id = ? AND request_id = ?",
       )
-      .get(principal === "owner" ? "owner" : principal.id, input.requestId)
+      .get(principal === "owner" ? "owner" : principal.id, input.requestId.toLowerCase())
     if (saved === null) return null
     if (saved.input_hash !== requestHash(input))
       throw new TaskRequestError({
@@ -1535,7 +1537,12 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           if (requestedInput.requestId !== undefined) {
             db.query(
               "INSERT INTO task_requests (requester_id, request_id, input_hash, task_id) VALUES (?, ?, ?, ?)",
-            ).run(requesterId, requestedInput.requestId, requestHash(requestedInput), task.id)
+            ).run(
+              requesterId,
+              requestedInput.requestId.toLowerCase(),
+              requestHash(requestedInput),
+              task.id,
+            )
           }
           recordTaskTraceEvent(task.id, "queued", "Relay accepted the task", timestamp)
           db.query(

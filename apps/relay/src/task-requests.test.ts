@@ -51,6 +51,19 @@ it("atomically reuses a request across concurrent creation and checks all decode
     if (task === undefined) throw new Error("Missing task")
     expect(new Set(tasks.map(({ id }) => id)).size).toBe(1)
     expect(
+      (
+        await Effect.runPromise(
+          store.findDelegation(
+            {
+              ...input,
+              requestId: TaskRequestId.make(input.requestId?.toUpperCase() ?? ""),
+            },
+            "owner",
+          ),
+        )
+      )?.id,
+    ).toBe(task.id)
+    expect(
       database.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM threads").get()?.count,
     ).toBe(1)
     expect((await Effect.runPromise(store.threadContext(task.threadId))).messages).toHaveLength(1)

@@ -5,6 +5,7 @@ import {
   DeviceId,
   Task,
   TaskId,
+  TaskRequestId,
   ThreadContext,
   ThreadId,
   Timestamp,
@@ -78,6 +79,23 @@ const client = (devices: ReadonlyArray<Device> = [device], tasks: ReadonlyArray<
       }),
     ),
   ),
+})
+
+it("requires an explicit target or provider for keyed thread follow-ups", async () => {
+  const relay = client([], [task])
+  await expect(
+    Effect.runPromise(
+      createDelegation(relay, configuration, {
+        requestId: TaskRequestId.make(crypto.randomUUID()),
+        threadId: task.threadId,
+        prompt: "Follow up",
+      }),
+    ),
+  ).rejects.toMatchObject({
+    message: "With a request ID, select a target or provider explicitly for thread follow-ups",
+  })
+  expect(relay.createTask).not.toHaveBeenCalled()
+  expect(relay.threadContext).not.toHaveBeenCalled()
 })
 
 it("returns successful work even when inbox acknowledgement is unavailable", async () => {
