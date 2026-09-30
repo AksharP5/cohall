@@ -30,6 +30,57 @@ const worker = () =>
     lastSeenAt: now(),
   })
 
+it.each(["failed", "cancelled"] as const)(
+  "preserves a recorded question after a provider failure but honors %s termination",
+  async (ending) => {
+    const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+    try {
+      const store = await runtime.runPromise(RelayStore.Service)
+      const target = worker()
+      await Effect.runPromise(store.upsertDevice(target))
+      const task = await Effect.runPromise(
+        store.createDelegation({ prompt: "Build" }, target.id, "owner"),
+      )
+      const assigned = await Effect.runPromise(store.assignTask(task.id))
+      const runId = assigned.runId
+      if (runId === undefined) throw new Error("Missing turn")
+      await Effect.runPromise(store.acceptTask(task.id, target.id, runId))
+      const question = await Effect.runPromise(
+        store.requestTaskInput(
+          task.id,
+          target.id,
+          Schema.decodeUnknownSync(RequestTaskInput)({ runId, question: "Which branch?" }),
+        ),
+      )
+      if (ending === "cancelled") await Effect.runPromise(store.requestCancellation(task.id))
+      const settled = await Effect.runPromise(
+        ending === "failed"
+          ? store.failTask(task.id, target.id, "Provider crashed after requesting input", runId)
+          : store.acknowledgeCancellation(task.id, target.id, runId),
+      )
+      expect(settled.status).toBe(ending === "failed" ? "needs_input" : "cancelled")
+      const answer = Schema.decodeUnknownSync(AnswerTaskInput)({
+        requestId: question.id,
+        answer: "main",
+      })
+      if (ending === "failed") {
+        expect((await Effect.runPromise(store.inboxFor("owner"))).items[0]?.inputRequest).toEqual(
+          question,
+        )
+        expect(
+          (await Effect.runPromise(store.answerTaskInput(task.id, "owner", answer))).status,
+        ).toBe("queued")
+      } else {
+        await expect(
+          Effect.runPromise(store.answerTaskInput(task.id, "owner", answer)),
+        ).rejects.toMatchObject({ status: 409 })
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  },
+)
+
 it("cancels a resumed Bot turn that has not been dispatched", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {

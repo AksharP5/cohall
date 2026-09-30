@@ -1869,7 +1869,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       try: () =>
         db.transaction(() => {
           if (
-            status === "completed" &&
+            status !== "cancelled" &&
             current.clarifications?.at(-1)?.answer === undefined &&
             (current.clarifications?.length ?? 0) > 0 &&
             current.status === "running"
