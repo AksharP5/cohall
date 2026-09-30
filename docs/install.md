@@ -212,8 +212,18 @@ the new version, and restarts only active Cohall services. If a service points
 to another global installation, Cohall stops and reports the correct executable
 instead of restarting the wrong job.
 
-Use `cohall upgrade --to 1.2.3` for an exact version, `--dry-run` to inspect the
-plan, or `--no-restart` to leave services pending a manual restart. Back up a
+The default target, `latest`, is resolved through that package manager using its
+registry and network settings, then pinned before installation. Bun installations
+require Bun 1.2.15 or newer for this lookup; older Bun versions can still use an
+exact `--to` version. If `latest` is older than the running or installed version,
+Cohall leaves the installation and services untouched. Version ordering includes
+prereleases and ignores build metadata. A failed or invalid lookup, or unreadable
+installed package metadata, stops the upgrade before installation. Use an exact
+`--to` version to repair damaged metadata.
+
+Use `cohall upgrade --to 1.2.3` for an exact version, including an intentional
+rollback. Use `--dry-run` to inspect the plan, or `--no-restart` to leave services
+pending a manual restart. Back up a
 production relay's data directory before an upgrade because SQLite migrations
 run in place.
 
@@ -240,7 +250,9 @@ cohall upgrades abandon <operation-id>
 
 All-device upgrades require the relay owner credential. They are stored by the
 relay, wait for offline devices, and run after active tasks. `cohall upgrades`
-shows the 50 newest queued, running, completed, or failed results. Upgrade devices
+shows the 50 newest queued, running, completed, or failed results. A `latest`
+operation applies the same downgrade check on each device when it executes;
+upgrade older daemons individually once to gain this protection. Upgrade devices
 older than Cohall 0.5.0 individually once before using all-device upgrades; the
 relay rejects work that their daemons cannot understand. If a device is permanently
 lost, the owner can abandon its operation so later all-device upgrades are not

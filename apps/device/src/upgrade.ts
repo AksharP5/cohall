@@ -17,7 +17,47 @@ import { platform as operatingSystem } from "node:os"
 import { configurationPath } from "./config.ts"
 
 const packageName = "@akshar5/cohall"
-const semanticVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+const minimumBunLookupVersion = "1.2.15"
+const semanticVersion =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+
+const parseVersion = (value: string) => {
+  const [, major, minor, patch, prerelease] = semanticVersion.exec(value) ?? []
+  if (major === undefined || minor === undefined || patch === undefined) return undefined
+  const identifiers = prerelease?.split(".") ?? []
+  if (identifiers.some((part) => /^0\d+$/.test(part))) return undefined
+  return {
+    core: [BigInt(major), BigInt(minor), BigInt(patch)],
+    prerelease: identifiers,
+  }
+}
+
+const compareVersions = (left: string, right: string): number => {
+  const a = parseVersion(left)
+  const b = parseVersion(right)
+  if (a === undefined || b === undefined) {
+    throw new Error(`Could not safely compare Cohall versions ${left} and ${right}`)
+  }
+  for (const [index, part] of a.core.entries()) {
+    const other = b.core[index]
+    if (other !== undefined && part !== other) return part > other ? 1 : -1
+  }
+  if (a.prerelease.length === 0 || b.prerelease.length === 0) {
+    return Number(b.prerelease.length > 0) - Number(a.prerelease.length > 0)
+  }
+  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index += 1) {
+    const part = a.prerelease[index]
+    const other = b.prerelease[index]
+    if (part === undefined) return -1
+    if (other === undefined) return 1
+    if (part === other) continue
+    const numeric = /^\d+$/.test(part)
+    const otherNumeric = /^\d+$/.test(other)
+    if (numeric !== otherNumeric) return numeric ? -1 : 1
+    return numeric ? (BigInt(part) > BigInt(other) ? 1 : -1) : part > other ? 1 : -1
+  }
+  return 0
+}
 
 export const PackageManager = Schema.Literals(["npm", "bun", "pnpm"])
 export type PackageManager = typeof PackageManager.Type
@@ -107,7 +147,7 @@ export const normalizeUpgradeTarget = (target: string | undefined): string => {
     return "latest"
   }
   const normalized = target.startsWith("v") ? target.slice(1) : target
-  if (!semanticVersion.test(normalized)) {
+  if (parseVersion(normalized) === undefined) {
     throw new Error("--to must be latest or an exact semantic version")
   }
   return normalized
@@ -693,6 +733,78 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   const services = await activeServices(runner, candidates)
   await assertServiceInstallations(runner, services, canonicalEntrypoint, entrypoint)
 
+  const resolvePackageManager = (): Promise<string> =>
+    options.resolveExecutable === undefined
+      ? trustedExecutable(
+          installation.manager,
+          installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
+        )
+      : resolveExecutable(installation.manager)
+  let packageManagerExecutable: string | undefined
+  let resolvedTarget = target
+  if (target === "latest") {
+    packageManagerExecutable = await resolvePackageManager()
+    if (installation.manager === "bun") {
+      const information = await checked(
+        runner,
+        { command: packageManagerExecutable, arguments: ["--version"] },
+        10_000,
+      )
+      if (compareVersions(information.stdout.trim(), minimumBunLookupVersion) < 0) {
+        throw new Error(
+          `Latest upgrades require Bun ${minimumBunLookupVersion} or newer; upgrade Bun or use --to <exact-version>`,
+        )
+      }
+    }
+    const lookup = await checked(
+      runner,
+      {
+        command: packageManagerExecutable,
+        arguments: [
+          ...(installation.manager === "bun" ? ["pm"] : []),
+          "view",
+          ...(installation.manager === "pnpm" ? [] : ["--global"]),
+          ...(installation.prefix === undefined ? [] : ["--prefix", installation.prefix]),
+          `${packageName}@latest`,
+          "version",
+          "--json",
+        ],
+      },
+      30_000,
+    )
+    const latest: unknown = JSON.parse(lookup.stdout)
+    if (typeof latest !== "string" || parseVersion(latest) === undefined) {
+      throw new Error(`Could not resolve ${packageName}@latest to an exact semantic version`)
+    }
+    resolvedTarget = latest
+  }
+  let nextVersion = await installedVersion(entrypoint).catch((cause: unknown) => {
+    if (target === "latest") {
+      throw new Error(
+        "Could not verify the installed version before upgrading latest; use --to <version> to repair this installation",
+        { cause },
+      )
+    }
+    return undefined
+  })
+  if (
+    target === "latest" &&
+    (compareVersions(resolvedTarget, options.currentVersion) < 0 ||
+      compareVersions(resolvedTarget, nextVersion ?? options.currentVersion) < 0)
+  ) {
+    return {
+      upgraded: false,
+      from_version: options.currentVersion,
+      installed_version: nextVersion ?? options.currentVersion,
+      requested_version: target,
+      package_manager: installation.manager,
+      services_restarted: [],
+      services_pending_restart: [],
+      resumed_after_restart: false,
+      dry_run: options.dryRun,
+    }
+  }
+
   if (options.dryRun) {
     return {
       upgraded: false,
@@ -707,21 +819,14 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
   }
 
-  let nextVersion = await installedVersion(entrypoint).catch(() => undefined)
-  if (nextVersion === undefined || target !== nextVersion) {
-    const install = packageInstallCommand(installation, target)
-    const installExecutable =
-      options.resolveExecutable === undefined
-        ? await trustedExecutable(
-            install.command,
-            installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
-          )
-        : await resolveExecutable(install.command)
+  if (nextVersion === undefined || resolvedTarget !== nextVersion) {
+    const install = packageInstallCommand(installation, resolvedTarget)
+    const installExecutable = packageManagerExecutable ?? (await resolvePackageManager())
     await checked(runner, { ...install, command: installExecutable })
     nextVersion = await installedVersion(entrypoint)
   }
-  if (target !== "latest" && nextVersion !== target) {
-    throw new Error(`Installed Cohall ${nextVersion}, expected ${target}`)
+  if (nextVersion !== resolvedTarget) {
+    throw new Error(`Installed Cohall ${nextVersion}, expected ${resolvedTarget}`)
   }
   const upgraded = nextVersion !== options.currentVersion
 

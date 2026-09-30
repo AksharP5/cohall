@@ -389,7 +389,9 @@ Every device must already run Cohall 0.5.0 or newer; upgrade older installations
 individually once before using all-device upgrades.
 Each target must use a global npm, Bun, or pnpm installation that can upgrade
 itself. Preview the targets with `cohall upgrade --all --dry-run`, or pin an
-exact release with `--to 1.2.3`. `cohall upgrades` returns the 50 newest results.
+exact release with `--to 1.2.3`. Updated daemons leave newer installations untouched
+when `latest` is older; an exact `--to` version can intentionally roll back.
+`cohall upgrades` returns the 50 newest results.
 Abandonment is an owner recovery action for a permanently unreachable target;
 it does not interrupt an upgrade that is already executing. Forgetting an
 offline device also closes its outstanding maintenance operation.
