@@ -90,6 +90,7 @@ const capabilities = (providers: ReadonlyArray<Provider>): Device["capabilities"
     values.push({ id: "task-attachments", label: "Task file attachments" })
   }
   values.push({ id: "task-clarification", label: "Task clarification and resume" })
+  values.push({ id: "task-deadlines", label: "Task deadlines" })
   if (
     Providers.findExecutable("google-chrome") !== undefined ||
     Providers.findExecutable("chromium") !== undefined ||
@@ -361,6 +362,17 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
   }
   const controller = new AbortController()
   state.tasks.set(task.id, { task, controller })
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+  const enforceDeadline = (): void => {
+    if (task.expiresAt === undefined) return
+    const remaining = Date.parse(task.expiresAt) - Date.now()
+    if (remaining <= 0) {
+      controller.abort()
+      return
+    }
+    deadlineTimer = setTimeout(enforceDeadline, Math.min(remaining, 2_147_483_647))
+  }
+  enforceDeadline()
   send(
     state,
     SocketEvent.make({
@@ -501,6 +513,7 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
       )
     })
     .finally(() => {
+      clearTimeout(deadlineTimer)
       state.tasks.delete(task.id)
       drain(configuration, state)
     })

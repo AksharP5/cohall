@@ -7,6 +7,7 @@ import {
   OperationId,
   Provider,
   TaskId,
+  TaskDeadline,
   TaskProgressInput,
   RequestTaskInput,
   AnswerTaskInput,
@@ -64,6 +65,7 @@ const valueOptions = new Set([
   "attach",
   "context",
   "context-file",
+  "deadline",
   "direction",
   "grok-gateway",
   "error",
@@ -125,7 +127,7 @@ Usage:
   cohall send [@device-or-bot] [prompt] [delegate options]
   cohall delegate [prompt] [--target @device-or-bot] [--provider provider]
                   [--context text] [--thread uuid] [--parent task-id] [--workspace path]
-                  [--attach path] [--timeout seconds] [--no-wait]
+                  [--attach path] [--timeout seconds] [--deadline UTC-timestamp] [--no-wait]
   cohall status <task-id>
   cohall inbox [ack <task-id>]
   cohall trace <task-id> [--follow]
@@ -1019,6 +1021,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     allowOptions(arguments_, [
       "context",
       "context-file",
+      "deadline",
       "attach",
       "no-wait",
       "parent",
@@ -1058,6 +1061,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const workspace = option(arguments_, "workspace")
     const provider = option(arguments_, "provider")
     const parent = option(arguments_, "parent")
+    const deadline = option(arguments_, "deadline")
     const task = await Effect.runPromise(
       createDelegation(relay, configuration, {
         prompt,
@@ -1070,6 +1074,9 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
           ? {}
           : { provider: Schema.decodeUnknownSync(Provider)(provider) }),
         ...(attachments.length === 0 ? {} : { attachments }),
+        ...(deadline === undefined
+          ? {}
+          : { expiresAt: Schema.decodeUnknownSync(TaskDeadline)(deadline) }),
       }),
     )
     const completed = arguments_.options.has("no-wait")

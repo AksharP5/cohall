@@ -185,8 +185,14 @@ The relay itself must be reachable to accept a new task. Interrupted execution
 uses at-least-once delivery and may run again, so make consequential prompts safe
 to retry.
 
-The timeout error includes the task ID and last known status. The task continues
-unless cancelled:
+The timeout error includes the task ID and last known status. A wait timeout
+leaves the task running. When the user requires coding work to stop by a fixed
+time, pass `--deadline <future-UTC-ISO-timestamp>` to `delegate`, or `deadline`
+to MCP. The task's deadline includes queueing and clarification and remains
+unchanged on resume. Upgrade the requester, relay, and worker first. Named bots
+cannot use deadlines. An expired task fails with `Task deadline exceeded` after
+the worker acknowledges termination; `cancelling` can persist while it is
+offline. Without a deadline, stop work explicitly:
 
 ```bash
 cohall cancel <task-id>

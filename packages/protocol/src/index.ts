@@ -53,6 +53,18 @@ export type OperationId = typeof OperationId.Type
 export const Timestamp = isoTimestamp("Timestamp")
 export type Timestamp = typeof Timestamp.Type
 
+export const TaskDeadline = Timestamp.check(
+  Schema.makeFilter((value) => {
+    const time = Date.parse(value)
+    return Number.isFinite(time) && new Date(time).toISOString().slice(0, 19) === value.slice(0, 19)
+      ? undefined
+      : "Expected a valid ISO-8601 UTC deadline"
+  }),
+)
+export const taskDeadlineError = "Task deadline exceeded"
+export const taskDeadlinePassed = (task: { readonly expiresAt?: Timestamp }, time = Date.now()) =>
+  task.expiresAt !== undefined && Date.parse(task.expiresAt) <= time
+
 export const Platform = Schema.Literals(["darwin", "linux", "windows", "unknown"])
 export type Platform = typeof Platform.Type
 export const Provider = Schema.Literals(["codex", "claude-code", "opencode", "grok-bot"])
@@ -374,6 +386,7 @@ export const Task = Schema.Struct({
   updatedAt: Timestamp,
   startedAt: Schema.optionalKey(Timestamp),
   completedAt: Schema.optionalKey(Timestamp),
+  expiresAt: Schema.optionalKey(TaskDeadline),
 }).check(Schema.makeFilter(validBotTarget), Schema.makeFilter(validClarificationState))
 export interface Task extends Schema.Schema.Type<typeof Task> {}
 
@@ -498,6 +511,7 @@ export const TaskTrace = Schema.Struct({
   updatedAt: Timestamp,
   startedAt: Schema.optionalKey(Timestamp),
   completedAt: Schema.optionalKey(Timestamp),
+  expiresAt: Schema.optionalKey(TaskDeadline),
   events: boundedArray(TaskTraceEvent, 100),
   truncated: Schema.Boolean,
   error: Schema.optionalKey(optionalText(16_384)),
@@ -523,6 +537,7 @@ export const CreateTaskInput = Schema.Struct({
   botId: Schema.optionalKey(BotId),
   targetDeviceId: Schema.optionalKey(DeviceId),
   parentTaskId: Schema.optionalKey(TaskId),
+  expiresAt: Schema.optionalKey(TaskDeadline),
   workspace: Schema.optionalKey(bounded(4096)),
   attachments: Schema.optionalKey(attachments),
 }).check(Schema.makeFilter(validBotTarget))
@@ -535,6 +550,7 @@ export const SocketEvent = Schema.TaggedUnion({
     connectedAt: Timestamp,
     taskAttachments: Schema.optionalKey(Schema.Boolean),
     taskClarification: Schema.optionalKey(Schema.Boolean),
+    taskDeadlines: Schema.optionalKey(Schema.Boolean),
   },
   DeviceHello: { device: Device },
   DeviceHeartbeat: {

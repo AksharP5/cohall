@@ -9,6 +9,7 @@ import {
   CreateTaskInput,
   TaskClarification,
   TaskRunId,
+  Timestamp,
   maxAttachmentBytes,
 } from "@cohall/protocol"
 import {
@@ -19,6 +20,17 @@ import {
 } from "./main.ts"
 
 const configuration = { host: "127.0.0.1", port: 8787 }
+
+it("holds deadline work when a reconnected worker no longer supports it", () => {
+  const task = { provider: "codex" as const, expiresAt: Timestamp.make("2030-01-01T00:00:00Z") }
+  expect(canDispatchTaskToDevice(task, undefined)).toBe(false)
+  expect(canDispatchTaskToDevice(task, { capabilities: [] })).toBe(false)
+  expect(
+    canDispatchTaskToDevice(task, {
+      capabilities: [{ id: "task-deadlines", label: "Deadlines" }],
+    }),
+  ).toBe(true)
+})
 
 it("accepts a schema-valid task with maximum escaped text and two maximum files", () => {
   const data = Buffer.alloc(maxAttachmentBytes).toString("base64")

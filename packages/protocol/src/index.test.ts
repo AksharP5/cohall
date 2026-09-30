@@ -12,6 +12,7 @@ import {
   TaskClarification,
   TaskInboxItem,
   TaskRunId,
+  TaskDeadline,
   ClarificationId,
   maxClarificationBytes,
   maxTaskClarifications,
@@ -27,6 +28,20 @@ import {
   supportsDeviceOperations,
   taskSlot,
 } from "./index.ts"
+
+it("accepts valid UTC deadlines and rejects impossible dates", () => {
+  const decode = Schema.decodeUnknownSync(TaskDeadline)
+  expect(decode("2030-01-01T00:00:00Z")).toBe("2030-01-01T00:00:00Z")
+  expect(decode("2032-02-29T23:59:59.123Z")).toBe("2032-02-29T23:59:59.123Z")
+  for (const value of [
+    "2030-02-29T00:00:00Z",
+    "2030-04-31T00:00:00Z",
+    "2030-01-01T24:00:00Z",
+    "2030-01-01T00:00:00+01:00",
+    "tomorrow",
+  ])
+    expect(() => decode(value)).toThrow()
+})
 
 it("bounds clarification text and rejects incomplete paused tasks at the boundary", () => {
   const runId = TaskRunId.make(crypto.randomUUID())

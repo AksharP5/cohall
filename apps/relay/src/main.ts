@@ -28,7 +28,7 @@ import {
   type DeviceOperation,
   type Task,
 } from "@cohall/protocol"
-import { Effect, ManagedRuntime, Schema } from "effect"
+import { Effect, ManagedRuntime, Schema, Schedule } from "effect"
 import { createHash, timingSafeEqual } from "node:crypto"
 import { access, chmod } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
@@ -258,6 +258,11 @@ export const resolveDelegation = (
       .listDevices()
       .pipe(Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })))
     const provider = input.provider ?? (input.botId === undefined ? "codex" : "grok-bot")
+    if (input.expiresAt !== undefined && provider === "grok-bot")
+      return yield* new RequestError({
+        status: 400,
+        message: "Task deadlines require a coding provider",
+      })
     const hasAttachments = (input.attachments?.length ?? 0) > 0
     if (hasAttachments && provider === "grok-bot") {
       return yield* new RequestError({
@@ -292,6 +297,14 @@ export const resolveDelegation = (
         })
       }
       if (
+        input.expiresAt !== undefined &&
+        !target.capabilities.some((capability) => capability.id === "task-deadlines")
+      )
+        return yield* new RequestError({
+          status: 409,
+          message: `${target.name} does not support task deadlines; upgrade its Cohall worker`,
+        })
+      if (
         hasAttachments &&
         !target.capabilities.some((capability) => capability.id === "task-attachments")
       ) {
@@ -317,6 +330,8 @@ export const resolveDelegation = (
     const providerDevices = devices.filter(
       (device) =>
         device.providers.includes(provider) &&
+        (input.expiresAt === undefined ||
+          device.capabilities.some((capability) => capability.id === "task-deadlines")) &&
         (input.botId === undefined || device.bots?.some((bot) => bot.id === input.botId)),
     )
     const candidates = hasAttachments
@@ -344,9 +359,11 @@ export const resolveDelegation = (
             ? "No available delegation target avoids an unfinished parent's worker slot; select another device or bot"
             : hasAttachments && providerDevices.length > 0
               ? `No Cohall device advertising the ${provider} provider supports file attachments; upgrade a Cohall worker`
-              : input.botId === undefined
-                ? `No Cohall device advertises the ${provider} provider`
-                : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,
+              : input.expiresAt !== undefined
+                ? `No Cohall device advertising the ${provider} provider supports task deadlines; upgrade a Cohall worker`
+                : input.botId === undefined
+                  ? `No Cohall device advertises the ${provider} provider`
+                  : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,
       })
     }
     return { input: resolvedInput, targetDeviceId: selected.id }
@@ -365,9 +382,11 @@ const requiresClarificationSupport = (task: Pick<Task, "provider" | "runId" | "c
   (task.provider === "grok-bot" && task.runId !== undefined)
 
 export const canDispatchTaskToDevice = (
-  task: Pick<Task, "provider" | "runId" | "inputAttachmentNames" | "clarifications">,
+  task: Pick<Task, "provider" | "runId" | "inputAttachmentNames" | "clarifications" | "expiresAt">,
   device: Pick<Device, "capabilities"> | undefined,
 ): boolean =>
+  (task.expiresAt === undefined ||
+    device?.capabilities.some((capability) => capability.id === "task-deadlines") === true) &&
   ((task.inputAttachmentNames?.length ?? 0) === 0 ||
     device?.capabilities.some((capability) => capability.id === "task-attachments") === true) &&
   (!requiresClarificationSupport(task) ||
@@ -433,11 +452,31 @@ export const runRelay = async (): Promise<void> => {
     )
   }
 
+  const sendCancellation = (task: Task): void => {
+    hub.sendToDevice(
+      task.targetDeviceId,
+      SocketEvent.make({
+        _tag: "CancelTask",
+        taskId: task.id,
+        ...(task.runId === undefined ? {} : { runId: task.runId }),
+      }),
+    )
+  }
+
   const dispatch = async (task: Task): Promise<Task> => {
     const store = await run(RelayStore.Service)
-    if ((task.inputAttachmentNames?.length ?? 0) > 0 || requiresClarificationSupport(task)) {
+    if (
+      task.expiresAt !== undefined ||
+      (task.inputAttachmentNames?.length ?? 0) > 0 ||
+      requiresClarificationSupport(task)
+    ) {
       const devices = await Effect.runPromise(store.listDevices())
       const target = devices.find((device) => device.id === task.targetDeviceId)
+      if (
+        task.expiresAt !== undefined &&
+        !target?.capabilities.some((capability) => capability.id === "task-deadlines")
+      )
+        return task
       if (
         requiresClarificationSupport(task) &&
         !target?.capabilities.some((capability) => capability.id === "task-clarification")
@@ -456,6 +495,7 @@ export const runRelay = async (): Promise<void> => {
     }
     const assigned = await Effect.runPromise(store.assignTask(task.id))
     if (assigned.status !== "assigned") {
+      if (assigned.status === "cancelling") sendCancellation(assigned)
       return assigned
     }
     const assignment = SocketEvent.make({ _tag: "TaskAssigned", task: assigned })
@@ -530,14 +570,7 @@ export const runRelay = async (): Promise<void> => {
     )
     for (const task of tasks) {
       if (task.status === "cancelling") {
-        hub.sendToDevice(
-          deviceId,
-          SocketEvent.make({
-            _tag: "CancelTask",
-            taskId: task.id,
-            ...(task.runId === undefined ? {} : { runId: task.runId }),
-          }),
-        )
+        sendCancellation(task)
       } else {
         await dispatch(task)
       }
@@ -613,6 +646,7 @@ export const runRelay = async (): Promise<void> => {
             connectedAt: now(),
             taskAttachments: true,
             taskClarification: true,
+            taskDeadlines: true,
           }),
         ),
       )
@@ -761,6 +795,7 @@ export const runRelay = async (): Promise<void> => {
         taskAttachments: true,
         taskProgress: true,
         taskClarification: true,
+        taskDeadlines: true,
       })
     }
     if (url.pathname === "/api/auth/pair" && request.method === "POST") {
@@ -976,14 +1011,7 @@ export const runRelay = async (): Promise<void> => {
         const id = yield* pathId(TaskId, cancel[1])
         const updated = yield* store.requestCancellation(id)
         if (updated.status === "cancelling") {
-          hub.sendToDevice(
-            updated.targetDeviceId,
-            SocketEvent.make({
-              _tag: "CancelTask",
-              taskId: id,
-              ...(updated.runId === undefined ? {} : { runId: updated.runId }),
-            }),
-          )
+          sendCancellation(updated)
         }
         return json(updated)
       }
@@ -997,7 +1025,8 @@ export const runRelay = async (): Promise<void> => {
         cause instanceof RequestError
           ? cause
           : cause._tag === "RelayStore.TaskProgressError" ||
-              cause._tag === "RelayStore.TaskInputError"
+              cause._tag === "RelayStore.TaskInputError" ||
+              cause._tag === "RelayStore.TaskDeadlineError"
             ? new RequestError({ status: cause.status, message: cause.message })
             : new RequestError({
                 status:
@@ -1169,12 +1198,31 @@ export const runRelay = async (): Promise<void> => {
         ? `[${address.address}]:${address.port}`
         : `${address?.address ?? configuration.host}:${address?.port ?? configuration.port}`
   console.log(`Cohall relay listening on http://${listener}`)
+  const deadlineController = new AbortController()
+  const enforceDeadlines = Effect.gen(function* () {
+    const store = yield* RelayStore.Service
+    const overdue = yield* store.expireTasks()
+    for (const task of overdue) if (task.status === "cancelling") sendCancellation(task)
+  }).pipe(
+    Effect.catch((cause) => Effect.logError(cause)),
+    Effect.repeat({ schedule: Schedule.spaced("1 second") }),
+  )
+  const deadlineWork = runtime
+    .runPromise(enforceDeadlines, { signal: deadlineController.signal })
+    .catch((cause: unknown) => {
+      if (!deadlineController.signal.aborted)
+        console.error(
+          `Task deadline enforcement failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        )
+    })
   let stopping = false
   const shutdown = async (): Promise<void> => {
     if (stopping) {
       return
     }
     stopping = true
+    deadlineController.abort()
+    await deadlineWork
     for (const socket of websocketServer.clients) {
       socket.close(1001, "Relay shutting down")
     }
