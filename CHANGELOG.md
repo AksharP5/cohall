@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.0](https://github.com/AksharP5/cohall/compare/v0.8.0...v0.9.0) (2026-09-30)
+
+
+### Features
+
+* **devices:** show queue depth and oldest wait ([#95](https://github.com/AksharP5/cohall/issues/95)) ([f9a6f94](https://github.com/AksharP5/cohall/commit/f9a6f943b61a22840ce4be73f79a965fb5a193c3))
+* **tasks:** report bounded worker progress ([#97](https://github.com/AksharP5/cohall/issues/97)) ([ced7062](https://github.com/AksharP5/cohall/commit/ced706251800fb4daa47f5ef9fe8e2672c9d445a))
+
+
+### Bug Fixes
+
+* **doctor:** report rejected client credentials ([#92](https://github.com/AksharP5/cohall/issues/92)) ([8744622](https://github.com/AksharP5/cohall/commit/87446220f84753d18b29d670dc5636c3036ac502))
+* **mcp:** warn when upgrades need a connection restart ([#99](https://github.com/AksharP5/cohall/issues/99)) ([106e4a6](https://github.com/AksharP5/cohall/commit/106e4a645d0cf0814195ca8387cc45b2cb630c86))
+
 ## [0.8.0](https://github.com/AksharP5/cohall/compare/v0.7.0...v0.8.0) (2026-09-27)
 
 
