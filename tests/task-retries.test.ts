@@ -3,6 +3,7 @@ import {
   Device,
   Task,
   TaskRequestId,
+  Timestamp,
   makeDeviceId,
   now,
   version,
@@ -31,7 +32,7 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
     architecture: "x64",
     status: "offline",
     providers: ["codex"],
-    capabilities: [],
+    capabilities: [{ id: "task-deadlines", label: "Deadlines" }],
     workspaces: [],
     version,
     lastSeenAt: now(),
@@ -70,7 +71,9 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
   let relay = start()
   let accepted: Task | undefined
   let lost = false
+  let supportChecks = 0
   const proxy = createServer(async (request, response) => {
+    if (request.url === "/api/health") supportChecks += 1
     const chunks: Array<Buffer> = []
     for await (const chunk of request) chunks.push(Buffer.from(chunk))
     const upstream = await fetch(`${relayUrl}${request.url}`, {
@@ -119,11 +122,13 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
       requestId: TaskRequestId.make(crypto.randomUUID()),
       prompt: "Build",
       targetDeviceId: target.id,
+      expiresAt: Timestamp.make(new Date(Date.now() + 2_000).toISOString()),
     }
     await expect(Effect.runPromise(client.createTask(input))).rejects.toMatchObject({
       _tag: "RelayClient.RequestError",
     })
     if (accepted === undefined) throw new Error("Relay did not accept the lost request")
+    expect(supportChecks).toBe(1)
     const original = accepted
     expect((await Effect.runPromise(client.createTask(input))).id).toBe(original.id)
     const separate = await Effect.runPromise(
@@ -132,15 +137,20 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
     expect(separate.id).not.toBe(original.id)
     const ownerTask = await Effect.runPromise(owner.createTask(input))
     expect(ownerTask.id).not.toBe(original.id)
-    for (const current of [original, separate, ownerTask])
+    for (const current of [separate, ownerTask])
       await Effect.runPromise(owner.cancelTask(current.id))
+    await vi.waitFor(
+      async () =>
+        expect((await Effect.runPromise(client.getTask(original.id))).status).toBe("failed"),
+      { timeout: 10_000 },
+    )
     await Effect.runPromise(owner.forgetDevice(target.id))
     await stop(relay)
     relay = start()
     await vi.waitFor(async () => expect((await fetch(`${relayUrl}/api/health`)).ok).toBe(true), {
       timeout: 10_000,
     })
-    expect((await Effect.runPromise(client.createTask(input))).status).toBe("cancelled")
+    expect((await Effect.runPromise(client.createTask(input))).status).toBe("failed")
     await expect(
       Effect.runPromise(client.createTask({ ...input, prompt: "Changed" })),
     ).rejects.toMatchObject({ status: 409 })
@@ -159,11 +169,13 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
         "Build",
         "--request-id",
         input.requestId,
+        "--deadline",
+        input.expiresAt,
         "--no-wait",
       ],
       { env: environment },
     )
-    expect(JSON.parse(cli.stdout)).toMatchObject({ task_id: original.id, status: "cancelled" })
+    expect(JSON.parse(cli.stdout)).toMatchObject({ task_id: original.id, status: "failed" })
     await mcp.connect(
       new StdioClientTransport({
         command: "node",
@@ -185,6 +197,7 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
           target: `@${target.id}`,
           prompt: "Build",
           request_id: input.requestId,
+          deadline: input.expiresAt,
           wait: false,
         },
       }),

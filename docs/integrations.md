@@ -36,8 +36,8 @@ for a Bot follow-up. Cohall does not retry submissions automatically.
 
 IDs belong to the original requester credential. Another pairing or the relay
 owner has a separate ID namespace. Keep all task input unchanged, including
-context, thread and parent IDs, workspace, target, provider, and attachment names
-and bytes. Reusing an ID with changed input returns HTTP 409. Default Codex and
+context, thread and parent IDs, workspace, target, provider, deadline, and attachment
+names and bytes. Reusing an ID with changed input returns HTTP 409. Default Codex and
 an empty attachment list normalize to their omitted forms.
 
 Used IDs and input hashes remain in the relay database and its backups after

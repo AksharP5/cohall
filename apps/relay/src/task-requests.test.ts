@@ -2,13 +2,15 @@ import {
   AttachmentName,
   Device,
   TaskRequestId,
+  Timestamp,
+  taskDeadlineError,
   decodeCreateTaskInput,
   makeDeviceId,
   now,
   version,
 } from "@cohall/protocol"
 import { Effect, ManagedRuntime } from "effect"
-import { expect, it } from "vitest"
+import { expect, it, vi } from "vitest"
 import { RelayStore } from "./store.ts"
 import { Database } from "./database.ts"
 
@@ -100,6 +102,56 @@ it("atomically reuses a request across concurrent creation and checks all decode
   } finally {
     await runtime.dispose()
     database.close()
+  }
+})
+
+it("recovers an expired keyed task and rejects changed deadlines", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] })
+  vi.setSystemTime("2030-01-01T00:00:00Z")
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const target = worker()
+    await Effect.runPromise(store.upsertDevice(target))
+    const input = {
+      requestId: TaskRequestId.make(crypto.randomUUID()),
+      prompt: "Build",
+      expiresAt: Timestamp.make("2030-01-01T00:00:01Z"),
+    }
+    const task = await Effect.runPromise(store.createDelegation(input, target.id, "owner"))
+    vi.setSystemTime("2030-01-01T00:00:02Z")
+    await Effect.runPromise(store.expireTasks())
+    expect(
+      await Effect.runPromise(store.createDelegation(input, target.id, "owner")),
+    ).toMatchObject({ id: task.id, status: "failed", error: taskDeadlineError })
+    expect((await Effect.runPromise(store.findDelegation(input, "owner")))?.id).toBe(task.id)
+    await expect(
+      Effect.runPromise(
+        store.createDelegation(
+          {
+            ...input,
+            expiresAt: Timestamp.make("2030-01-01T00:00:03Z"),
+          },
+          target.id,
+          "owner",
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 409 })
+    await expect(
+      Effect.runPromise(
+        store.createDelegation(
+          {
+            ...input,
+            requestId: TaskRequestId.make(crypto.randomUUID()),
+          },
+          target.id,
+          "owner",
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 400 })
+  } finally {
+    await runtime.dispose()
+    vi.useRealTimers()
   }
 })
 

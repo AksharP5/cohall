@@ -1419,54 +1419,11 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           : boundDeviceId,
       catch: operationError("RelayStore.createDelegation.source"),
     })
-    const timestamp = now()
-    const threadId = input.threadId ?? makeThreadId()
-    const task = Task.make({
-      id: makeTaskId(),
-      threadId,
-      prompt: input.prompt,
-      provider: input.provider ?? (input.botId === undefined ? "codex" : "grok-bot"),
-      ...(input.botId === undefined ? {} : { botId: input.botId }),
-      status: "queued",
-      targetDeviceId,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      ...(input.expiresAt === undefined
-        ? {}
-        : { expiresAt: Timestamp.make(new Date(input.expiresAt).toISOString()) }),
-      ...(input.context === undefined ? {} : { context: input.context }),
-      ...(sourceDeviceId === undefined ? {} : { sourceDeviceId }),
-      ...(input.parentTaskId === undefined ? {} : { parentTaskId: input.parentTaskId }),
-      ...(input.workspace === undefined ? {} : { workspace: input.workspace }),
-      ...(input.attachments === undefined || input.attachments.length === 0
-        ? {}
-        : { inputAttachmentNames: input.attachments.map((attachment) => attachment.name) }),
-      ...(providerSessionId === undefined ? {} : { providerSessionId }),
-    })
-    const thread =
-      input.threadId === undefined
-        ? Thread.make({
-            id: threadId,
-            title: input.title ?? input.prompt.slice(0, 72),
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          })
-        : undefined
-    const message = Message.make({
-      id: makeMessageId(),
-      threadId,
-      role: "human",
-      authorName: sourceDeviceId === undefined ? "User" : "Remote agent",
-      content: input.prompt,
-      createdAt: timestamp,
-      taskId: task.id,
-      ...(sourceDeviceId === undefined ? {} : { deviceId: sourceDeviceId }),
-    })
-    const existing = yield* Effect.try({
+    const submission = yield* Effect.try({
       try: () =>
         db.transaction(() => {
           const existing = requestedTask(requestedInput, principal)
-          if (existing !== null) return existing
+          if (existing !== null) return { existing }
           if (input.expiresAt !== undefined) {
             if (input.provider === "grok-bot" || input.botId !== undefined)
               throw new TaskDeadlineError({
@@ -1479,6 +1436,49 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                 message: "Task deadline must be in the future",
               })
           }
+          const timestamp = now()
+          const threadId = input.threadId ?? makeThreadId()
+          const task = Task.make({
+            id: makeTaskId(),
+            threadId,
+            prompt: input.prompt,
+            provider: input.provider ?? (input.botId === undefined ? "codex" : "grok-bot"),
+            ...(input.botId === undefined ? {} : { botId: input.botId }),
+            status: "queued",
+            targetDeviceId,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            ...(input.expiresAt === undefined
+              ? {}
+              : { expiresAt: Timestamp.make(new Date(input.expiresAt).toISOString()) }),
+            ...(input.context === undefined ? {} : { context: input.context }),
+            ...(sourceDeviceId === undefined ? {} : { sourceDeviceId }),
+            ...(input.parentTaskId === undefined ? {} : { parentTaskId: input.parentTaskId }),
+            ...(input.workspace === undefined ? {} : { workspace: input.workspace }),
+            ...(input.attachments === undefined || input.attachments.length === 0
+              ? {}
+              : { inputAttachmentNames: input.attachments.map((attachment) => attachment.name) }),
+            ...(providerSessionId === undefined ? {} : { providerSessionId }),
+          })
+          const thread =
+            input.threadId === undefined
+              ? Thread.make({
+                  id: threadId,
+                  title: input.title ?? input.prompt.slice(0, 72),
+                  createdAt: timestamp,
+                  updatedAt: timestamp,
+                })
+              : undefined
+          const message = Message.make({
+            id: makeMessageId(),
+            threadId,
+            role: "human",
+            authorName: sourceDeviceId === undefined ? "User" : "Remote agent",
+            content: input.prompt,
+            createdAt: timestamp,
+            taskId: task.id,
+            ...(sourceDeviceId === undefined ? {} : { deviceId: sourceDeviceId }),
+          })
           const outstanding = db
             .query<{ readonly count: number }, [string]>(
               `SELECT COUNT(*) AS count FROM tasks WHERE target_device_id = ?
@@ -1562,14 +1562,16 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             message.deviceId ?? null,
           )
           db.query("UPDATE threads SET updated_at = ? WHERE id = ?").run(timestamp, threadId)
-          return null
+          return { created: task }
         })(),
       catch: (cause) =>
         cause instanceof TaskRequestError || cause instanceof TaskDeadlineError
           ? cause
           : operationError("RelayStore.createDelegation")(cause),
     })
-    return existing === null ? task : yield* taskFromRow(db, existing)
+    return "existing" in submission
+      ? yield* taskFromRow(db, submission.existing)
+      : submission.created
   })
 
   const threadContext = Effect.fn("RelayStore.threadContext")(function* (threadId: ThreadId) {
