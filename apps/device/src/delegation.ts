@@ -5,6 +5,7 @@ import {
   Provider,
   TaskId,
   TaskStatus,
+  TaskProgress,
   ThreadId,
   terminalTaskStatuses,
   isTerminalTask,
@@ -49,6 +50,7 @@ export const TaskResult = Schema.Struct({
   result: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
   inbox_warning: Schema.optionalKey(Schema.String),
+  progress: Schema.optionalKey(TaskProgress),
 })
 export interface TaskResult extends Schema.Schema.Type<typeof TaskResult> {}
 
@@ -125,6 +127,7 @@ export const taskResult = (task: Task): TaskResult =>
     ...(task.botId === undefined ? {} : { bot_id: task.botId }),
     ...(task.result === undefined ? {} : { result: task.result }),
     ...(task.error === undefined ? {} : { error: task.error }),
+    ...(task.progress === undefined ? {} : { progress: task.progress }),
   })
 
 export const acknowledgedTaskResult = async (
@@ -246,7 +249,7 @@ export const followTaskTrace = Effect.fn("Cohall.followTaskTrace")(function* (
   const poll = client.traceTask(taskId).pipe(
     Effect.tap((trace) => {
       const latest = trace.events.at(-1)
-      const nextRevision = `${trace.status}:${latest?.kind ?? "none"}:${latest?.at ?? "none"}`
+      const nextRevision = `${trace.status}:${latest?.kind ?? "none"}:${latest?.at ?? "none"}:${trace.progress?.at ?? ""}:${trace.progress?.note ?? ""}`
       if (nextRevision === revision) {
         return Effect.succeed(undefined)
       }

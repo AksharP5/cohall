@@ -527,6 +527,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     await mcp.connect(transport)
     const tools = (await mcp.listTools()).tools
     expect(tools.map((tool) => tool.name)).toEqual([
+      "task_progress",
       "list_devices",
       "list_bots",
       "delegate",

@@ -12,6 +12,7 @@ import {
   ThreadId,
   decodeCreatePairingInput,
   decodeCreateTaskInput,
+  decodeTaskProgressInput,
   decodeCreateUpgradeOperationsInput,
   decodeExchangePairingInput,
   decodeSocketEvent,
@@ -698,7 +699,7 @@ export const runRelay = async (): Promise<void> => {
 
   const api = async (request: Request, url: URL): Promise<Response> => {
     if (url.pathname === "/api/health" && request.method === "GET") {
-      return json({ ok: true, version, taskAttachments: true })
+      return json({ ok: true, version, taskAttachments: true, taskProgress: true })
     }
     if (url.pathname === "/api/auth/pair" && request.method === "POST") {
       return run(
@@ -717,7 +718,9 @@ export const runRelay = async (): Promise<void> => {
     const attachmentRoute =
       request.method === "GET" &&
       /^\/api\/tasks\/[^/]+\/attachments(?:\/[^/]+)?$/.test(url.pathname)
-    const principal = await principalFor(request, attachmentRoute)
+    const progressRoute =
+      request.method === "POST" && /^\/api\/tasks\/[^/]+\/progress$/.test(url.pathname)
+    const principal = await principalFor(request, attachmentRoute || progressRoute)
     if (principal === undefined) {
       return json({ error: "Unauthorized" }, 401)
     }
@@ -859,6 +862,20 @@ export const runRelay = async (): Promise<void> => {
       if (request.method === "GET" && trace?.[1] !== undefined) {
         return json(yield* store.traceTask(yield* pathId(TaskId, trace[1])))
       }
+      const progress = url.pathname.match(/^\/api\/tasks\/([^/]+)\/progress$/)
+      if (request.method === "POST" && progress?.[1] !== undefined) {
+        const id = yield* pathId(TaskId, progress[1])
+        const input = yield* body(request, decodeTaskProgressInput)
+        const task = yield* store.getTask(id)
+        const deviceId = principal === "owner" ? task.targetDeviceId : principal.deviceId
+        if (deviceId === undefined) {
+          return yield* new RequestError({
+            status: 403,
+            message: "Only the target device can report progress",
+          })
+        }
+        return json(yield* store.reportTaskProgress(id, deviceId, input.note))
+      }
       const cancel = url.pathname.match(/^\/api\/tasks\/([^/]+)\/cancel$/)
       if (request.method === "POST" && cancel?.[1] !== undefined) {
         const id = yield* pathId(TaskId, cancel[1])
@@ -880,25 +897,27 @@ export const runRelay = async (): Promise<void> => {
       Effect.mapError((cause) =>
         cause instanceof RequestError
           ? cause
-          : new RequestError({
-              status:
-                cause._tag !== "RelayStore.PersistenceError"
-                  ? 500
-                  : cause.message.startsWith("Unknown")
-                    ? 404
-                    : cause.message.includes("cannot cancel an individual Cohall request")
-                      ? 409
-                      : cause.message.includes("outstanding task limit")
-                        ? 429
-                        : cause.message.includes("must be offline") ||
-                            cause.message.includes("still has outstanding tasks") ||
-                            cause.message.includes("upgrade operation in progress") ||
-                            cause.message === "No Cohall devices are registered" ||
-                            cause.message.startsWith("All-device operations support")
-                          ? 409
-                          : 500,
-              message: cause.message,
-            }),
+          : cause._tag === "RelayStore.TaskProgressError"
+            ? new RequestError({ status: cause.status, message: cause.message })
+            : new RequestError({
+                status:
+                  cause._tag !== "RelayStore.PersistenceError"
+                    ? 500
+                    : cause.message.startsWith("Unknown")
+                      ? 404
+                      : cause.message.includes("cannot cancel an individual Cohall request")
+                        ? 409
+                        : cause.message.includes("outstanding task limit")
+                          ? 429
+                          : cause.message.includes("must be offline") ||
+                              cause.message.includes("still has outstanding tasks") ||
+                              cause.message.includes("upgrade operation in progress") ||
+                              cause.message === "No Cohall devices are registered" ||
+                              cause.message.startsWith("All-device operations support")
+                            ? 409
+                            : 500,
+                message: cause.message,
+              }),
       ),
     )
     return run(effect).catch((cause: unknown) =>

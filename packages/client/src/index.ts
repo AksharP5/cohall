@@ -10,6 +10,8 @@ import {
   PairingCredential,
   PairingResult,
   Task,
+  TaskProgress,
+  type TaskProgressInput,
   TaskAttachment,
   maxAttachmentBytes,
   TaskInbox,
@@ -53,6 +55,10 @@ export interface Interface {
   readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, RelayClientError>
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<Task, RelayClientError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
+  readonly reportTaskProgress: (
+    taskId: TaskId,
+    input: TaskProgressInput,
+  ) => Effect.Effect<TaskProgress, RelayClientError>
   readonly listAttachments: (
     taskId: TaskId,
   ) => Effect.Effect<ReadonlyArray<TaskAttachment>, RelayClientError>
@@ -210,6 +216,26 @@ export const make = (options: RelayClientOptions): Interface => {
       }),
     getTask: (taskId) =>
       request("RelayClient.getTask", `/api/tasks/${encodeURIComponent(taskId)}`, Task),
+    reportTaskProgress: (taskId, input) =>
+      Effect.gen(function* () {
+        const health = yield* request(
+          "RelayClient.progressSupport",
+          "/api/health",
+          Schema.Struct({ taskProgress: Schema.optionalKey(Schema.Boolean) }),
+        )
+        if (health.taskProgress !== true) {
+          return yield* new RelayRequestError({
+            operation: "RelayClient.reportTaskProgress",
+            message: "Upgrade the Cohall relay before reporting task progress",
+          })
+        }
+        return yield* request(
+          "RelayClient.reportTaskProgress",
+          `/api/tasks/${encodeURIComponent(taskId)}/progress`,
+          TaskProgress,
+          { method: "POST", body: JSON.stringify(input) },
+        )
+      }),
     listAttachments: (taskId) =>
       request(
         "RelayClient.listAttachments",

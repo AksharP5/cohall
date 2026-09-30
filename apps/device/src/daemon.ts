@@ -213,6 +213,7 @@ const promptFor = (task: Task, deviceName: string, files?: TaskFiles): string =>
     "Complete the delegated task using this device's local workspace, tools, credentials, and signed-in services.",
     "Never read, reveal, copy, or use Cohall configuration files or Cohall authentication tokens.",
     "Return a concise, complete result with the evidence the sending agent needs.",
+    "For long tasks, optionally report a brief milestone with `cohall progress --message 'Running tests'`. Do not include logs or secrets in progress notes.",
     ...(files === undefined
       ? []
       : [

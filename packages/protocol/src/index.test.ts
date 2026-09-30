@@ -6,6 +6,8 @@ import {
   CreateUpgradeOperationsInput,
   SocketEvent,
   Task,
+  TaskProgressInput,
+  maxProgressNoteBytes,
   assertDeviceOperationSupport,
   decodeCreateTaskInput,
   makeDeviceId,
@@ -17,6 +19,14 @@ import {
   supportsDeviceOperations,
   taskSlot,
 } from "./index.ts"
+
+it("bounds progress notes by UTF-8 bytes and rejects blank updates", () => {
+  const decode = Schema.decodeUnknownSync(TaskProgressInput)
+  expect(decode({ note: "😀".repeat(maxProgressNoteBytes / 4) }).note).toBe("😀".repeat(256))
+  for (const note of ["", " \n\t", "x".repeat(maxProgressNoteBytes + 1), "😀".repeat(257)]) {
+    expect(() => decode({ note })).toThrow()
+  }
+})
 
 it("infers the Grok provider from a bot and rejects incompatible task targets", async () => {
   const botId = BotId.make("bot-reacher")

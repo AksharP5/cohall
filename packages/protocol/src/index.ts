@@ -7,6 +7,7 @@ export const version =
 export const maxSocketPayloadBytes = 1024 * 1024
 export const maxAttachmentBytes = 256 * 1024
 export const maxTaskAttachments = 2
+export const maxProgressNoteBytes = 1024
 
 const bounded = (maxLength: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maxLength))
@@ -286,6 +287,23 @@ const validBotTarget = (input: {
     : "The grok-bot provider requires botId; other providers cannot select a bot"
 }
 
+export const TaskProgressInput = Schema.Struct({
+  note: bounded(maxProgressNoteBytes)
+    .check(
+      Schema.makeFilter((value) =>
+        value.trim().length > 0 &&
+        new TextEncoder().encode(value).byteLength <= maxProgressNoteBytes
+          ? undefined
+          : `Expected a nonblank progress note of at most ${maxProgressNoteBytes} UTF-8 bytes`,
+      ),
+    )
+    .pipe(Schema.brand("TaskProgressNote")),
+})
+export interface TaskProgressInput extends Schema.Schema.Type<typeof TaskProgressInput> {}
+
+export const TaskProgress = Schema.Struct({ ...TaskProgressInput.fields, at: Timestamp })
+export interface TaskProgress extends Schema.Schema.Type<typeof TaskProgress> {}
+
 export const Task = Schema.Struct({
   id: TaskId,
   threadId: ThreadId,
@@ -302,6 +320,7 @@ export const Task = Schema.Struct({
   result: Schema.optionalKey(optionalText(131_072)),
   inputAttachmentNames: Schema.optionalKey(boundedArray(AttachmentName, maxTaskAttachments)),
   error: Schema.optionalKey(optionalText(16_384)),
+  progress: Schema.optionalKey(TaskProgress),
   createdAt: Timestamp,
   updatedAt: Timestamp,
   startedAt: Schema.optionalKey(Timestamp),
@@ -419,6 +438,7 @@ export const TaskTrace = Schema.Struct({
   events: boundedArray(TaskTraceEvent, 100),
   truncated: Schema.Boolean,
   error: Schema.optionalKey(optionalText(16_384)),
+  progress: Schema.optionalKey(TaskProgress),
 }).check(Schema.makeFilter(validBotTarget))
 export interface TaskTrace extends Schema.Schema.Type<typeof TaskTrace> {}
 
@@ -498,6 +518,7 @@ export const makeAuthSessionId = (): AuthSessionId => AuthSessionId.make(crypto.
 export const makeOperationId = (): OperationId => OperationId.make(crypto.randomUUID())
 
 export const decodeCreatePairingInput = Schema.decodeUnknownEffect(CreatePairingInput)
+export const decodeTaskProgressInput = Schema.decodeUnknownEffect(TaskProgressInput)
 export const decodeExchangePairingInput = Schema.decodeUnknownEffect(ExchangePairingInput)
 export const decodeCreateTaskInput = (input: unknown) =>
   Schema.decodeUnknownEffect(CreateTaskInput)(input).pipe(

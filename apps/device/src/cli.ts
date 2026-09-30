@@ -7,6 +7,7 @@ import {
   OperationId,
   Provider,
   TaskId,
+  TaskProgressInput,
   ThreadId,
   assertDeviceOperationSupport,
   makeDeviceId,
@@ -110,6 +111,7 @@ Usage:
                    [--grok-gateway path]
   cohall config
   cohall devices
+  cohall progress [task-id] --message <note>
   cohall bots
   cohall send [@device-or-bot] [prompt] [delegate options]
   cohall delegate [prompt] [--target @device-or-bot] [--provider provider]
@@ -935,6 +937,23 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   }
 
   const { configuration, relay } = await client()
+  if (command === "progress") {
+    allowOptions(arguments_, ["message"])
+    const rawId =
+      arguments_.positionals.length === 0
+        ? configuration.mcpTaskId
+        : identifier(arguments_, "task id")
+    if (rawId === undefined) throw new Error("Task id is required outside delegated work")
+    const note = option(arguments_, "message")
+    if (note === undefined) throw new Error("--message is required")
+    const input = Schema.decodeUnknownSync(TaskProgressInput)({ note })
+    print(
+      await Effect.runPromise(
+        relay.reportTaskProgress(Schema.decodeUnknownSync(TaskId)(rawId), input),
+      ),
+    )
+    return
+  }
   if (command === "devices") {
     allowOptions(arguments_, [])
     noPositionals(arguments_, command)

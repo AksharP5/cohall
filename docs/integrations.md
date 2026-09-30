@@ -10,6 +10,18 @@ the sending client has not handled. Fetch a full result with `cohall status
 `acknowledge_completion` to remove it from the inbox. A synchronous `delegate`
 call acknowledges its result automatically.
 
+Workers can report a brief milestone with `cohall progress --message "Running
+tests"` or MCP `task_progress`. Both inherit the task ID during delegated work;
+otherwise supply the task ID explicitly. Notes must be nonblank and at most
+1024 UTF-8 bytes. Only the task's target device or relay owner may update a
+running task. Use milestones, never logs or secrets.
+
+`cohall status <task-id>`, `cohall trace <task-id> --follow`, and MCP `task_status`
+and `trace_task` include the latest note and timestamp. Notes replace one another
+and clear when work is requeued or finishes.
+Reporting progress requires an updated relay; it does not change task status
+or acknowledge a completion.
+
 ## CLI plus skill
 
 ```bash

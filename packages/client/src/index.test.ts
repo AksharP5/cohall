@@ -3,6 +3,40 @@ import { type AddressInfo } from "node:net"
 import { Effect } from "effect"
 import { expect, it } from "vitest"
 import { make } from "./index.ts"
+import { TaskProgressInput, makeTaskId } from "@cohall/protocol"
+import { Schema } from "effect"
+
+it("refuses progress updates against older relays", async () => {
+  let posted = false
+  const server = createServer((request, response) => {
+    response.setHeader("content-type", "application/json")
+    if (request.url === "/api/health") {
+      response.end(JSON.stringify({ ok: true }))
+      return
+    }
+    posted = true
+    response.writeHead(404).end("{}")
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  try {
+    const address = server.address()
+    if (address === null || typeof address === "string") throw new Error("Missing test port")
+    const client = make({ baseUrl: `http://127.0.0.1:${address.port}`, token: "test" })
+    await expect(
+      Effect.runPromise(
+        client.reportTaskProgress(
+          makeTaskId(),
+          Schema.decodeUnknownSync(TaskProgressInput)({ note: "Testing" }),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      message: "Upgrade the Cohall relay before reporting task progress",
+    })
+    expect(posted).toBe(false)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
 
 it("rejects files before submitting to a relay without attachment support", async () => {
   let created = false
