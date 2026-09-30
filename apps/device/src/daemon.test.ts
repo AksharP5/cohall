@@ -4,12 +4,14 @@ import {
   DeviceOperation,
   OperationId,
   Task,
+  TaskRunId,
+  SocketEvent,
   makeTaskId,
   makeThreadId,
   maxSocketPayloadBytes,
   now,
 } from "@cohall/protocol"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import * as Providers from "@cohall/providers"
 import { type AddressInfo } from "node:net"
 import { writeFile } from "node:fs/promises"
@@ -69,6 +71,80 @@ afterEach(async () => {
 })
 
 describe("device relay connection", () => {
+  it("cancels a queued resumed run while its older run remains active", async () => {
+    const { server, relayUrl } = await startServer()
+    const old = Task.make({
+      id: makeTaskId(),
+      threadId: makeThreadId(),
+      targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      prompt: "Old turn",
+      provider: "codex",
+      status: "assigned",
+      runId: TaskRunId.make(crypto.randomUUID()),
+      createdAt: now(),
+      updatedAt: now(),
+    })
+    const resumedRunId = TaskRunId.make(crypto.randomUUID())
+    const resumed = Task.make({
+      ...old,
+      runId: resumedRunId,
+      prompt: "Resumed turn",
+    })
+    const other = Task.make({
+      ...old,
+      id: makeTaskId(),
+      runId: TaskRunId.make(crypto.randomUUID()),
+      prompt: "Other task",
+    })
+    const first = Promise.withResolvers<Providers.RunResult>()
+    const provider = vi
+      .spyOn(Providers, "run")
+      .mockImplementation((options) =>
+        options.prompt.includes("Old turn")
+          ? Effect.promise(() => first.promise)
+          : Effect.succeed({ result: "Other done" }),
+      )
+    const events: Array<SocketEvent> = []
+    server.once("connection", (socket) => {
+      const send = (event: SocketEvent) => socket.send(JSON.stringify(event))
+      socket.once("message", () =>
+        send({
+          _tag: "Connected",
+          serverVersion: "test",
+          connectedAt: now(),
+          taskClarification: true,
+        }),
+      )
+      socket.on("message", (message) => {
+        const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
+        events.push(event)
+        if (event._tag === "DeviceHello") send({ _tag: "TaskAssigned", task: old })
+        if (event._tag === "TaskAccepted" && event.taskId === old.id && event.runId === old.runId) {
+          send({ _tag: "TaskAssigned", task: resumed })
+          send({ _tag: "CancelTask", taskId: old.id, runId: resumedRunId })
+          send({ _tag: "TaskAssigned", task: other })
+        }
+      })
+    })
+    void run(relayUrl)
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({
+        _tag: "TaskCancelled",
+        taskId: old.id,
+        runId: resumedRunId,
+      }),
+    )
+    expect(provider).toHaveBeenCalledOnce()
+    first.resolve({ result: "Old done" })
+    await vi.waitFor(() =>
+      expect(
+        events.some((event) => event._tag === "TaskFinished" && event.taskId === other.id),
+      ).toBe(true),
+    )
+    expect(provider).toHaveBeenCalledTimes(2)
+    expect(provider.mock.calls[1]?.[0].prompt).toContain("Other task")
+  })
+
   it("replays the completed result and file after reconnecting", async () => {
     const { server, relayUrl } = await startServer()
     const task = Task.make({

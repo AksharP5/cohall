@@ -352,6 +352,27 @@ it("preserves an unanswered question across disconnect and relay restart, and ca
       status: "cancelling",
       runId: assigned.runId,
     })
+    expect(
+      (
+        await Effect.runPromise(
+          recovered.finishTask(
+            task.id,
+            target.id,
+            "Late result",
+            "late-session",
+            undefined,
+            assigned.runId,
+          ),
+        )
+      ).status,
+    ).toBe("cancelling")
+    expect(
+      (
+        await Effect.runPromise(
+          recovered.failTask(task.id, target.id, "Late failure", assigned.runId),
+        )
+      ).status,
+    ).toBe("cancelling")
     await expect(
       Effect.runPromise(
         recovered.answerTaskInput(

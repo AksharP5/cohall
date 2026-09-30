@@ -603,8 +603,7 @@ const schedule = (configuration: DeviceConfiguration, state: State, task: Task):
 
 const cancel = (state: State, taskId: TaskId, runId?: TaskRunId): void => {
   const running = state.tasks.get(taskId)
-  if (running !== undefined) {
-    if (runId !== undefined && running.task.runId !== runId) return
+  if (running !== undefined && (runId === undefined || running.task.runId === runId)) {
     if (running.task.provider !== "grok-bot") {
       running.controller.abort()
     }

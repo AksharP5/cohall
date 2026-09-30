@@ -193,6 +193,20 @@ it("restores work and delivers paused-task cancellation when the device reconnec
         runId,
       })
     })
+    reconnected.send({
+      _tag: "TaskFinished",
+      taskId: questionTask.id,
+      runId,
+      result: "Retained partial result",
+    })
+    await vi.waitFor(() => {
+      expect(reconnected.events).toContainEqual({
+        _tag: "TaskSettled",
+        taskId: questionTask.id,
+        runId,
+      })
+    })
+    expect((await Effect.runPromise(client.getTask(questionTask.id))).status).toBe("cancelling")
     reconnected.send({ _tag: "TaskCancelled", taskId: questionTask.id, runId })
     await vi.waitFor(async () => {
       expect((await Effect.runPromise(client.getTask(questionTask.id))).status).toBe("cancelled")

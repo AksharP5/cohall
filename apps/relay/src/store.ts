@@ -1860,6 +1860,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     const current = yield* requireTarget(taskId, deviceId)
     if (
       !matchesTaskRun(current, runId) ||
+      (current.status === "cancelling" && status !== "cancelled") ||
       ["completed", "failed", "cancelled"].includes(current.status)
     ) {
       return current
@@ -1923,7 +1924,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             .query(
               `UPDATE tasks SET status = ?, result = ?, error = ?, provider_session_id = ?,
              completed_at = ?, updated_at = ?, progress_note = NULL, progress_at = NULL WHERE id = ?
-             AND status NOT IN ('needs_input', 'completed', 'failed', 'cancelled') AND run_id IS ?`,
+             AND status NOT IN ('needs_input', 'completed', 'failed', 'cancelled')
+             AND (status <> 'cancelling' OR ? = 'cancelled') AND run_id IS ?`,
             )
             .run(
               status,
@@ -1935,6 +1937,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
               timestamp,
               timestamp,
               taskId,
+              status,
               current.runId ?? null,
             )
           if (updated.changes !== 1) {
