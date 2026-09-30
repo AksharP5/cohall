@@ -11,10 +11,66 @@ import { Effect, ManagedRuntime } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { expect, it } from "vitest"
+import { expect, it, vi } from "vitest"
 import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
+
+it("derives queue depth and oldest wait from tasks through dispatch and reconnect", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  vi.useFakeTimers({ toFake: ["Date"] })
+  try {
+    vi.setSystemTime(new Date("2026-09-30T00:00:00Z"))
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "queue-target",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    const peer = Device.make({ ...device, id: makeDeviceId(), name: "queue-peer" })
+    await Effect.runPromise(store.upsertDevice(device))
+    await Effect.runPromise(store.upsertDevice(peer))
+    const first = await Effect.runPromise(
+      store.createDelegation({ prompt: "First" }, device.id, "owner"),
+    )
+    vi.setSystemTime(new Date("2026-09-30T00:01:00Z"))
+    const second = await Effect.runPromise(
+      store.createDelegation({ prompt: "Second" }, device.id, "owner"),
+    )
+    const other = await Effect.runPromise(
+      store.createDelegation({ prompt: "Other" }, peer.id, "owner"),
+    )
+    const queue = async (id = device.id) =>
+      (await Effect.runPromise(store.listDevices())).find((item) => item.id === id)?.queue
+
+    expect(await queue()).toEqual({ queued: 2, oldestQueuedAt: first.createdAt })
+    expect(await queue(peer.id)).toEqual({ queued: 1, oldestQueuedAt: other.createdAt })
+    await Effect.runPromise(store.assignTask(first.id))
+    expect(await queue()).toEqual({ queued: 1, oldestQueuedAt: second.createdAt })
+    await Effect.runPromise(store.acceptTask(first.id, device.id))
+    await Effect.runPromise(store.requestCancellation(first.id))
+    await Effect.runPromise(store.requestCancellation(second.id))
+    expect(await queue()).toEqual({ queued: 0 })
+
+    await Effect.runPromise(store.assignTask(other.id))
+    await Effect.runPromise(store.acceptTask(other.id, peer.id))
+    expect(await queue(peer.id)).toEqual({ queued: 0 })
+    await Effect.runPromise(store.requeueTasksFor(peer.id))
+    await Effect.runPromise(store.markDeviceOffline(peer.id))
+    expect(await queue(peer.id)).toEqual({ queued: 1, oldestQueuedAt: other.createdAt })
+  } finally {
+    vi.useRealTimers()
+    await runtime.dispose()
+  }
+})
 
 it("assigns queued followups with the session completed before a restart", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-store-session-"))

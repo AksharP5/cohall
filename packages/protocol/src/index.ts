@@ -146,6 +146,12 @@ export const Device = Schema.Struct({
   version: bounded(32),
   lastSeenAt: Timestamp,
   connectedAt: Schema.optionalKey(Timestamp),
+  queue: Schema.optionalKey(
+    Schema.Struct({
+      queued: count,
+      oldestQueuedAt: Schema.optionalKey(Timestamp),
+    }),
+  ),
 })
 export interface Device extends Schema.Schema.Type<typeof Device> {}
 

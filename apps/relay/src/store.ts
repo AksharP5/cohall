@@ -88,6 +88,8 @@ interface DeviceRow {
   readonly version: string
   readonly last_seen_at: string
   readonly connected_at: string | null
+  readonly queued_tasks?: number
+  readonly oldest_queued_at?: string | null
 }
 
 interface TaskRow {
@@ -348,6 +350,16 @@ const deviceFromRow = (row: DeviceRow): Effect.Effect<Device, PersistenceError> 
     version: row.version,
     lastSeenAt: row.last_seen_at,
     ...(row.connected_at === null ? {} : { connectedAt: row.connected_at }),
+    ...(row.queued_tasks === undefined
+      ? {}
+      : {
+          queue: {
+            queued: row.queued_tasks,
+            ...(row.oldest_queued_at === undefined || row.oldest_queued_at === null
+              ? {}
+              : { oldestQueuedAt: row.oldest_queued_at }),
+          },
+        }),
   })
 
 const taskFromRow = (db: Database, row: TaskRow): Effect.Effect<Task, PersistenceError> =>
@@ -763,7 +775,12 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       try: () =>
         db
           .query<DeviceRow, []>(
-            "SELECT * FROM devices WHERE forgotten_at IS NULL ORDER BY name COLLATE NOCASE, id",
+            `SELECT devices.*, COUNT(tasks.id) AS queued_tasks,
+                    MIN(tasks.created_at) AS oldest_queued_at
+             FROM devices LEFT JOIN tasks
+               ON tasks.target_device_id = devices.id AND tasks.status = 'queued'
+             WHERE devices.forgotten_at IS NULL
+             GROUP BY devices.id ORDER BY devices.name COLLATE NOCASE, devices.id`,
           )
           .all(),
       catch: operationError("RelayStore.listDevices"),
