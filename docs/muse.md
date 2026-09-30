@@ -15,7 +15,17 @@ make Muse a target in `cohall devices` or start a new Muse turn when work arrive
 Use an HTTPS relay address reachable from the sandbox. A private relay requires
 an approved private network route or tunnel proxy provided by the sandbox host.
 Tailscale access on your computer does not give the sandbox the same access.
-Keep the relay address stable; update the client's configuration if it moves.
+Keep the relay address stable. If the relay moves with its existing data, switch
+the stored address after the new endpoint is reachable:
+
+```bash
+unset COHALL_RELAY_URL
+npx -y @akshar5/cohall relay use https://new-relay.example.com
+```
+
+This verifies and preserves the stored credential. Changing only
+`COHALL_RELAY_URL` does not reuse a credential bound to the old address.
+See [relay migration](../README.md#move-a-relay) for moving the relay data.
 
 Cohall's requester uses Node's `fetch`. In a proxy-only environment, enable
 Node's use of the proxy settings before starting Cohall:
@@ -31,14 +41,18 @@ proxy endpoints or copy proxy credentials into chat, command arguments, or
 checked-in files. A relay listed in `NO_PROXY` bypasses the proxy, which fails
 when the sandbox has no direct route to it.
 
-`NODE_USE_ENV_PROXY=1` is supported for `fetch` on Node.js 24 and newer. See
-[Node's proxy and certificate guidance](https://nodejs.org/en/learn/http/enterprise-network-configuration).
+`NODE_USE_ENV_PROXY=1` is supported for `fetch` starting with Node.js 24.0.0,
+as documented in [Node's 24.0.0 command-line API](https://nodejs.org/download/release/v24.0.0/docs/api/cli.html#node_use_env_proxy1).
+The separate `--use-env-proxy` flag and `http`/`https` agent support need 24.5.0;
+this guide uses the environment variable with `fetch`.
+See [Node's proxy and certificate guidance](https://nodejs.org/en/learn/http/enterprise-network-configuration).
 Keep certificate verification enabled; use the host-provided CA bundle when
 its proxy or relay requires one.
 
 ## Pair the requester
 
-On an owner-authenticated machine, create a single-use client pairing token:
+On an owner-authenticated machine, create a single-use client pairing token
+valid for ten minutes:
 
 ```bash
 npx -y @akshar5/cohall pair --client-only --label "Muse"
@@ -70,6 +84,14 @@ Use the same `COHALL_CONFIG` and network environment for later commands. If the
 sandbox is replaced, retain the configuration through the host's private
 persistent storage or issue a new pairing token. Cohall cannot preserve a file
 the host discards.
+
+Client credentials expire 90 days after pairing. Before expiry, collect and
+acknowledge completed work and record any outstanding task IDs. Have the relay
+owner create a new client-only pairing token, repeat `join` with that new token
+file, and run `doctor` again. Each pairing has a separate completion inbox;
+results from earlier pairings remain accessible through `status <task-id>` while
+the relay retains those tasks. Preserving the configuration does not extend the
+credential's expiry.
 
 ## Delegate and collect results
 
