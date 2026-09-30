@@ -2563,6 +2563,8 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
           PRIMARY KEY(requester_id, request_id)
         );
+        CREATE INDEX IF NOT EXISTS task_requests_retained_task
+          ON task_requests(task_id) WHERE task_id IS NOT NULL;
         CREATE TABLE IF NOT EXISTS task_attachments (
           task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
           name TEXT NOT NULL, direction TEXT NOT NULL CHECK(direction IN ('input', 'output')),

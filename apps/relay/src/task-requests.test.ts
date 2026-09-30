@@ -34,9 +34,10 @@ it("atomically reuses a request across concurrent creation and checks all decode
     const store = await runtime.runPromise(RelayStore.Service)
     const target = worker()
     await Effect.runPromise(store.upsertDevice(target))
+    const requestId = TaskRequestId.make(crypto.randomUUID())
     const input = await Effect.runPromise(
       decodeCreateTaskInput({
-        requestId: crypto.randomUUID(),
+        requestId,
         prompt: "Build",
         context: "Use the current branch",
         attachments: [{ name: "note.txt", data: "YQ==" }],
@@ -56,7 +57,7 @@ it("atomically reuses a request across concurrent creation and checks all decode
           store.findDelegation(
             {
               ...input,
-              requestId: TaskRequestId.make(input.requestId?.toUpperCase() ?? ""),
+              requestId: TaskRequestId.make(requestId.toUpperCase()),
             },
             "owner",
           ),
