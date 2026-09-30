@@ -124,6 +124,9 @@ Add to `opencode.json`:
 
 ## Isolated environments
 
+For a hosted Muse sandbox, see [Muse requester setup](muse.md) for client-only
+pairing, proxy access, and collecting delegated results.
+
 The MCP subprocess reads the current user's Cohall configuration. If a harness
 uses an isolated environment, pass `COHALL_CONFIG` with an absolute path to that
 configuration file. Alternatively pass `COHALL_RELAY_URL` and
