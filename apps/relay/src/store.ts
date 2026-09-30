@@ -10,6 +10,8 @@ import {
   PairingResult,
   Provider,
   Task,
+  TaskProgress,
+  type TaskProgressInput,
   TaskAttachment,
   TaskId,
   TaskInbox,
@@ -53,6 +55,11 @@ import { Database } from "./database.ts"
 export class PersistenceError extends Schema.TaggedErrorClass<PersistenceError>()(
   "RelayStore.PersistenceError",
   { operation: Schema.String, message: Schema.String },
+) {}
+
+export class TaskProgressError extends Schema.TaggedErrorClass<TaskProgressError>()(
+  "RelayStore.TaskProgressError",
+  { status: Schema.Literals([403, 409]), message: Schema.String },
 ) {}
 
 interface ThreadRow {
@@ -113,6 +120,8 @@ interface TaskRow {
   readonly updated_at: string
   readonly started_at: string | null
   readonly completed_at: string | null
+  readonly progress_note: string | null
+  readonly progress_at: string | null
 }
 
 interface InboxRow {
@@ -212,6 +221,11 @@ export interface Interface {
     principal: AuthSession | "owner",
   ) => Effect.Effect<TaskInboxItem, PersistenceError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
+  readonly reportTaskProgress: (
+    taskId: TaskId,
+    deviceId: DeviceId,
+    note: TaskProgressInput["note"],
+  ) => Effect.Effect<TaskProgress, PersistenceError | TaskProgressError>
   readonly listAttachments: (
     taskId: TaskId,
   ) => Effect.Effect<ReadonlyArray<TaskAttachment>, PersistenceError>
@@ -393,6 +407,9 @@ const taskFromRow = (db: Database, row: TaskRow): Effect.Effect<Task, Persistenc
           ? {}
           : { inputAttachmentNames: attachments.map((item) => item.name) }),
         ...(row.error === null ? {} : { error: row.error }),
+        ...(row.progress_note === null
+          ? {}
+          : { progress: { note: row.progress_note, at: row.progress_at } }),
         ...(row.started_at === null ? {} : { startedAt: row.started_at }),
         ...(row.completed_at === null ? {} : { completedAt: row.completed_at }),
       }),
@@ -767,6 +784,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
       ...(task.completedAt === undefined ? {} : { completedAt: task.completedAt }),
       ...(task.error === undefined ? {} : { error: task.error }),
+      ...(task.progress === undefined ? {} : { progress: task.progress }),
     })
   })
 
@@ -1151,7 +1169,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             .all()
           db.query("UPDATE devices SET status = 'offline'").run()
           db.query(
-            "UPDATE tasks SET status = 'queued', updated_at = ? WHERE status IN ('assigned', 'running')",
+            `UPDATE tasks SET status = 'queued', updated_at = ?, progress_note = NULL, progress_at = NULL
+             WHERE status IN ('assigned', 'running')`,
           ).run(timestamp)
           db.query(
             "UPDATE device_operations SET status = 'queued', updated_at = ? WHERE status IN ('assigned', 'running')",
@@ -1575,6 +1594,38 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return task
   })
 
+  const reportTaskProgress = Effect.fn("RelayStore.reportTaskProgress")(function* (
+    taskId: TaskId,
+    deviceId: DeviceId,
+    note: TaskProgressInput["note"],
+  ) {
+    const task = yield* getTask(taskId)
+    if (task.targetDeviceId !== deviceId) {
+      return yield* new TaskProgressError({
+        status: 403,
+        message: "Only the target device can report progress",
+      })
+    }
+    const progress = TaskProgress.make({ note, at: now() })
+    const changed = yield* Effect.try({
+      try: () =>
+        db
+          .query(
+            `UPDATE tasks SET progress_note = ?, progress_at = ?, updated_at = ?
+         WHERE id = ? AND target_device_id = ? AND status = 'running'`,
+          )
+          .run(note, progress.at, progress.at, taskId, deviceId).changes,
+      catch: operationError("RelayStore.reportTaskProgress"),
+    })
+    if (changed !== 1) {
+      return yield* new TaskProgressError({
+        status: 409,
+        message: "Task must be running to report progress",
+      })
+    }
+    return progress
+  })
+
   const terminal = Effect.fn("RelayStore.terminal")(function* (
     taskId: TaskId,
     deviceId: DeviceId,
@@ -1595,7 +1646,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           const updated = db
             .query(
               `UPDATE tasks SET status = ?, result = ?, error = ?, provider_session_id = ?,
-             completed_at = ?, updated_at = ? WHERE id = ?
+             completed_at = ?, updated_at = ?, progress_note = NULL, progress_at = NULL WHERE id = ?
              AND status NOT IN ('completed', 'failed', 'cancelled')`,
             )
             .run(
@@ -1739,7 +1790,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             )
             .all(deviceId)
           db.query(
-            `UPDATE tasks SET status = 'queued', updated_at = ?
+            `UPDATE tasks SET status = 'queued', updated_at = ?, progress_note = NULL, progress_at = NULL
              WHERE target_device_id = ? AND status IN ('assigned', 'running')`,
           ).run(timestamp, deviceId)
           for (const task of interrupted) {
@@ -1947,6 +1998,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
     createDelegation,
     getTask,
+    reportTaskProgress,
     listAttachments,
     readAttachment,
     inboxFor,
@@ -2041,7 +2093,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           target_device_id TEXT NOT NULL REFERENCES devices(id), parent_task_id TEXT,
           workspace TEXT, provider_session_id TEXT, result TEXT, error TEXT,
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
-          dispatched_at TEXT
+          dispatched_at TEXT, progress_note TEXT, progress_at TEXT
         );
         CREATE INDEX IF NOT EXISTS tasks_thread_created ON tasks(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS tasks_target_status ON tasks(target_device_id, status);
@@ -2094,6 +2146,12 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         db.exec("ALTER TABLE devices ADD COLUMN bots_json TEXT")
       }
       const taskColumns = db.query<{ readonly name: string }, []>("PRAGMA table_info(tasks)").all()
+      if (!taskColumns.some((column) => column.name === "progress_note")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN progress_note TEXT")
+      }
+      if (!taskColumns.some((column) => column.name === "progress_at")) {
+        db.exec("ALTER TABLE tasks ADD COLUMN progress_at TEXT")
+      }
       if (!taskColumns.some((column) => column.name === "bot_id")) {
         db.exec("ALTER TABLE tasks ADD COLUMN bot_id TEXT")
       }

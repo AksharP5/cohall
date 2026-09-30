@@ -324,6 +324,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"C
     await writeFile(
       join(bin, "claude"),
       `#!/usr/bin/env bash
+cat >/dev/null
 printf 'claude thread=%s args=%s\n' "$COHALL_THREAD_ID" "$*" >> "$PROVIDER_FAKE_LOG"
 printf '%s\n' '{"result":"Claude completed the delegated work.","session_id":"33333333-3333-4333-8333-333333333333"}'
 `,
@@ -527,6 +528,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     await mcp.connect(transport)
     const tools = (await mcp.listTools()).tools
     expect(tools.map((tool) => tool.name)).toEqual([
+      "task_progress",
       "list_devices",
       "list_bots",
       "delegate",
@@ -782,7 +784,10 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
           workspace: root,
         }),
       )
-      expect((await Effect.runPromise(waitForTerminal(client, task))).result).toBe(result)
+      expect(await Effect.runPromise(waitForTerminal(client, task))).toMatchObject({
+        status: "completed",
+        result,
+      })
     }
 
     const openCodeError = await Effect.runPromise(

@@ -197,6 +197,10 @@ npx -y @akshar5/cohall wait <task-id> --timeout 1800
 npx -y @akshar5/cohall trace <task-id> --follow
 ```
 
+Task status and traces include the worker's latest progress note when it reports
+one. Workers can publish a brief milestone with `cohall progress --message
+"Running tests"`; the task ID is inherited during delegated work.
+
 Completed tasks also appear in the sending client's inbox. This covers queued
 work and tasks that finish after a wait times out:
 

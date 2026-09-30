@@ -4,6 +4,8 @@ import {
   AttachmentName,
   Provider,
   TaskId,
+  TaskProgressInput,
+  maxProgressNoteBytes,
   ThreadId,
   version,
 } from "@cohall/protocol"
@@ -33,6 +35,28 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     token: configuration.token,
   })
   const server = new McpServer({ name: "cohall", version })
+
+  server.registerTool(
+    "task_progress",
+    {
+      title: "Report task progress",
+      description: `Replace the latest progress note for a running task on this device. Use brief milestones, up to ${maxProgressNoteBytes} UTF-8 bytes. Inherits the delegated task ID when omitted.`,
+      inputSchema: {
+        task_id: z.string().uuid().optional(),
+        note: z.string().min(1).max(maxProgressNoteBytes),
+      },
+    },
+    async ({ task_id, note }) => {
+      const id = task_id ?? configuration.mcpTaskId
+      if (id === undefined) throw new Error("Task id is required outside delegated work")
+      const input = Schema.decodeUnknownSync(TaskProgressInput)({ note })
+      return output(
+        await Effect.runPromise(
+          client.reportTaskProgress(Schema.decodeUnknownSync(TaskId)(id), input),
+        ),
+      )
+    },
+  )
 
   server.registerTool(
     "list_devices",
@@ -210,7 +234,7 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     {
       title: "Trace a delegated task",
       description:
-        "Read the redacted relay and device lifecycle for troubleshooting a Cohall task.",
+        "Read the relay and device lifecycle and latest worker progress note for troubleshooting a Cohall task.",
       inputSchema: { task_id: z.string().uuid() },
     },
     async ({ task_id }) => output(await Effect.runPromise(client.traceTask(TaskId.make(task_id)))),

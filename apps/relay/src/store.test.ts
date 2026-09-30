@@ -6,8 +6,9 @@ import {
   now,
   version,
   maxAttachmentBytes,
+  TaskProgressInput,
 } from "@cohall/protocol"
-import { Effect, ManagedRuntime } from "effect"
+import { Effect, ManagedRuntime, Schema } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -15,6 +16,73 @@ import { expect, it, vi } from "vitest"
 import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
+
+it("persists the latest progress, restricts its target, and clears it on recovery and completion", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-progress-"))
+  const path = join(directory, "relay.db")
+  const original = ManagedRuntime.make(RelayStore.layer(path))
+  let restored: typeof original | undefined
+  try {
+    const store = await original.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "progress-target",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const task = await Effect.runPromise(
+      store.createDelegation({ prompt: "Build" }, device.id, "owner"),
+    )
+    const first = Schema.decodeUnknownSync(TaskProgressInput)({ note: "Running tests" })
+    const second = Schema.decodeUnknownSync(TaskProgressInput)({ note: "Building package" })
+    await expect(
+      Effect.runPromise(store.reportTaskProgress(task.id, device.id, first.note)),
+    ).rejects.toMatchObject({ status: 409 })
+    await Effect.runPromise(store.assignTask(task.id))
+    await Effect.runPromise(store.acceptTask(task.id, device.id))
+    await expect(
+      Effect.runPromise(store.reportTaskProgress(task.id, makeDeviceId(), first.note)),
+    ).rejects.toMatchObject({ status: 403 })
+    await Effect.runPromise(store.reportTaskProgress(task.id, device.id, first.note))
+    const latest = await Effect.runPromise(
+      store.reportTaskProgress(task.id, device.id, second.note),
+    )
+    expect((await Effect.runPromise(store.getTask(task.id))).progress).toEqual(latest)
+    expect((await Effect.runPromise(store.traceTask(task.id))).progress).toEqual(latest)
+    await original.dispose()
+
+    restored = ManagedRuntime.make(RelayStore.layer(path))
+    const recovered = await restored.runPromise(RelayStore.Service)
+    expect((await Effect.runPromise(recovered.getTask(task.id))).progress).toEqual(latest)
+    await Effect.runPromise(recovered.recover())
+    expect((await Effect.runPromise(recovered.getTask(task.id))).progress).toBeUndefined()
+    await Effect.runPromise(recovered.assignTask(task.id))
+    await Effect.runPromise(recovered.acceptTask(task.id, device.id))
+    await Effect.runPromise(recovered.reportTaskProgress(task.id, device.id, first.note))
+    await Effect.runPromise(recovered.requeueTasksFor(device.id))
+    expect((await Effect.runPromise(recovered.getTask(task.id))).progress).toBeUndefined()
+    await Effect.runPromise(recovered.assignTask(task.id))
+    await Effect.runPromise(recovered.acceptTask(task.id, device.id))
+    await Effect.runPromise(recovered.reportTaskProgress(task.id, device.id, first.note))
+    await Effect.runPromise(recovered.finishTask(task.id, device.id, "Done"))
+    expect((await Effect.runPromise(recovered.getTask(task.id))).progress).toBeUndefined()
+    await expect(
+      Effect.runPromise(recovered.reportTaskProgress(task.id, device.id, second.note)),
+    ).rejects.toMatchObject({ status: 409 })
+  } finally {
+    await original.dispose()
+    await restored?.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 it("derives queue depth and oldest wait from tasks through dispatch and reconnect", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
