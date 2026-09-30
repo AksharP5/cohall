@@ -1,4 +1,4 @@
-import { RelayClient } from "../packages/client/src/index.ts"
+import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
 import {
   BotId,
   Device,
@@ -17,7 +17,7 @@ import { join } from "node:path"
 import { expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
-it("restores running task slots before a queued upgrade when the device reconnects", async () => {
+it("restores work and delivers paused-task cancellation when the device reconnects", async () => {
   const reservation = createServer()
   reservation.listen(0, "127.0.0.1")
   await once(reservation, "listening")
@@ -40,7 +40,7 @@ it("restores running task slots before a queued upgrade when the device reconnec
   })
   const sockets: Array<WebSocket> = []
   const botId = BotId.make("reconnecting-bot")
-  const device = Device.make({
+  let device = Device.make({
     id: makeDeviceId(),
     name: "reconnecting-device",
     hostname: "localhost",
@@ -48,14 +48,14 @@ it("restores running task slots before a queued upgrade when the device reconnec
     architecture: "x64",
     providers: ["codex", "grok-bot"],
     bots: [{ id: botId, name: "Research" }],
-    capabilities: [],
+    capabilities: [{ id: "task-clarification", label: "Clarification" }],
     workspaces: [],
     version,
     status: "online",
     lastSeenAt: now(),
   })
   const client = RelayClient.make({ baseUrl, token })
-  const connect = async () => {
+  const connect = async (credential: string) => {
     const socket = new WebSocket(`${baseUrl.replace("http", "ws")}/ws/device`)
     sockets.push(socket)
     const events: Array<SocketEvent> = []
@@ -66,7 +66,7 @@ it("restores running task slots before a queued upgrade when the device reconnec
       if (event._tag === "Connected") send({ _tag: "DeviceHello", device })
     })
     await once(socket, "open")
-    send({ _tag: "Authenticate", token })
+    send({ _tag: "Authenticate", token: credential })
     await vi.waitFor(async () => {
       expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("online")
     })
@@ -79,7 +79,16 @@ it("restores running task slots before a queued upgrade when the device reconnec
       },
       { timeout: 10_000 },
     )
-    const original = await connect()
+    const pairing = await Effect.runPromise(
+      client.createPairing({ label: "Worker", roles: ["device"] }),
+    )
+    const joined = await Effect.runPromise(exchangePairing(baseUrl, { token: pairing.token }))
+    const credential = joined.credentials[0]
+    if (credential === undefined) throw new Error("Expected worker credential")
+    const deviceId = credential.session.deviceId
+    if (deviceId === undefined) throw new Error("Expected paired device ID")
+    device = Device.make({ ...device, id: deviceId })
+    const original = await connect(credential.token)
     const bot = await Effect.runPromise(
       client.createTask({
         targetDeviceId: device.id,
@@ -103,7 +112,7 @@ it("restores running task slots before a queued upgrade when the device reconnec
       expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("offline")
     })
 
-    const resumed = await connect()
+    const resumed = await connect(credential.token)
     await vi.waitFor(() => {
       expect(
         resumed.events.some((event) => event._tag === "TaskAssigned" && event.task.id === bot.id),
@@ -145,6 +154,48 @@ it("restores running task slots before a queued upgrade when the device reconnec
           (event) => event._tag === "TaskAssigned" && event.task.id === followup.id,
         ),
       ).toBe(true)
+    })
+    const disconnect = async (socket: WebSocket) => {
+      const closed = once(socket, "close")
+      socket.close()
+      await closed
+      await vi.waitFor(async () => {
+        expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("offline")
+      })
+    }
+    await disconnect(resumed.socket)
+    const interrupted = await connect(credential.token)
+    const questionTask = await Effect.runPromise(
+      client.createTask({
+        targetDeviceId: device.id,
+        provider: "codex",
+        prompt: "Ask before continuing",
+      }),
+    )
+    const runId = questionTask.runId
+    if (runId === undefined) throw new Error("Expected worker turn")
+    interrupted.send({ _tag: "TaskAccepted", taskId: questionTask.id, runId })
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(questionTask.id))).status).toBe("running")
+    })
+    const workerClient = RelayClient.make({ baseUrl, token: credential.token })
+    await Effect.runPromise(
+      workerClient.requestTaskInput(questionTask.id, { runId, question: "Which branch?" }),
+    )
+    await disconnect(interrupted.socket)
+    expect((await Effect.runPromise(client.getTask(questionTask.id))).status).toBe("needs_input")
+    expect((await Effect.runPromise(client.cancelTask(questionTask.id))).status).toBe("cancelling")
+    const reconnected = await connect(credential.token)
+    await vi.waitFor(() => {
+      expect(reconnected.events).toContainEqual({
+        _tag: "CancelTask",
+        taskId: questionTask.id,
+        runId,
+      })
+    })
+    reconnected.send({ _tag: "TaskCancelled", taskId: questionTask.id, runId })
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(questionTask.id))).status).toBe("cancelled")
     })
   } finally {
     for (const socket of sockets) socket.terminate()

@@ -4,6 +4,7 @@ import {
   ClarificationId,
   Device,
   RequestTaskInput,
+  TaskRunId,
   makeDeviceId,
   now,
   version,
@@ -124,6 +125,74 @@ it("cancels a resumed Bot turn that has not been dispatched", async () => {
     await runtime.dispose()
   }
 })
+
+it.each(["disconnect", "restart"] as const)(
+  "keeps a matching paused run's late session across a %s and later worker restart",
+  async (interruption) => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall-input-session-"))
+    const database = join(directory, "relay.db")
+    let runtime = ManagedRuntime.make(RelayStore.layer(database))
+    try {
+      const store = await runtime.runPromise(RelayStore.Service)
+      const target = worker()
+      await Effect.runPromise(store.upsertDevice(target))
+      const task = await Effect.runPromise(
+        store.createDelegation({ prompt: "Build" }, target.id, "owner"),
+      )
+      const assigned = await Effect.runPromise(store.assignTask(task.id))
+      const runId = assigned.runId
+      if (runId === undefined) throw new Error("Missing turn")
+      await Effect.runPromise(store.acceptTask(task.id, target.id, runId))
+      const question = await Effect.runPromise(
+        store.requestTaskInput(
+          task.id,
+          target.id,
+          Schema.decodeUnknownSync(RequestTaskInput)({ runId, question: "Which branch?" }),
+        ),
+      )
+      await Effect.runPromise(
+        interruption === "disconnect" ? store.requeueTasksFor(target.id) : store.recover(),
+      )
+      const stale = await Effect.runPromise(
+        store.finishTask(
+          task.id,
+          target.id,
+          "Old",
+          "stale-session",
+          undefined,
+          TaskRunId.make(crypto.randomUUID()),
+        ),
+      )
+      expect(stale.providerSessionId).toBeUndefined()
+      const paused = await Effect.runPromise(
+        store.finishTask(task.id, target.id, "Asked", "late-session", undefined, runId),
+      )
+      expect(paused).toMatchObject({ status: "needs_input", providerSessionId: "late-session" })
+      expect(paused.result).toBeUndefined()
+      await runtime.dispose()
+      runtime = ManagedRuntime.make(RelayStore.layer(database))
+      const restored = await runtime.runPromise(RelayStore.Service)
+      await Effect.runPromise(restored.recover())
+      const answered = await Effect.runPromise(
+        restored.answerTaskInput(
+          task.id,
+          "owner",
+          Schema.decodeUnknownSync(AnswerTaskInput)({
+            requestId: question.id,
+            answer: "main",
+          }),
+        ),
+      )
+      expect(answered.providerSessionId).toBe("late-session")
+      expect((await Effect.runPromise(restored.assignTask(task.id))).providerSessionId).toBe(
+        "late-session",
+      )
+    } finally {
+      await runtime.dispose()
+      await rm(directory, { recursive: true, force: true })
+    }
+  },
+)
 
 it("pauses, frees the worker, and resumes only the current question for its requester", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
@@ -275,8 +344,14 @@ it("preserves an unanswered question across disconnect and relay restart, and ca
     expect((await Effect.runPromise(recovered.pendingTasksFor(target.id))).length).toBe(0)
     expect((await Effect.runPromise(recovered.usage())).byStatus.needs_input).toBe(1)
     expect((await Effect.runPromise(recovered.requestCancellation(task.id))).status).toBe(
-      "cancelled",
+      "cancelling",
     )
+    await Effect.runPromise(recovered.requeueTasksFor(target.id))
+    expect((await Effect.runPromise(recovered.pendingTasksFor(target.id)))[0]).toMatchObject({
+      id: task.id,
+      status: "cancelling",
+      runId: assigned.runId,
+    })
     await expect(
       Effect.runPromise(
         recovered.answerTaskInput(
@@ -289,6 +364,13 @@ it("preserves an unanswered question across disconnect and relay restart, and ca
         ),
       ),
     ).rejects.toMatchObject({ status: 409 })
+    expect(
+      (
+        await Effect.runPromise(
+          recovered.acknowledgeCancellation(task.id, target.id, assigned.runId),
+        )
+      ).status,
+    ).toBe("cancelled")
   } finally {
     await original.dispose()
     await restored?.dispose()

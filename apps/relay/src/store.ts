@@ -1860,7 +1860,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     const current = yield* requireTarget(taskId, deviceId)
     if (
       !matchesTaskRun(current, runId) ||
-      ["needs_input", "completed", "failed", "cancelled"].includes(current.status)
+      ["completed", "failed", "cancelled"].includes(current.status)
     ) {
       return current
     }
@@ -1868,6 +1868,26 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     yield* Effect.try({
       try: () =>
         db.transaction(() => {
+          const saveProviderSession = () => {
+            if (current.provider === "grok-bot" || providerSessionId === undefined) return
+            db.query(
+              `INSERT INTO provider_sessions (thread_id, device_id, provider, session_id, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(thread_id, device_id, provider) DO UPDATE SET
+               session_id = excluded.session_id, updated_at = excluded.updated_at`,
+            ).run(current.threadId, deviceId, current.provider, providerSessionId, timestamp)
+          }
+          if (current.status === "needs_input") {
+            if (current.provider === "grok-bot" || providerSessionId === undefined) return
+            const updated = db
+              .query(
+                `UPDATE tasks SET provider_session_id = ?, updated_at = ?
+                 WHERE id = ? AND status = 'needs_input' AND run_id IS ?`,
+              )
+              .run(providerSessionId, timestamp, taskId, current.runId ?? null)
+            if (updated.changes === 1) saveProviderSession()
+            return
+          }
           if (
             status !== "cancelled" &&
             current.clarifications?.at(-1)?.answer === undefined &&
@@ -1888,13 +1908,15 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                 taskId,
                 current.runId ?? null,
               )
-            if (changed.changes === 1)
+            if (changed.changes === 1) {
+              saveProviderSession()
               recordTaskTraceEvent(
                 taskId,
                 "needs_input",
                 "Worker paused for clarification",
                 timestamp,
               )
+            }
             return
           }
           const updated = db
@@ -1947,14 +1969,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                 : "Target device acknowledged cancellation",
             timestamp,
           )
-          if (current.provider !== "grok-bot" && providerSessionId !== undefined) {
-            db.query(
-              `INSERT INTO provider_sessions (thread_id, device_id, provider, session_id, updated_at)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(thread_id, device_id, provider) DO UPDATE SET
-               session_id = excluded.session_id, updated_at = excluded.updated_at`,
-            ).run(current.threadId, deviceId, current.provider, providerSessionId, timestamp)
-          }
+          saveProviderSession()
           const content = result ?? error
           if (content !== undefined) {
             const role = status === "completed" ? "agent" : "system"
@@ -2017,7 +2032,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       return current
     }
     const timestamp = now()
-    return current.status === "queued" || current.status === "needs_input"
+    return current.status === "queued" ||
+      (current.status === "needs_input" && current.provider === "grok-bot")
       ? yield* transition(
           taskId,
           ["queued", "needs_input"],
@@ -2026,7 +2042,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         )
       : yield* transition(
           taskId,
-          ["assigned", "running"],
+          ["assigned", "running", "needs_input"],
           {
             status: "cancelling",
           },
