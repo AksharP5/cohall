@@ -39,6 +39,17 @@ With a client credential, `doctor` starts Cohall's MCP server and verifies that
 it lists tools. This checks the local server; the agent host still needs a
 working MCP configuration to load it.
 
+A running MCP server checks its launched executable at most once per minute
+when returning tool results. If that file changes to a different Cohall version,
+the next checked result includes a notice to restart the Cohall MCP connection
+in your agent host. Each detected version produces one notice; the tool's
+normal result is preserved. The server does not restart an active session.
+Version probes time out after two seconds and failed probes retry on a later
+tool call. This detects changes to the launched file, including a replaced
+symlink target. It does not check the npm registry or other installations. An
+`npx` session using an unchanged cache path must be restarted to load a newer
+package.
+
 `doctor` also checks the client credential with an authenticated relay request.
 The `client_authentication` result separates rejected credentials and relay
 request failures from an offline device. `client_credential` reports only
