@@ -1,4 +1,4 @@
-import { RelayClient } from "@cohall/client"
+import { RelayClient, RelayRequestError } from "@cohall/client"
 import {
   AuthSessionId,
   AttachmentName,
@@ -770,21 +770,46 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const hasDeviceCredential =
       process.env.COHALL_DEVICE_TOKEN !== undefined || storedCredentials.deviceToken !== undefined
     const deviceId = process.env.COHALL_DEVICE_ID ?? configuration?.deviceId
+    const clientAuthentication =
+      clientToken === undefined
+        ? { status: "not configured" as const }
+        : response?.ok !== true
+          ? { status: "not checked" as const }
+          : await Effect.runPromise(
+              RelayClient.make({ baseUrl: relayUrl, token: clientToken })
+                .devices()
+                .pipe(
+                  Effect.match({
+                    onSuccess: (devices) => ({ status: "ok" as const, devices }),
+                    onFailure: (error) => {
+                      const httpStatus =
+                        error instanceof RelayRequestError ? error.status : undefined
+                      const reason =
+                        httpStatus === 401 || httpStatus === 403
+                          ? "Client credential was rejected by the relay"
+                          : "Client relay check failed"
+                      return {
+                        status: "error" as const,
+                        ...(httpStatus === undefined ? {} : { http_status: httpStatus }),
+                        error: `${reason}: ${error.message}`,
+                      }
+                    },
+                  }),
+                ),
+            )
     const currentDevice =
-      response?.ok !== true || clientToken === undefined || deviceId === undefined
-        ? undefined
-        : await Effect.runPromise(
-            RelayClient.make({ baseUrl: relayUrl, token: clientToken }).devices(),
-          )
-            .then((devices) => devices.find((device) => device.id === deviceId))
-            .catch(() => undefined)
+      clientAuthentication.status === "ok"
+        ? clientAuthentication.devices.find((device) => device.id === deviceId)
+        : undefined
     const versionWarning = deviceVersionWarning(version, currentDevice?.version)
     const warnings = [
       ...(response?.ok === true ? [] : ["Relay is unreachable"]),
       ...(versionWarning === undefined ? [] : [versionWarning]),
       ...(mcp.status === "error" ? [`MCP check failed: ${mcp.error}`] : []),
+      ...(clientAuthentication.status === "error" ? [clientAuthentication.error] : []),
       ...(hasDeviceCredential &&
       response?.ok === true &&
+      clientAuthentication.status !== "error" &&
       currentDevice?.status !== "online" &&
       currentDevice?.status !== "busy"
         ? [
@@ -813,6 +838,8 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       client_credential:
         process.env.COHALL_CLIENT_TOKEN !== undefined ||
         storedCredentials.clientToken !== undefined,
+      client_authentication:
+        clientAuthentication.status === "ok" ? { status: "ok" } : clientAuthentication,
       mcp,
       device_credential: hasDeviceCredential,
       workspaces: configuration?.workspaces ?? [],

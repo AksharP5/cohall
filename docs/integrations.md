@@ -27,6 +27,12 @@ With a client credential, `doctor` starts Cohall's MCP server and verifies that
 it lists tools. This checks the local server; the agent host still needs a
 working MCP configuration to load it.
 
+`doctor` also checks the client credential with an authenticated relay request.
+The `client_authentication` result separates rejected credentials and relay
+request failures from an offline device. `client_credential` reports only
+whether a credential is configured. The authentication check is skipped when
+the relay is unreachable or no client credential is configured.
+
 Any other harness with shell access can invoke the CLI directly. No Cohall UI
 extension is required.
 
