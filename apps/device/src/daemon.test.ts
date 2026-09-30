@@ -17,7 +17,7 @@ import { type AddressInfo } from "node:net"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { WebSocketServer } from "ws"
+import { WebSocketServer, type WebSocket } from "ws"
 import { DeviceConfiguration } from "./config.ts"
 import { performDeviceOperation, runDaemon } from "./daemon.ts"
 import type { UpgradeOptions, UpgradeResult } from "./upgrade.ts"
@@ -71,7 +71,7 @@ afterEach(async () => {
 })
 
 describe("device relay connection", () => {
-  it("cancels a queued resumed run while its older run remains active", async () => {
+  it("replays each run's terminal event without restarting a cancelled turn", async () => {
     const { server, relayUrl } = await startServer()
     const old = Task.make({
       id: makeTaskId(),
@@ -105,7 +105,13 @@ describe("device relay connection", () => {
           : Effect.succeed({ result: "Other done" }),
       )
     const events: Array<SocketEvent> = []
-    server.once("connection", (socket) => {
+    const connections: Array<Array<SocketEvent>> = []
+    const reconnected = Promise.withResolvers<WebSocket>()
+    server.on("connection", (socket) => {
+      const received: Array<SocketEvent> = []
+      connections.push(received)
+      const firstConnection = connections.length === 1
+      if (connections.length === 2) reconnected.resolve(socket)
       const send = (event: SocketEvent) => socket.send(JSON.stringify(event))
       socket.once("message", () =>
         send({
@@ -115,14 +121,21 @@ describe("device relay connection", () => {
           taskClarification: true,
         }),
       )
+      socket.on("close", () => {
+        if (firstConnection) first.resolve({ result: "Old done" })
+      })
       socket.on("message", (message) => {
         const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
         events.push(event)
+        received.push(event)
+        if (!firstConnection) return
         if (event._tag === "DeviceHello") send({ _tag: "TaskAssigned", task: old })
         if (event._tag === "TaskAccepted" && event.taskId === old.id && event.runId === old.runId) {
           send({ _tag: "TaskAssigned", task: resumed })
           send({ _tag: "CancelTask", taskId: old.id, runId: resumedRunId })
-          send({ _tag: "TaskAssigned", task: other })
+        }
+        if (event._tag === "TaskCancelled" && event.runId === resumedRunId) {
+          socket.close()
         }
       })
     })
@@ -135,7 +148,26 @@ describe("device relay connection", () => {
       }),
     )
     expect(provider).toHaveBeenCalledOnce()
-    first.resolve({ result: "Old done" })
+    await vi.waitFor(
+      () => {
+        expect(connections[1]).toContainEqual({
+          _tag: "TaskCancelled",
+          taskId: old.id,
+          runId: resumedRunId,
+        })
+        expect(connections[1]).toContainEqual({
+          _tag: "TaskFinished",
+          taskId: old.id,
+          runId: old.runId,
+          result: "Old done",
+        })
+      },
+      { timeout: 8_000 },
+    )
+    const socket = await reconnected.promise
+    socket.send(JSON.stringify({ _tag: "TaskSettled", taskId: old.id, runId: old.runId }))
+    socket.send(JSON.stringify({ _tag: "TaskAssigned", task: resumed }))
+    socket.send(JSON.stringify({ _tag: "TaskAssigned", task: other }))
     await vi.waitFor(() =>
       expect(
         events.some((event) => event._tag === "TaskFinished" && event.taskId === other.id),
@@ -143,6 +175,21 @@ describe("device relay connection", () => {
     )
     expect(provider).toHaveBeenCalledTimes(2)
     expect(provider.mock.calls[1]?.[0].prompt).toContain("Other task")
+    socket.close()
+    await vi.waitFor(
+      () =>
+        expect(connections[2]).toContainEqual({
+          _tag: "TaskFinished",
+          taskId: other.id,
+          runId: other.runId,
+          result: "Other done",
+        }),
+      { timeout: 8_000 },
+    )
+    expect(connections[2]?.filter((event) => "taskId" in event && event.taskId === old.id)).toEqual(
+      [{ _tag: "TaskCancelled", taskId: old.id, runId: resumedRunId }],
+    )
+    expect(provider).toHaveBeenCalledTimes(2)
   })
 
   it("replays the completed result and file after reconnecting", async () => {
