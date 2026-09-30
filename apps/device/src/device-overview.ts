@@ -33,6 +33,7 @@ export const allDeviceHealth = (devices: ReadonlyArray<Device>, localVersion: st
       providers: device.providers,
       workspaces: device.workspaces.map((workspace) => workspace.path),
       last_seen_at: device.lastSeenAt,
+      ...(device.queue === undefined ? {} : { queue: device.queue }),
       warnings,
     }
   })

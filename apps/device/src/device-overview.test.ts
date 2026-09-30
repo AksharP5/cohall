@@ -43,4 +43,12 @@ describe("all-device summaries", () => {
       warnings: ["No Cohall devices are registered"],
     })
   })
+
+  it("includes current queue health without inventing counts for older relays", () => {
+    const queue = { queued: 2, oldestQueuedAt: device.lastSeenAt }
+    const summaries = allDeviceHealth([Device.make({ ...device, queue }), device], "1.2.3")
+
+    expect(summaries.devices[0]).toHaveProperty("queue", queue)
+    expect(summaries.devices[1]).not.toHaveProperty("queue")
+  })
 })

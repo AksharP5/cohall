@@ -351,6 +351,9 @@ cohall usage
 ```
 
 `doctor --all` reports connectivity, providers, workspaces, and version drift.
+It and `cohall devices` include each device's current queue count and the
+creation time of its oldest queued task. Assigned, running, cancelling, and
+terminal tasks do not count as queued. Queue fields are absent with older relays.
 `usage` reports retained Cohall task activity by device, status, and provider;
 provider token counts and billing are not available to the relay.
 
