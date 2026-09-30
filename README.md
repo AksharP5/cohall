@@ -434,6 +434,7 @@ configuration.
 - [Installation, pairing, providers, and upgrades](docs/install.md)
 - [Grok Bot computer setup, Tailscale, and recovery](docs/grok-bot.md)
 - [Agent skill and MCP integrations](docs/integrations.md)
+- [Muse requester setup and proxy access](docs/muse.md)
 - [Linux, macOS, and Windows services](docs/services.md)
 - [Contributing](CONTRIBUTING.md)
 

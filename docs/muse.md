@@ -4,6 +4,9 @@ Muse can submit tasks to Cohall from a sandbox with shell access, Node.js 24 or
 newer, and an approved network route to your relay. Pair it as a client-only
 requester. Your existing Cohall device workers run the delegated work.
 
+The requester commands have been verified through an authenticated proxy.
+The hosted Muse integration has not been tested end to end.
+
 Cohall has no Muse worker adapter or Muse wake integration. This setup does not
 make Muse a target in `cohall devices` or start a new Muse turn when work arrives.
 
