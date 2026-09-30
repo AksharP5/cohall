@@ -13,6 +13,7 @@ import {
   ThreadId,
   Timestamp,
   isTerminalTask,
+  taskDeadlineError,
   type AuthSession,
 } from "../packages/protocol/src/index.ts"
 import { TaskResult } from "../apps/device/src/delegation.ts"
@@ -850,6 +851,37 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
     expect(
       (await Effect.runPromise(client.traceTask(long.id))).events.map((event) => event.kind),
     ).toEqual(["queued", "assigned", "running", "cancelling", "cancelled"])
+
+    const expiresAt = new Date(Date.now() + 2_000).toISOString()
+    const deadlineTask = Schema.decodeUnknownSync(TaskResult)(
+      JSON.parse(
+        await runCohall(
+          root,
+          [
+            "delegate",
+            "--target",
+            "test-device",
+            "--workspace",
+            root,
+            "--prompt",
+            "LONG_RUNNING",
+            "--deadline",
+            expiresAt,
+            "--no-wait",
+          ],
+          cliEnvironment,
+        ),
+      ),
+    )
+    expect(deadlineTask.expires_at).toBe(expiresAt)
+    expect(
+      await Effect.runPromise(
+        waitForTerminal(client, await Effect.runPromise(client.getTask(deadlineTask.task_id))),
+      ),
+    ).toMatchObject({ status: "failed", error: taskDeadlineError, expiresAt })
+    expect((await Effect.runPromise(client.traceTask(deadlineTask.task_id))).expiresAt).toBe(
+      expiresAt,
+    )
 
     const context = await Effect.runPromise(client.threadContext(queued.thread_id))
     expect(

@@ -137,6 +137,12 @@ If the host ends long commands or does not deliver background output, check
 `status` or `inbox` during subsequent turns. Scheduling and background command
 notifications depend on the host.
 
+When coding work must stop by a fixed time, add
+`--deadline <future-UTC-ISO-timestamp>` to `delegate`. The deadline includes time
+waiting for clarification and survives restarts. Upgrade the requester, relay,
+and worker first. See [task deadlines](integrations.md#task-deadlines) for
+cancellation states and offline behavior.
+
 ## Optional MCP
 
 If your Muse host supports local stdio MCP subprocesses, configure it to launch:

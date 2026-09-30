@@ -4,6 +4,7 @@ import {
   AttachmentName,
   Provider,
   TaskId,
+  TaskDeadline,
   TaskProgressInput,
   TaskRunId,
   RequestTaskInput,
@@ -181,6 +182,12 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
           ),
         wait: z.boolean().default(true),
         timeout_seconds: z.number().int().min(5).max(86_400).default(900),
+        deadline: z
+          .string()
+          .optional()
+          .describe(
+            "Absolute ISO-8601 UTC deadline for coding work, preserved through clarification. Overdue work stops; timeout_seconds only limits waiting.",
+          ),
       },
     },
     async ({
@@ -194,6 +201,7 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
       attachment_paths,
       wait,
       timeout_seconds,
+      deadline,
     }) => {
       const attachments = await readInputAttachments(attachment_paths ?? [])
       const task = await Effect.runPromise(
@@ -206,6 +214,9 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
           ...(parent_task_id === undefined ? {} : { parentTaskId: TaskId.make(parent_task_id) }),
           ...(workspace === undefined ? {} : { workspace }),
           ...(attachments.length === 0 ? {} : { attachments }),
+          ...(deadline === undefined
+            ? {}
+            : { expiresAt: Schema.decodeUnknownSync(TaskDeadline)(deadline) }),
         }),
       )
       const completed = wait

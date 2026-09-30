@@ -207,6 +207,18 @@ export const make = (options: RelayClientOptions): Interface => {
       ),
     createTask: (input) =>
       Effect.gen(function* () {
+        if (input.expiresAt !== undefined) {
+          const health = yield* request(
+            "RelayClient.deadlineSupport",
+            "/api/health",
+            Schema.Struct({ taskDeadlines: Schema.optionalKey(Schema.Boolean) }),
+          )
+          if (health.taskDeadlines !== true)
+            return yield* new RelayRequestError({
+              operation: "RelayClient.createTask",
+              message: "Upgrade the Cohall relay before using task deadlines",
+            })
+        }
         if ((input.attachments?.length ?? 0) > 0) {
           const health = yield* request(
             "RelayClient.attachmentSupport",

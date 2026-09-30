@@ -8,6 +8,8 @@ import {
   TaskProgress,
   TaskClarification,
   TaskRunId,
+  TaskDeadline,
+  type Timestamp,
   type RequestTaskInput,
   ThreadId,
   terminalTaskStatuses,
@@ -41,6 +43,7 @@ export interface DelegateOptions {
   readonly provider?: ProviderName
   readonly parentTaskId?: TaskId
   readonly attachments?: ReadonlyArray<InputAttachment>
+  readonly expiresAt?: Timestamp
 }
 
 export const TaskResult = Schema.Struct({
@@ -55,6 +58,7 @@ export const TaskResult = Schema.Struct({
   inbox_warning: Schema.optionalKey(Schema.String),
   progress: Schema.optionalKey(TaskProgress),
   input_request: Schema.optionalKey(TaskClarification),
+  expires_at: Schema.optionalKey(TaskDeadline),
 })
 export interface TaskResult extends Schema.Schema.Type<typeof TaskResult> {}
 
@@ -132,6 +136,7 @@ export const taskResult = (task: Task): TaskResult => {
     ...(task.botId === undefined ? {} : { bot_id: task.botId }),
     ...(task.result === undefined ? {} : { result: task.result }),
     ...(task.error === undefined ? {} : { error: task.error }),
+    ...(task.expiresAt === undefined ? {} : { expires_at: task.expiresAt }),
     ...(task.progress === undefined ? {} : { progress: task.progress }),
     ...(task.status === "needs_input" && question !== undefined ? { input_request: question } : {}),
   })
@@ -251,6 +256,7 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
     ...(provider === undefined ? {} : { provider }),
     ...(parentTaskId === undefined ? {} : { parentTaskId }),
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
+    ...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }),
   })
 })
 

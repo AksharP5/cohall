@@ -61,6 +61,35 @@ tasks and Bot turns using a run ID remain queued while the worker lacks
 clarification support. Inbox checks
 and waits poll the relay; Cohall does not wake a requester to deliver a question.
 
+## Task deadlines
+
+`--timeout` and MCP `timeout_seconds` limit how long the requester waits.
+To stop coding work at a fixed time, give `delegate` a future UTC timestamp:
+
+```bash
+cohall delegate --target @linux --no-wait \
+  --deadline 2030-01-01T18:00:00Z \
+  --prompt 'Run the test suite and report failures.'
+```
+
+MCP `delegate` accepts `deadline` in the same format. HTTP `POST /api/tasks`
+accepts `expiresAt`. Task results return `expires_at`; relay task records and
+traces use `expiresAt`. Omit the field for work without a deadline.
+
+The deadline covers queueing, execution, and time awaiting clarification.
+Restarting or resuming a task keeps its original deadline. An expired task
+fails with `Task deadline exceeded` after termination is confirmed. Tasks that
+have been dispatched can stay `cancelling` until the worker confirms it. An offline worker
+acknowledges after reconnecting; its local timer stops active coding work even
+while disconnected. A manual cancellation requested before the deadline still
+finishes as `cancelled`.
+
+Upgrade the requester, relay, and target worker before using deadlines. Cohall
+rejects older relays and targets that do not advertise deadline support. Saved
+deadline tasks stay queued if their worker is downgraded, and still expire.
+Deadlines apply to coding providers only. The Grok Bot gateway cannot safely
+stop a specific turn, so Bot deadline requests are rejected.
+
 ## Worker progress
 
 Workers can report a brief milestone with `cohall progress --message "Running

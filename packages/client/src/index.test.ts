@@ -3,7 +3,7 @@ import { type AddressInfo } from "node:net"
 import { Effect } from "effect"
 import { expect, it } from "vitest"
 import { make } from "./index.ts"
-import { RequestTaskInput, TaskProgressInput, makeTaskId } from "@cohall/protocol"
+import { RequestTaskInput, TaskProgressInput, Timestamp, makeTaskId } from "@cohall/protocol"
 import { Schema } from "effect"
 
 it("refuses progress and clarification updates against older relays", async () => {
@@ -45,6 +45,15 @@ it("refuses progress and clarification updates against older relays", async () =
     ).rejects.toMatchObject({
       message: "Upgrade the Cohall relay before requesting clarification",
     })
+    expect(posted).toBe(false)
+    await expect(
+      Effect.runPromise(
+        client.createTask({
+          prompt: "Deadline",
+          expiresAt: Timestamp.make("2100-01-01T00:00:00Z"),
+        }),
+      ),
+    ).rejects.toMatchObject({ message: "Upgrade the Cohall relay before using task deadlines" })
     expect(posted).toBe(false)
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))

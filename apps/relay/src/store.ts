@@ -39,6 +39,8 @@ import {
   maxAttachmentBytes,
   maxTaskAttachments,
   maxTaskClarifications,
+  taskDeadlinePassed,
+  taskDeadlineError,
   now,
   taskSlot,
   type AuthSessionId,
@@ -71,6 +73,11 @@ export class TaskProgressError extends Schema.TaggedErrorClass<TaskProgressError
 export class TaskInputError extends Schema.TaggedErrorClass<TaskInputError>()(
   "RelayStore.TaskInputError",
   { status: Schema.Literals([403, 409]), message: Schema.String },
+) {}
+
+export class TaskDeadlineError extends Schema.TaggedErrorClass<TaskDeadlineError>()(
+  "RelayStore.TaskDeadlineError",
+  { status: Schema.Literals([400, 409]), message: Schema.String },
 ) {}
 
 interface ThreadRow {
@@ -133,6 +140,7 @@ interface TaskRow {
   readonly updated_at: string
   readonly started_at: string | null
   readonly completed_at: string | null
+  readonly expires_at: string | null
   readonly progress_note: string | null
   readonly progress_at: string | null
 }
@@ -226,7 +234,8 @@ export interface Interface {
     targetDeviceId: DeviceId,
     principal: AuthSession | "owner",
     providerSessionId?: string,
-  ) => Effect.Effect<Task, PersistenceError>
+  ) => Effect.Effect<Task, PersistenceError | TaskDeadlineError>
+  readonly expireTasks: () => Effect.Effect<ReadonlyArray<Task>, PersistenceError>
   readonly inboxFor: (
     principal: AuthSession | "owner",
   ) => Effect.Effect<TaskInbox, PersistenceError>
@@ -432,6 +441,7 @@ const taskFromRow = (db: Database, row: TaskRow): Effect.Effect<Task, Persistenc
         targetDeviceId: row.target_device_id,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        ...(row.expires_at === null ? {} : { expiresAt: row.expires_at }),
         ...(row.context === null ? {} : { context: row.context }),
         ...(row.source_device_id === null ? {} : { sourceDeviceId: row.source_device_id }),
         ...(row.parent_task_id === null ? {} : { parentTaskId: row.parent_task_id }),
@@ -828,6 +838,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       ...(task.workspace === undefined ? {} : { workspace: task.workspace }),
       ...(task.startedAt === undefined ? {} : { startedAt: task.startedAt }),
       ...(task.completedAt === undefined ? {} : { completedAt: task.completedAt }),
+      ...(task.expiresAt === undefined ? {} : { expiresAt: task.expiresAt }),
       ...(task.error === undefined ? {} : { error: task.error }),
       ...(task.progress === undefined ? {} : { progress: task.progress }),
       ...(task.clarifications === undefined ? {} : { clarifications: task.clarifications }),
@@ -1321,6 +1332,18 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     principal: AuthSession | "owner",
     providerSessionId?: string,
   ) {
+    if (input.expiresAt !== undefined) {
+      if (input.provider === "grok-bot" || input.botId !== undefined)
+        return yield* new TaskDeadlineError({
+          status: 400,
+          message: "Task deadlines require a coding provider",
+        })
+      if (taskDeadlinePassed(input))
+        return yield* new TaskDeadlineError({
+          status: 400,
+          message: "Task deadline must be in the future",
+        })
+    }
     const requesterId = principal === "owner" ? "owner" : principal.id
     const boundDeviceId = principal === "owner" ? undefined : principal.deviceId
     const sourceDeviceId = yield* Effect.try({
@@ -1345,6 +1368,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       targetDeviceId,
       createdAt: timestamp,
       updatedAt: timestamp,
+      ...(input.expiresAt === undefined
+        ? {}
+        : { expiresAt: Timestamp.make(new Date(input.expiresAt).toISOString()) }),
       ...(input.context === undefined ? {} : { context: input.context }),
       ...(sourceDeviceId === undefined ? {} : { sourceDeviceId }),
       ...(input.parentTaskId === undefined ? {} : { parentTaskId: input.parentTaskId }),
@@ -1400,8 +1426,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             `INSERT INTO tasks (
               id, thread_id, prompt, context, provider, status, source_device_id,
               requester_id, target_device_id, parent_task_id, workspace,
-              provider_session_id, bot_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              provider_session_id, bot_id, created_at, updated_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             task.id,
             task.threadId,
@@ -1418,6 +1444,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             task.botId ?? null,
             task.createdAt,
             task.updatedAt,
+            task.expiresAt ?? null,
           )
           for (const attachment of input.attachments ?? []) {
             const data = Buffer.from(attachment.data, "base64")
@@ -1570,8 +1597,43 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return yield* getTask(taskId)
   })
 
+  const expireTask = Effect.fn("RelayStore.expireTask")(function* (task: Task) {
+    if (
+      !taskDeadlinePassed(task) ||
+      ["cancelling", "completed", "failed", "cancelled"].includes(task.status)
+    )
+      return task
+    const neverDispatched = task.status === "queued" && task.runId === undefined
+    return yield* transition(
+      task.id,
+      [task.status],
+      {
+        status: neverDispatched ? "failed" : "cancelling",
+        error: taskDeadlineError,
+        ...(neverDispatched ? { completedAt: now() } : {}),
+      },
+      { kind: neverDispatched ? "failed" : "cancelling", detail: taskDeadlineError },
+    )
+  })
+
+  const expireTasks = Effect.fn("RelayStore.expireTasks")(function* () {
+    const rows = yield* Effect.try({
+      try: () =>
+        db
+          .query<TaskRow, [string]>(
+            `SELECT * FROM tasks WHERE expires_at <= ? AND status IN ('queued', 'assigned', 'running', 'needs_input')
+         ORDER BY expires_at, id LIMIT 100`,
+          )
+          .all(now()),
+      catch: operationError("RelayStore.expireTasks"),
+    })
+    return yield* Effect.forEach(rows, (row) =>
+      taskFromRow(db, row).pipe(Effect.flatMap(expireTask)),
+    )
+  })
+
   const assignTask = Effect.fn("RelayStore.assignTask")(function* (taskId: TaskId) {
-    const current = yield* getTask(taskId)
+    const current = yield* getTask(taskId).pipe(Effect.flatMap(expireTask))
     if (current.status !== "queued") {
       return current
     }
@@ -1693,6 +1755,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         message: "Only the target device can request input",
       })
     }
+    if (taskDeadlinePassed(task))
+      return yield* new TaskInputError({ status: 409, message: taskDeadlineError })
     if (task.status !== "running" || task.runId !== input.runId) {
       return yield* new TaskInputError({
         status: 409,
@@ -1781,6 +1845,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         message: "Only the original requester or relay owner can answer",
       })
     }
+    if (taskDeadlinePassed(task))
+      return yield* new TaskInputError({ status: 409, message: taskDeadlineError })
     const history = task.clarifications ?? []
     const question = history.at(-1)
     if (
@@ -1865,6 +1931,12 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     ) {
       return current
     }
+    if (taskDeadlinePassed(current) && status !== "cancelled") return yield* expireTask(current)
+    const deadlineExpired =
+      taskDeadlinePassed(current) &&
+      (current.status !== "cancelling" || current.error === taskDeadlineError)
+    const finalStatus = status === "cancelled" && deadlineExpired ? "failed" : status
+    const finalError = finalStatus === "failed" && deadlineExpired ? taskDeadlineError : error
     const timestamp = now()
     yield* Effect.try({
       try: () =>
@@ -1878,7 +1950,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                session_id = excluded.session_id, updated_at = excluded.updated_at`,
             ).run(current.threadId, deviceId, current.provider, providerSessionId, timestamp)
           }
-          if (current.status === "needs_input") {
+          if (current.status === "needs_input" && status !== "cancelled") {
             if (current.provider === "grok-bot" || providerSessionId === undefined) return
             const updated = db
               .query(
@@ -1924,19 +1996,21 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             .query(
               `UPDATE tasks SET status = ?, result = ?, error = ?, provider_session_id = ?,
              completed_at = ?, updated_at = ?, progress_note = NULL, progress_at = NULL WHERE id = ?
-             AND status NOT IN ('needs_input', 'completed', 'failed', 'cancelled')
+             AND status NOT IN ('completed', 'failed', 'cancelled')
+             AND (status <> 'needs_input' OR ? = 'cancelled')
              AND (status <> 'cancelling' OR ? = 'cancelled') AND run_id IS ?`,
             )
             .run(
-              status,
+              finalStatus,
               result ?? null,
-              error ?? null,
+              finalError ?? null,
               current.provider === "grok-bot"
                 ? null
                 : (providerSessionId ?? current.providerSessionId ?? null),
               timestamp,
               timestamp,
               taskId,
+              status,
               status,
               current.runId ?? null,
             )
@@ -1946,7 +2020,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           db.query("DELETE FROM task_attachments WHERE task_id = ? AND direction = 'output'").run(
             taskId,
           )
-          if (status === "completed") {
+          if (finalStatus === "completed") {
             if ((attachments?.length ?? 0) > maxTaskAttachments) {
               throw new Error(`A task supports at most ${maxTaskAttachments} output files`)
             }
@@ -1964,18 +2038,18 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           }
           recordTaskTraceEvent(
             taskId,
-            status,
-            status === "completed"
+            finalStatus,
+            finalStatus === "completed"
               ? "Target device completed the task"
-              : status === "failed"
+              : finalStatus === "failed"
                 ? "Target device reported a task failure"
                 : "Target device acknowledged cancellation",
             timestamp,
           )
           saveProviderSession()
-          const content = result ?? error
+          const content = result ?? finalError
           if (content !== undefined) {
-            const role = status === "completed" ? "agent" : "system"
+            const role = finalStatus === "completed" ? "agent" : "system"
             db.query(
               `INSERT INTO messages (
                 id, thread_id, role, kind, author_id, author_name, content, created_at,
@@ -1985,9 +2059,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
               makeMessageId(),
               current.threadId,
               role,
-              status === "failed" ? "error" : "chat",
+              finalStatus === "failed" ? "error" : "chat",
               deviceId,
-              status === "completed" ? providerName(current.provider) : "Cohall",
+              finalStatus === "completed" ? providerName(current.provider) : "Cohall",
               content,
               timestamp,
               taskId,
@@ -2272,6 +2346,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     heartbeat: (deviceId, status, bots) => updateDeviceStatus(deviceId, status, bots),
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
     createDelegation,
+    expireTasks,
     getTask,
     reportTaskProgress,
     requestTaskInput,
@@ -2387,7 +2462,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           workspace TEXT, provider_session_id TEXT, result TEXT, error TEXT,
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT,
           dispatched_at TEXT, progress_note TEXT, progress_at TEXT,
-          run_id TEXT, clarifications_json TEXT
+          run_id TEXT, clarifications_json TEXT, expires_at TEXT
         );
         CREATE INDEX IF NOT EXISTS tasks_thread_created ON tasks(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS tasks_target_status ON tasks(target_device_id, status);
@@ -2440,6 +2515,11 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         db.exec("ALTER TABLE devices ADD COLUMN bots_json TEXT")
       }
       const taskColumns = db.query<{ readonly name: string }, []>("PRAGMA table_info(tasks)").all()
+      if (!taskColumns.some((column) => column.name === "expires_at"))
+        db.exec("ALTER TABLE tasks ADD COLUMN expires_at TEXT")
+      db.exec(
+        "CREATE INDEX IF NOT EXISTS tasks_pending_deadline ON tasks(expires_at) WHERE status IN ('queued', 'assigned', 'running', 'needs_input')",
+      )
       if (!taskColumns.some((column) => column.name === "run_id"))
         db.exec("ALTER TABLE tasks ADD COLUMN run_id TEXT")
       if (!taskColumns.some((column) => column.name === "clarifications_json"))
