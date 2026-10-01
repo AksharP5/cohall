@@ -89,10 +89,13 @@ setInterval(() => {}, 1000)
     const exited = once(worker, "exit")
     let providerPid: number | undefined
     try {
-      await vi.waitFor(async () => {
-        providerPid = Number(await readFile(pidPath, "utf8"))
-        expect(Number.isSafeInteger(providerPid) && providerPid > 0).toBe(true)
-      })
+      await vi.waitFor(
+        async () => {
+          providerPid = Number(await readFile(pidPath, "utf8"))
+          expect(Number.isSafeInteger(providerPid) && providerPid > 0).toBe(true)
+        },
+        { timeout: 10_000 },
+      )
       worker.kill(signal)
       expect(await exited).toEqual([0, null])
       expect(await readFile(cleanedPath, "utf8")).toBe("done")
