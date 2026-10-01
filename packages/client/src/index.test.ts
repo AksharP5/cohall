@@ -1,7 +1,7 @@
 import { createServer } from "node:http"
 import { type AddressInfo } from "node:net"
 import { Effect } from "effect"
-import { expect, it } from "vitest"
+import { expect, it, vi } from "vitest"
 import { make } from "./index.ts"
 import {
   RequestTaskInput,
@@ -11,6 +11,43 @@ import {
   makeTaskId,
 } from "@cohall/protocol"
 import { Schema } from "effect"
+
+it.each([200, 503])("closes a partial %s response when its caller cancels", async (status) => {
+  const headersReceived = Promise.withResolvers<void>()
+  const originalFetch = globalThis.fetch
+  let responseClosed = false
+  const server = createServer((_request, response) => {
+    response.once("close", () => {
+      responseClosed = true
+    })
+    response.writeHead(status, { "content-type": "application/json" })
+    response.write("{")
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const controller = new AbortController()
+  try {
+    const address = server.address()
+    if (address === null || typeof address === "string") throw new Error("Missing test port")
+    vi.stubGlobal("fetch", async (...arguments_: Parameters<typeof fetch>) => {
+      const response = await originalFetch(...arguments_)
+      headersReceived.resolve()
+      return response
+    })
+    const client = make({ baseUrl: `http://127.0.0.1:${address.port}`, token: "test" })
+    const running = Effect.runPromise(client.getTask(makeTaskId()), { signal: controller.signal })
+    const rejected = expect(running).rejects.toBeDefined()
+    await headersReceived.promise
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    controller.abort()
+    await rejected
+    await vi.waitFor(() => expect(responseClosed).toBe(true))
+  } finally {
+    controller.abort()
+    vi.unstubAllGlobals()
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
 
 it("refuses progress, clarification, and keyed submissions against older relays", async () => {
   let posted = false
