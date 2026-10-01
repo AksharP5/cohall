@@ -666,6 +666,15 @@ const connect = (
           perMessageDeflate: false,
           allowSynchronousEvents: false,
         })
+        let closed = false
+        let connectionDeadline = setTimeout(() => socket.terminate(), 10_000)
+        const resetConnectionDeadline = (): void => {
+          if (closed || state.socket !== socket) return
+          clearTimeout(connectionDeadline)
+          // The relay pings every 30 seconds; allow another 15 seconds for delivery.
+          connectionDeadline = setTimeout(() => socket.terminate(), 45_000)
+        }
+        socket.on("ping", resetConnectionDeadline)
         let bots: ReadonlyArray<Bot> = []
         let refreshing = false
         const refreshBots = async (): Promise<void> => {
@@ -703,13 +712,13 @@ const connect = (
           )
           void refreshBots()
         }, 15_000)
-        let closed = false
         let queuedMessages = 0
         const close = (): void => {
           if (closed) {
             return
           }
           closed = true
+          clearTimeout(connectionDeadline)
           clearInterval(heartbeat)
           if (state.socket === socket) {
             state.socket = undefined
@@ -719,7 +728,7 @@ const connect = (
         signal.addEventListener(
           "abort",
           () => {
-            socket.close()
+            socket.terminate()
             close()
           },
           { once: true },
@@ -757,6 +766,7 @@ const connect = (
                 state.supportsAttachments = event.taskAttachments === true
                 state.supportsClarification = event.taskClarification === true
                 state.socket = socket
+                resetConnectionDeadline()
                 socket.send(
                   JSON.stringify(
                     SocketEvent.make({
