@@ -17,6 +17,12 @@ The relay's data directory must be persistent. Cohall uses at-least-once deliver
 work interrupted during execution can run again after recovery, so consequential
 tasks should be idempotent.
 
+On macOS and Linux, `cohall device` handles SIGINT and SIGTERM by stopping active
+coding providers and waiting for their process cleanup. It starts no queued work
+during shutdown. Forced termination, including SIGKILL, cannot run that cleanup;
+a custom supervisor must stop the worker's entire process tree. The Linux
+systemd service does this through its default control-group termination.
+
 ## Linux device daemon
 
 Install and pair as the user that will run the daemon:

@@ -43,13 +43,17 @@ export class DeviceConnectionError extends Schema.TaggedErrorClass<DeviceConnect
 
 interface State {
   socket: WebSocket | undefined
+  stopping: boolean
   supportsAttachments: boolean
   supportsClarification: boolean
   processing: Promise<void>
   readonly terminal: Map<string, TaskTerminalEvent>
   readonly queue: Array<Task>
   readonly sessions: Map<string, string>
-  readonly tasks: Map<TaskId, { readonly task: Task; readonly controller: AbortController }>
+  readonly tasks: Map<
+    TaskId,
+    { readonly task: Task; readonly controller: AbortController; readonly done: Promise<void> }
+  >
   readonly completed: Set<string>
   operation: DeviceOperation | undefined
   readonly operationQueue: Array<DeviceOperation>
@@ -333,7 +337,7 @@ const hasCompletedRun = (state: State, task: Task): boolean =>
   state.completed.has(taskRunKey(task.id, task.runId))
 
 const drain = (configuration: DeviceConfiguration, state: State): void => {
-  if (state.operation !== undefined) {
+  if (state.stopping || state.operation !== undefined) {
     return
   }
   if (state.tasks.size === 0) {
@@ -361,7 +365,6 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
     return
   }
   const controller = new AbortController()
-  state.tasks.set(task.id, { task, controller })
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined
   const enforceDeadline = (): void => {
     if (task.expiresAt === undefined) return
@@ -457,7 +460,7 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
     }).pipe(Effect.ensuring(Effect.promise(() => workspace.close().catch(() => undefined))))
   })
 
-  void Effect.runPromise(workflow, { signal: controller.signal })
+  const done = Effect.runPromise(workflow, { signal: controller.signal })
     .then((result) => {
       let finished: TaskTerminalEvent
       if (result.question !== undefined) {
@@ -517,6 +520,7 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
       state.tasks.delete(task.id)
       drain(configuration, state)
     })
+  state.tasks.set(task.id, { task, controller, done })
 }
 
 const executeOperation = (
@@ -565,6 +569,7 @@ const scheduleOperation = (
   state: State,
   operation: DeviceOperation,
 ): void => {
+  if (state.stopping) return
   if (
     state.completedOperations.has(operation.id) ||
     state.operation?.id === operation.id ||
@@ -597,6 +602,7 @@ export const performDeviceOperation = (
   }).then((result) => JSON.stringify(result))
 
 const schedule = (configuration: DeviceConfiguration, state: State, task: Task): void => {
+  if (state.stopping) return
   if (
     (state.tasks.get(task.id)?.task.runId === task.runId && state.tasks.has(task.id)) ||
     hasCompletedRun(state, task) ||
@@ -827,6 +833,7 @@ export const runDaemon = (
 ): Effect.Effect<void, DeviceConnectionError> => {
   const state: State = {
     socket: undefined,
+    stopping: false,
     supportsAttachments: false,
     supportsClarification: false,
     processing: Promise.resolve(),
@@ -843,11 +850,14 @@ export const runDaemon = (
   return connect(configuration, state).pipe(
     Effect.repeat({ schedule: Schedule.spaced("2 seconds") }),
     Effect.ensuring(
-      Effect.sync(() => {
+      Effect.promise(async () => {
+        state.stopping = true
         state.socket?.close()
-        for (const { controller } of state.tasks.values()) {
+        const running = [...state.tasks.values()]
+        for (const { controller } of running) {
           controller.abort()
         }
+        await Promise.allSettled(running.map(({ done }) => done))
       }),
     ),
   )
