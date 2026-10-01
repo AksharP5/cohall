@@ -35,7 +35,20 @@ const main = async (): Promise<void> => {
   }
   if (command === "device") {
     const configuration = await Effect.runPromise(loadDeviceConfiguration)
-    await Effect.runPromise(runDaemon(configuration))
+    const controller = new AbortController()
+    const stop = () => controller.abort()
+    process.on("SIGINT", stop)
+    process.on("SIGTERM", stop)
+    try {
+      await Effect.runPromise(runDaemon(configuration), { signal: controller.signal }).catch(
+        (cause: unknown) => {
+          if (!controller.signal.aborted) throw cause
+        },
+      )
+    } finally {
+      process.off("SIGINT", stop)
+      process.off("SIGTERM", stop)
+    }
     return
   }
   if (command === "mcp") {
