@@ -272,6 +272,7 @@ const prepareCommand = async (options: RunOptions): Promise<PreparedCommand> => 
 const forEachJsonEvent = async (
   stdout: Readable,
   onEvent: (event: JsonRecord) => void,
+  onOversized: () => void,
 ): Promise<void> => {
   const limit = 1024 * 1024
   let chunks: Array<Buffer> = []
@@ -295,6 +296,7 @@ const forEachJsonEvent = async (
   const emit = (): void => {
     if (oversized) {
       oversized = false
+      onOversized()
       return
     }
     const line = Buffer.concat(chunks, size).toString("utf8")
@@ -328,18 +330,30 @@ const forEachJsonEvent = async (
 const parseCodex = async (stdout: Readable, existingSession?: string): Promise<RunResult> => {
   let result = ""
   let sessionId = existingSession
-  await forEachJsonEvent(stdout, (event) => {
-    if (text(event.type) === "thread.started") {
-      sessionId = text(event.thread_id) ?? sessionId
-    }
-    if (text(event.type) !== "item.completed") {
-      return
-    }
-    const item = record(event.item)
-    if (text(item?.type) === "agent_message") {
-      result = text(item?.text) ?? text(item?.content) ?? result
-    }
-  })
+  let discardedEvent = false
+  await forEachJsonEvent(
+    stdout,
+    (event) => {
+      if (text(event.type) === "thread.started") {
+        sessionId = text(event.thread_id) ?? sessionId
+      }
+      if (text(event.type) !== "item.completed") {
+        return
+      }
+      const item = record(event.item)
+      if (text(item?.type) === "agent_message") {
+        const content = text(item?.text) ?? text(item?.content)
+        result = content ?? result
+        if (content !== undefined && content.length > 0) discardedEvent = false
+      }
+    },
+    () => {
+      discardedEvent = true
+    },
+  )
+  if (discardedEvent) {
+    throw new Error("Provider JSON event exceeded 1 MiB without a later text response")
+  }
   return {
     result: result || "Codex completed the task without a text response.",
     ...(sessionId === undefined ? {} : { sessionId }),
@@ -384,22 +398,34 @@ const openCodeError = (event: JsonRecord): string | undefined => {
 const parseOpenCode = async (stdout: Readable, existingSession?: string): Promise<RunResult> => {
   let result = ""
   let sessionId = existingSession
-  await forEachJsonEvent(stdout, (event) => {
-    const failure = openCodeError(event)
-    if (failure !== undefined) {
-      throw new Error(failure)
-    }
-    sessionId =
-      text(event.sessionID) ??
-      text(event.sessionId) ??
-      text(event.session_id) ??
-      text(record(event.info)?.sessionID) ??
-      sessionId
-    const content = textFromPart(event.part) ?? textFromPart(event) ?? text(event.result)
-    if (content !== undefined && content.length > 0) {
-      result = content
-    }
-  })
+  let discardedEvent = false
+  await forEachJsonEvent(
+    stdout,
+    (event) => {
+      const failure = openCodeError(event)
+      if (failure !== undefined) {
+        throw new Error(failure)
+      }
+      sessionId =
+        text(event.sessionID) ??
+        text(event.sessionId) ??
+        text(event.session_id) ??
+        text(record(event.info)?.sessionID) ??
+        sessionId
+      if (text(event.type) !== "text") return
+      const content = textFromPart(event.part) ?? textFromPart(event) ?? text(event.result)
+      if (content !== undefined && content.length > 0) {
+        result = content
+        discardedEvent = false
+      }
+    },
+    () => {
+      discardedEvent = true
+    },
+  )
+  if (discardedEvent) {
+    throw new Error("Provider JSON event exceeded 1 MiB without a later text response")
+  }
   if (result.length === 0) {
     throw new Error(
       "OpenCode produced no result; verify its authentication and use a supported project workspace",
