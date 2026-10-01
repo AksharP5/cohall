@@ -11,10 +11,17 @@ import {
   Timestamp,
   type CreateTaskInput,
 } from "@cohall/protocol"
-import { Effect } from "effect"
+import { Effect, Fiber } from "effect"
+import { TestClock } from "effect/testing"
 import { describe, expect, it, vi } from "vitest"
 import { ClientConfiguration } from "./config.ts"
-import { acknowledgedTaskResult, createDelegation, listBots, taskResult } from "./delegation.ts"
+import {
+  acknowledgedTaskResult,
+  createDelegation,
+  listBots,
+  taskResult,
+  waitForTask,
+} from "./delegation.ts"
 
 const timestamp = Timestamp.make("2026-08-09T12:00:00.000Z")
 const device = Device.make({
@@ -80,6 +87,60 @@ const client = (devices: ReadonlyArray<Device> = [device], tasks: ReadonlyArray<
     ),
   ),
 })
+
+it.each(["initial lookup", "poll"] as const)(
+  "times out and interrupts an unfinished %s",
+  async (phase) => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        let polls = 0
+        let failure: unknown
+        let interrupted = false
+        const relay = {
+          ...client(),
+          getTask: () => {
+            polls += 1
+            if (phase === "poll" && polls === 1)
+              return Effect.succeed(Task.make({ ...task, status: "running" }))
+            return Effect.never.pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  interrupted = true
+                }),
+              ),
+            )
+          },
+        }
+        const initial =
+          phase === "initial lookup" ? task.id : Task.make({ ...task, status: "queued" })
+        const waiting = yield* waitForTask(relay, initial, 5).pipe(
+          Effect.tapError((cause) =>
+            Effect.sync(() => {
+              failure = cause
+            }),
+          ),
+          Effect.ignore,
+          Effect.forkChild,
+        )
+        yield* TestClock.adjust("5 seconds")
+        expect(failure).toMatchObject({
+          _tag: "Cohall.TaskWaitTimeoutError",
+          taskId: task.id,
+        })
+        if (phase === "initial lookup") {
+          expect(failure).not.toHaveProperty("status")
+          expect(failure).toMatchObject({
+            message: expect.stringContaining("did not return its status"),
+          })
+        } else {
+          expect(failure).toMatchObject({ status: "running" })
+        }
+        expect(interrupted).toBe(true)
+        yield* Fiber.join(waiting)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+  },
+)
 
 it("requires an explicit target or provider for keyed thread follow-ups", async () => {
   const relay = client([], [task])

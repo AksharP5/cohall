@@ -32,7 +32,7 @@ export class DeviceSelectionError extends Schema.TaggedErrorClass<DeviceSelectio
 
 export class TaskWaitTimeoutError extends Schema.TaggedErrorClass<TaskWaitTimeoutError>()(
   "Cohall.TaskWaitTimeoutError",
-  { message: Schema.String, taskId: TaskId, status: TaskStatus },
+  { message: Schema.String, taskId: TaskId, status: Schema.optionalKey(TaskStatus) },
 ) {}
 
 export interface DelegateOptions {
@@ -300,23 +300,32 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
 
 export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
   client: RelayClient,
-  initial: Task,
+  initial: Task | TaskId,
   timeoutSeconds: number,
 ) {
-  const deadline = Date.now() + timeoutSeconds * 1_000
-  let task = initial
-  while (!isTerminalTask(task) && task.status !== "needs_input") {
-    if (Date.now() >= deadline) {
-      return yield* new TaskWaitTimeoutError({
-        message: `Task ${task.id} is still ${task.status} after ${timeoutSeconds} seconds`,
-        taskId: task.id,
-        status: task.status,
-      })
+  const id = typeof initial === "string" ? initial : initial.id
+  let task = typeof initial === "string" ? undefined : initial
+  return yield* Effect.gen(function* () {
+    if (task === undefined) task = yield* client.getTask(id)
+    while (!isTerminalTask(task) && task.status !== "needs_input") {
+      yield* Effect.sleep("1 second")
+      task = yield* client.getTask(id)
     }
-    yield* Effect.sleep("1 second")
-    task = yield* client.getTask(task.id)
-  }
-  return task
+    return task
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: timeoutSeconds * 1_000,
+      orElse: () =>
+        new TaskWaitTimeoutError({
+          message:
+            task === undefined
+              ? `Task ${id} did not return its status after ${timeoutSeconds} seconds`
+              : `Task ${id} is still ${task.status} after ${timeoutSeconds} seconds`,
+          taskId: id,
+          ...(task === undefined ? {} : { status: task.status }),
+        }),
+    }),
+  )
 })
 
 export const followTaskTrace = Effect.fn("Cohall.followTaskTrace")(function* (

@@ -337,9 +337,12 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
       },
     },
     async ({ task_id, timeout_seconds }, { signal }) => {
-      const task = await Effect.runPromise(client.getTask(TaskId.make(task_id)), { signal })
       return output(
-        taskResult(await Effect.runPromise(waitForTask(client, task, timeout_seconds), { signal })),
+        taskResult(
+          await Effect.runPromise(waitForTask(client, TaskId.make(task_id), timeout_seconds), {
+            signal,
+          }),
+        ),
       )
     },
   )

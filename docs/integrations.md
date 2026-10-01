@@ -107,6 +107,8 @@ and waits poll the relay; Cohall does not wake a requester to deliver a question
 ## Task deadlines
 
 `--timeout` and MCP `timeout_seconds` limit how long the requester waits.
+The limit covers task-status lookup and polling, including slow responses.
+Timing out stops the wait; accepted work continues and later completions stay in the inbox.
 To stop coding work at a fixed time, give `delegate` a future UTC timestamp:
 
 ```bash
