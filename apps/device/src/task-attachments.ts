@@ -91,37 +91,44 @@ export interface TaskFiles {
   readonly output: string
   readonly inputNames: ReadonlyArray<string>
   readonly collectOutputs: () => Promise<ReadonlyArray<InputAttachment>>
-  readonly cleanup: () => Promise<void>
 }
 
-export const prepareTaskFiles = async (
+export const prepareTaskFiles = Effect.fn("TaskFiles.prepare")(function* (
   configuration: DeviceConfiguration,
   taskId: TaskId,
   inputNames: ReadonlyArray<AttachmentName>,
-  signal: AbortSignal,
-): Promise<TaskFiles> => {
+) {
   const client = RelayClient.make({ baseUrl: configuration.relayUrl, token: configuration.token })
-  const root = await mkdtemp(join(tmpdir(), "cohall-task-"))
+  const root = yield* Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () => mkdtemp(join(tmpdir(), "cohall-task-")),
+      catch: (cause) => cause,
+    }),
+    (root) => Effect.promise(() => rm(root, { recursive: true, force: true })),
+  )
   const input = join(root, "input")
   const output = join(root, "output")
-  try {
-    await Promise.all([mkdir(input), mkdir(output)])
-    for (const name of inputNames) {
-      const data = await Effect.runPromise(client.readAttachment(taskId, name), { signal })
-      await writeFile(join(input, name), data, { flag: "wx", mode: 0o600 })
-    }
-    return {
-      input,
-      output,
-      inputNames,
-      collectOutputs: () => collectOutputs(output),
-      cleanup: () => rm(root, { recursive: true, force: true }),
-    }
-  } catch (cause) {
-    await rm(root, { recursive: true, force: true })
-    throw cause
+  // Filesystem operations must finish before the scope can remove their directory.
+  yield* Effect.tryPromise({ try: () => mkdir(input), catch: (cause) => cause }).pipe(
+    Effect.uninterruptible,
+  )
+  yield* Effect.tryPromise({ try: () => mkdir(output), catch: (cause) => cause }).pipe(
+    Effect.uninterruptible,
+  )
+  for (const name of inputNames) {
+    const data = yield* client.readAttachment(taskId, name)
+    yield* Effect.tryPromise({
+      try: () => writeFile(join(input, name), data, { flag: "wx", mode: 0o600 }),
+      catch: (cause) => cause,
+    }).pipe(Effect.uninterruptible)
   }
-}
+  return {
+    input,
+    output,
+    inputNames,
+    collectOutputs: () => collectOutputs(output),
+  }
+})
 
 const collectOutputs = async (directory: string): Promise<ReadonlyArray<InputAttachment>> => {
   const entries = await readdir(directory, { withFileTypes: true })

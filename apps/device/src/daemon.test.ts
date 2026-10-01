@@ -1,5 +1,6 @@
 import {
   DeviceId,
+  AttachmentName,
   BotId,
   DeviceOperation,
   OperationId,
@@ -12,10 +13,13 @@ import {
   now,
 } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
+import { RelayClient } from "@cohall/client"
 import * as Providers from "@cohall/providers"
 import { type AddressInfo } from "node:net"
+import Filesystem from "node:fs/promises"
 import { writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { syncBuiltinESMExports } from "node:module"
+import { basename, dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer, type WebSocket } from "ws"
 import { DeviceConfiguration } from "./config.ts"
@@ -68,9 +72,134 @@ afterEach(async () => {
     ),
   )
   vi.restoreAllMocks()
+  syncBuiltinESMExports()
 })
 
 describe("device relay connection", () => {
+  it.each([
+    { phase: "mkdir", stopping: "cancel" },
+    { phase: "writeFile", stopping: "cancel" },
+    { phase: "mkdir", stopping: "shutdown" },
+    { phase: "writeFile", stopping: "shutdown" },
+  ] as const)(
+    "finishes $phase staging cleanup before $stopping completes",
+    async ({ phase, stopping }) => {
+      const { server, relayUrl } = await startServer()
+      const staged = Promise.withResolvers<void>()
+      const release = Promise.withResolvers<void>()
+      const processed = Promise.withResolvers<void>()
+      const disconnected = Promise.withResolvers<void>()
+      const cancelled = Promise.withResolvers<boolean>()
+      const connected = Promise.withResolvers<WebSocket>()
+      let root: string | undefined
+      const mkdir = Filesystem.mkdir
+      const write = Filesystem.writeFile
+      if (phase === "mkdir") {
+        vi.spyOn(Filesystem, "mkdir").mockImplementation(async (path, options) => {
+          if (typeof path === "string" && basename(path) === "input") {
+            root = dirname(path)
+            staged.resolve()
+            await release.promise
+          }
+          return mkdir(path, options)
+        })
+      } else {
+        vi.spyOn(Filesystem, "writeFile").mockImplementation(async (path, data, options) => {
+          if (typeof path === "string" && basename(path) === "input.txt") {
+            root = dirname(dirname(path))
+            staged.resolve()
+            await release.promise
+          }
+          return write(path, data, options)
+        })
+      }
+      syncBuiltinESMExports()
+      const makeClient = RelayClient.make
+      vi.spyOn(RelayClient, "make").mockImplementation((options) => ({
+        ...makeClient(options),
+        readAttachment: () => Effect.succeed(new Uint8Array(Buffer.from("input"))),
+      }))
+      const provider = vi
+        .spyOn(Providers, "run")
+        .mockReturnValue(Effect.succeed({ result: "Done" }))
+      vi.spyOn(console, "error").mockImplementation((message) => {
+        if (message === "Relay error: Cancellation processed") processed.resolve()
+      })
+      const task = Task.make({
+        id: makeTaskId(),
+        threadId: makeThreadId(),
+        targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        prompt: "Prepare files",
+        provider: "codex",
+        status: "assigned",
+        runId: TaskRunId.make(crypto.randomUUID()),
+        inputAttachmentNames: [AttachmentName.make("input.txt")],
+        createdAt: now(),
+        updatedAt: now(),
+      })
+      server.once("connection", (socket) => {
+        connected.resolve(socket)
+        socket.once("close", () => disconnected.resolve())
+        socket.once("message", () =>
+          socket.send(
+            JSON.stringify({
+              _tag: "Connected",
+              serverVersion: "test",
+              connectedAt: now(),
+              taskAttachments: true,
+            }),
+          ),
+        )
+        socket.on("message", (message) => {
+          const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
+          if (event._tag === "DeviceHello")
+            socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+          if (event._tag === "TaskCancelled") {
+            expect(event.runId).toBe(task.runId)
+            if (root === undefined) throw new Error("Missing staging root")
+            void Filesystem.stat(root).then(
+              () => cancelled.resolve(true),
+              () => cancelled.resolve(false),
+            )
+          }
+        })
+      })
+      let stopped = false
+      const daemon = run(relayUrl).then(() => {
+        stopped = true
+      })
+      try {
+        await staged.promise
+        if (stopping === "cancel") {
+          const socket = await connected.promise
+          socket.send(JSON.stringify({ _tag: "CancelTask", taskId: task.id, runId: task.runId }))
+          socket.send(
+            JSON.stringify({ _tag: "Error", code: "test", message: "Cancellation processed" }),
+          )
+          await processed.promise
+          release.resolve()
+          expect(await cancelled.promise).toBe(false)
+        } else {
+          const controller = controllers.at(-1)
+          if (controller === undefined) throw new Error("Missing worker controller")
+          controller.abort()
+          await disconnected.promise
+          expect(stopped).toBe(false)
+          release.resolve()
+          await daemon
+        }
+        if (root === undefined) throw new Error("Missing staging root")
+        await expect(Filesystem.stat(root)).rejects.toMatchObject({ code: "ENOENT" })
+        expect(provider).not.toHaveBeenCalled()
+      } finally {
+        release.resolve()
+        controllers.at(-1)?.abort()
+        await daemon
+        if (root !== undefined) await Filesystem.rm(root, { recursive: true, force: true })
+      }
+    },
+  )
+
   it("waits for provider cleanup during shutdown without starting queued work", async () => {
     const { server, relayUrl } = await startServer()
     const cleanup = Promise.withResolvers<void>()
