@@ -199,17 +199,19 @@ leaves the task running. When the user requires coding work to stop by a fixed
 time, pass `--deadline <future-UTC-ISO-timestamp>` to `delegate`, or `deadline`
 to MCP. The task's deadline includes queueing and clarification and remains
 unchanged on resume. Upgrade the requester, relay, and worker first. Named bots
-cannot use deadlines. An expired task fails with `Task deadline exceeded` after
-the worker acknowledges termination; `cancelling` can persist while it is
-offline. Without a deadline, stop work explicitly:
+cannot use deadlines. An expired task fails with `Task deadline exceeded`.
+Tasks awaiting their first dispatch fail on the relay. Tasks that may have
+reached a worker stay `cancelling` until it acknowledges termination, including
+while it is offline. Without a deadline, stop work explicitly:
 
 ```bash
 cohall cancel <task-id>
 ```
 
-For coding agents, active cancellation is acknowledged by the target device;
-`cancelling` means the provider process has not confirmed termination yet.
-Paused tasks and bot tasks that have never been dispatched can be cancelled.
+For coding agents, cancellation after possible dispatch stays `cancelling` until
+the target confirms termination, including paused tasks and tasks requeued after
+a disconnect. Tasks awaiting their first dispatch cancel immediately. Paused
+bot tasks and bot tasks awaiting their first dispatch can be cancelled.
 Stop an active bot in Grok Bot; its gateway
 cannot safely cancel an individual Cohall request.
 
