@@ -390,6 +390,46 @@ const trustedServices = async (
   return secured
 }
 
+const ScheduledTaskAction = Schema.Struct({
+  Execute: Schema.NonEmptyString,
+  Arguments: Schema.NonEmptyString,
+})
+const powershellLiteral = "(?:[^'\\r\\n]|'')+"
+const scheduledTaskBootstrap = new RegExp(
+  [
+    "^\\$ErrorActionPreference = 'Stop'",
+    `\\$env:COHALL_CONFIG = '${powershellLiteral}'`,
+    `\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
+    `& '(${powershellLiteral})' '(${powershellLiteral})' device`,
+    "exit \\$LASTEXITCODE(?:\\r?\\n)?$",
+  ].join("\\r?\\n"),
+)
+
+const scheduledTaskEntrypoint = (output: string): string | undefined => {
+  let value: unknown
+  try {
+    value = JSON.parse(output) as unknown
+  } catch {
+    return undefined
+  }
+  const decoded = Schema.decodeUnknownOption(ScheduledTaskAction)(value)
+  if (decoded._tag === "None") return undefined
+  const action = decoded.value
+  if (!/(?:^|[/\\])(?:powershell|pwsh)\.exe$/i.test(action.Execute)) return undefined
+  const encoded =
+    /^-NoLogo\s+-NoProfile\s+-NonInteractive\s+-EncodedCommand\s+([A-Za-z0-9+/]+={0,2})\s*$/i.exec(
+      action.Arguments,
+    )?.[1]
+  if (encoded === undefined) return undefined
+  const bytes = Buffer.from(encoded, "base64")
+  if (bytes.length % 2 !== 0 || bytes.toString("base64") !== encoded) return undefined
+  // Recognize the complete installer bootstrap without executing the saved script.
+  const bootstrap = scheduledTaskBootstrap.exec(bytes.toString("utf16le"))
+  const node = bootstrap?.[1]?.replaceAll("''", "'")
+  if (node === undefined || !/(?:^|[/\\])node\.exe$/i.test(node)) return undefined
+  return bootstrap?.[2]?.replaceAll("''", "'")
+}
+
 export const serviceCandidates = (
   runtimePlatform: NodeJS.Platform,
   uid: number | undefined,
@@ -457,6 +497,18 @@ export const serviceCandidates = (
             "-Command",
             "if ((Get-ScheduledTask -TaskName 'Cohall Device' -ErrorAction SilentlyContinue).State -eq 'Running') { exit 0 } else { exit 1 }",
           ],
+        },
+        entrypoint: {
+          inspect: {
+            command: "powershell.exe",
+            arguments: [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              "@((Get-ScheduledTask -TaskName 'Cohall Device' -TaskPath '\\' -ErrorAction Stop).Actions) | Select-Object Execute, Arguments | ConvertTo-Json -Compress",
+            ],
+          },
+          parse: scheduledTaskEntrypoint,
         },
         restart: [
           {
@@ -544,7 +596,9 @@ const assertServiceInstallations = async (
     const result = await checked(runner, service.entrypoint.inspect, 10_000)
     const serviceEntrypoint = service.entrypoint.parse(`${result.stdout}\n${result.stderr}`)
     if (serviceEntrypoint === undefined) {
-      throw new Error(`Could not determine the executable used by active ${service.label}`)
+      throw new Error(
+        `Could not determine the executable used by active ${service.label}${service.manager === "scheduled-task" ? ". Reinstall the task with cohall service install." : ""}`,
+      )
     }
     const canonicalServiceEntrypoint = await realpath(serviceEntrypoint).catch((cause: unknown) => {
       throw new Error(

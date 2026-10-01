@@ -595,6 +595,124 @@ describe("package installation", () => {
   })
 })
 
+describe("Windows service upgrades", () => {
+  const fixture = async () => {
+    const root = await temporaryDirectory()
+    const entrypoint = join(root, "current ' & é", "node_modules/@akshar5/cohall/bin/cohall.js")
+    const other = join(root, "other", "node_modules/@akshar5/cohall/bin/cohall.js")
+    const metadata = join(dirname(dirname(entrypoint)), "package.json")
+    for (const path of [entrypoint, other]) {
+      await mkdir(dirname(path), { recursive: true })
+      await writeFile(path, "")
+      await writeFile(
+        join(dirname(dirname(path)), "package.json"),
+        JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
+      )
+    }
+    const action = (path: string) => ({
+      Execute: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      Arguments: `-NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(
+        `$ErrorActionPreference = 'Stop'\r\n$env:COHALL_CONFIG = 'C:\\chosen config.json'\r\n$env:PATH = 'C:\\Program Files\\nodejs' + ';' + $env:PATH\r\n& 'C:\\Program Files\\nodejs\\node.exe' '${path.replaceAll("'", "''")}' device\r\nexit $LASTEXITCODE\r\n`,
+        "utf16le",
+      ).toString("base64")}`,
+    })
+    const invocations: Array<{ command: string; arguments: ReadonlyArray<string> }> = []
+    const run = (definition: unknown) =>
+      upgrade({
+        currentVersion: "1.2.3",
+        target: "1.2.4",
+        restart: true,
+        dryRun: false,
+        platform: "win32",
+        entrypoint,
+        statePath: join(root, "receipt.json"),
+        resolveExecutable: async (command) => command,
+        runner: {
+          run: async (command, arguments_) => {
+            invocations.push({ command, arguments: arguments_ })
+            if (arguments_.some((argument) => argument.includes("ConvertTo-Json"))) {
+              return { exitCode: 0, stdout: JSON.stringify(definition), stderr: "" }
+            }
+            if (command === "npm") {
+              await writeFile(
+                metadata,
+                JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }),
+              )
+            }
+            return success()
+          },
+        },
+      })
+    return { entrypoint, other, metadata, action, invocations, run }
+  }
+
+  it("upgrades and restarts a Windows task using the same installation", async () => {
+    const { entrypoint, action, invocations, run } = await fixture()
+    await expect(run(action(entrypoint))).resolves.toMatchObject({
+      installed_version: "1.2.4",
+      services_restarted: ["scheduled-task:Cohall Device"],
+    })
+    expect(invocations.filter(({ command }) => command === "schtasks.exe")).toHaveLength(2)
+    const inspection = invocations.findIndex(({ arguments: arguments_ }) =>
+      arguments_.some((argument) => argument.includes("ConvertTo-Json")),
+    )
+    expect(inspection).toBeGreaterThanOrEqual(0)
+    expect(inspection).toBeLessThan(invocations.findIndex(({ command }) => command === "npm"))
+  })
+
+  it.each([
+    "different installation",
+    "unrecognized action",
+    "multiple actions",
+    "modified bootstrap",
+    "non-Node runtime",
+  ] as const)(
+    "leaves files and services unchanged for a Windows task with %s",
+    async (scenario) => {
+      const { entrypoint, other, metadata, action, invocations, run } = await fixture()
+      const current = action(entrypoint)
+      const encoded = current.Arguments.split(" ").at(-1) ?? ""
+      const bootstrap = Buffer.from(encoded, "base64").toString("utf16le")
+      const definition =
+        scenario === "different installation"
+          ? action(other)
+          : scenario === "unrecognized action"
+            ? { Execute: "cohall.cmd", Arguments: "device" }
+            : scenario === "multiple actions"
+              ? [current, action(other)]
+              : {
+                  ...current,
+                  Arguments: current.Arguments.replace(
+                    encoded,
+                    Buffer.from(
+                      scenario === "modified bootstrap"
+                        ? `exit 0\r\n${bootstrap}`
+                        : bootstrap.replace("node.exe", "other-runner.exe"),
+                      "utf16le",
+                    ).toString("base64"),
+                  ),
+                }
+      await expect(run(definition)).rejects.toThrow(
+        scenario === "different installation" ? "uses" : "Could not determine the executable",
+      )
+      expect(
+        invocations.some(({ command }) => command === "npm" || command === "schtasks.exe"),
+      ).toBe(false)
+      expect(JSON.parse(await readFile(metadata, "utf8"))).toMatchObject({ version: "1.2.3" })
+    },
+  )
+
+  it.skipIf(process.platform !== "win32")(
+    "accepts Windows task paths with different letter casing",
+    async () => {
+      const { entrypoint, action, run } = await fixture()
+      await expect(run(action(entrypoint.toUpperCase()))).resolves.toMatchObject({
+        installed_version: "1.2.4",
+      })
+    },
+  )
+})
+
 describe("managed service upgrades", () => {
   it("orders relay restarts before the device daemon", () => {
     expect(serviceCandidates("linux", 1000).map((service) => service.id)).toEqual([

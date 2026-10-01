@@ -231,9 +231,11 @@ files already match the requested version. Socket-activated relays keep acceptin
 new connections while their process is replaced, and delegated upgrades finish
 through durable restart recovery.
 
-Before changing files, Cohall verifies that active systemd and launchd jobs use
-the same global installation as the invoked CLI. If they differ, use the
-executable named in the error or update the service definition.
+Before changing files, Cohall verifies that active systemd jobs, launchd jobs,
+and Windows scheduled tasks use the same global installation as the invoked
+CLI. If they differ, use the executable named in the error or reinstall the
+device service with `cohall service install`. Windows tasks with unrecognized or
+multiple actions must also be reinstalled before upgrading.
 
 Direct `npm install --global`, `bun add --global`, or `pnpm add --global`
 replaces files on disk but cannot replace code already loaded by a running Node
