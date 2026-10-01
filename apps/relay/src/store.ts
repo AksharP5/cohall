@@ -1696,7 +1696,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       ["cancelling", "completed", "failed", "cancelled"].includes(task.status)
     )
       return task
-    const neverDispatched = task.status === "queued" && task.runId === undefined
+    const neverDispatched =
+      task.status === "queued" && task.runId === undefined && task.startedAt === undefined
     return yield* transition(
       task.id,
       [task.status],
