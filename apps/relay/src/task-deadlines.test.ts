@@ -13,6 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
+import { Database } from "./database.ts"
 import { RelayStore } from "./store.ts"
 
 afterEach(() => vi.useRealTimers())
@@ -34,6 +35,49 @@ const worker = () =>
     version: "test",
     lastSeenAt: now(),
   })
+
+it.each(["assigned", "running"] as const)(
+  "waits for deadline cancellation acknowledgement after requeueing legacy %s work",
+  async (status) => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime("2030-01-01T00:00:00Z")
+    const database = new Database(":memory:")
+    const runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+    try {
+      const store = await runtime.runPromise(RelayStore.Service)
+      const target = worker()
+      await Effect.runPromise(store.upsertDevice(target))
+      const task = await Effect.runPromise(
+        store.createDelegation(
+          { prompt: "Working", expiresAt: Timestamp.make("2030-01-01T00:00:01.000Z") },
+          target.id,
+          "owner",
+        ),
+      )
+      const assigned = await Effect.runPromise(store.assignTask(task.id))
+      if (status === "running")
+        await Effect.runPromise(store.acceptTask(task.id, target.id, assigned.runId))
+      database.query("UPDATE tasks SET run_id = NULL WHERE id = ?").run(task.id)
+      await Effect.runPromise(store.requeueTasksFor(target.id))
+      vi.setSystemTime("2030-01-01T00:00:01.001Z")
+      await Effect.runPromise(store.expireTasks())
+      const cancelling = await Effect.runPromise(store.getTask(task.id))
+      expect(cancelling).toMatchObject({ status: "cancelling", error: taskDeadlineError })
+      expect(cancelling.runId).toBeUndefined()
+      expect(cancelling.completedAt).toBeUndefined()
+      expect((await Effect.runPromise(store.inboxFor("owner"))).items).toEqual([])
+      expect(
+        await Effect.runPromise(store.acknowledgeCancellation(task.id, target.id)),
+      ).toMatchObject({
+        status: "failed",
+        error: taskDeadlineError,
+      })
+    } finally {
+      await runtime.dispose()
+      database.close()
+    }
+  },
+)
 
 it("preserves deadlines through clarification and restart, expires queued work, and waits for active cancellation", async () => {
   vi.useFakeTimers({ toFake: ["Date"] })

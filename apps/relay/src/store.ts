@@ -1300,7 +1300,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             .all()
           db.query("UPDATE devices SET status = 'offline'").run()
           db.query(
-            `UPDATE tasks SET status = ${interruptedTaskStatus}, updated_at = ?, progress_note = NULL, progress_at = NULL
+            `UPDATE tasks SET status = ${interruptedTaskStatus}, updated_at = ?, progress_note = NULL, progress_at = NULL,
+             dispatched_at = CASE WHEN provider = 'grok-bot' THEN dispatched_at
+               ELSE COALESCE(dispatched_at, started_at, updated_at) END
              WHERE status IN ('assigned', 'running')`,
           ).run(timestamp)
           db.query(
@@ -1690,13 +1692,26 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return yield* getTask(taskId)
   })
 
+  const hasDispatchEvidence = Effect.fn("RelayStore.hasDispatchEvidence")((taskId: TaskId) =>
+    Effect.try({
+      try: () =>
+        db.query("SELECT 1 FROM tasks WHERE id = ? AND dispatched_at IS NOT NULL").get(taskId) !==
+        null,
+      catch: operationError("RelayStore.hasDispatchEvidence"),
+    }),
+  )
+
   const expireTask = Effect.fn("RelayStore.expireTask")(function* (task: Task) {
     if (
       !taskDeadlinePassed(task) ||
       ["cancelling", "completed", "failed", "cancelled"].includes(task.status)
     )
       return task
-    const neverDispatched = task.status === "queued" && task.runId === undefined
+    const neverDispatched =
+      task.status === "queued" &&
+      task.runId === undefined &&
+      task.startedAt === undefined &&
+      !(yield* hasDispatchEvidence(task.id))
     return yield* transition(
       task.id,
       [task.status],
@@ -1737,8 +1752,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           const result = db
             .query(
               `UPDATE tasks SET status = 'assigned', updated_at = ?, run_id = CASE
-                 WHEN provider = 'grok-bot' AND (
-                   dispatched_at IS NOT NULL OR started_at IS NOT NULL OR NOT EXISTS (
+                 WHEN dispatched_at IS NOT NULL OR started_at IS NOT NULL OR (
+                   provider = 'grok-bot' AND NOT EXISTS (
                      SELECT 1 FROM devices, json_each(devices.capabilities_json) capability
                      WHERE devices.id = tasks.target_device_id
                        AND json_extract(capability.value, '$.id') = 'task-clarification'
@@ -2179,14 +2194,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     if (["completed", "failed", "cancelled"].includes(current.status)) {
       return current
     }
-    const dispatched =
-      current.provider === "grok-bot" &&
-      (yield* Effect.try({
-        try: () =>
-          db.query("SELECT 1 FROM tasks WHERE id = ? AND dispatched_at IS NOT NULL").get(taskId) !==
-          null,
-        catch: operationError("RelayStore.requestCancellation"),
-      }))
+    const dispatched = yield* hasDispatchEvidence(taskId)
     if (
       current.provider === "grok-bot" &&
       current.status !== "needs_input" &&
@@ -2202,8 +2210,12 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       return current
     }
     const timestamp = now()
-    return current.status === "queued" ||
-      (current.status === "needs_input" && current.provider === "grok-bot")
+    const neverDispatched =
+      current.status === "queued" &&
+      !dispatched &&
+      (current.provider === "grok-bot" ||
+        (current.runId === undefined && current.startedAt === undefined))
+    return neverDispatched || (current.status === "needs_input" && current.provider === "grok-bot")
       ? yield* transition(
           taskId,
           ["queued", "needs_input"],
@@ -2212,7 +2224,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         )
       : yield* transition(
           taskId,
-          ["assigned", "running", "needs_input"],
+          ["queued", "assigned", "running", "needs_input"],
           {
             status: "cancelling",
           },
@@ -2232,7 +2244,9 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             )
             .all(deviceId)
           db.query(
-            `UPDATE tasks SET status = ${interruptedTaskStatus}, updated_at = ?, progress_note = NULL, progress_at = NULL
+            `UPDATE tasks SET status = ${interruptedTaskStatus}, updated_at = ?, progress_note = NULL, progress_at = NULL,
+             dispatched_at = CASE WHEN provider = 'grok-bot' THEN dispatched_at
+               ELSE COALESCE(dispatched_at, started_at, updated_at) END
              WHERE target_device_id = ? AND status IN ('assigned', 'running')`,
           ).run(timestamp, deviceId)
           for (const task of interrupted) {
@@ -2650,6 +2664,14 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
             WHERE provider = 'grok-bot' AND status NOT IN ('completed', 'failed', 'cancelled')`)
         })()
       }
+      // Legacy coding assignments may be running even when their acceptance event was lost.
+      db.exec(`UPDATE tasks SET dispatched_at = COALESCE(started_at, updated_at)
+        WHERE provider <> 'grok-bot' AND dispatched_at IS NULL AND run_id IS NULL
+          AND status NOT IN ('completed', 'failed', 'cancelled')
+          AND (status IN ('assigned', 'running') OR started_at IS NOT NULL OR EXISTS (
+            SELECT 1 FROM task_trace_events
+            WHERE task_id = tasks.id AND kind IN ('assigned', 'running')
+          ))`)
     },
     catch: operationError("RelayStore.migrate"),
   })

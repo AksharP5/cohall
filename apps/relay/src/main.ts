@@ -493,6 +493,7 @@ export const runRelay = async (): Promise<void> => {
         )
       }
     }
+    if (!hub.hasDevice(task.targetDeviceId)) return task
     const assigned = await Effect.runPromise(store.assignTask(task.id))
     if (assigned.status !== "assigned") {
       if (assigned.status === "cancelling") sendCancellation(assigned)

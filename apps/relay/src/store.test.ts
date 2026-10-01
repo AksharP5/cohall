@@ -17,6 +17,89 @@ import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
+it.each([
+  ["assigned", "disconnect"],
+  ["running", "disconnect"],
+  ["legacy running", "disconnect"],
+  ["legacy assigned", "disconnect"],
+  ["legacy assigned", "restart"],
+  ["legacy assigned", "upgrade"],
+  ["legacy assigned", "reconnect"],
+  ["legacy running", "reconnect"],
+] as const)(
+  "waits for cancellation acknowledgement for %s coding work after %s",
+  async (status, interruption) => {
+    const database = new Database(":memory:")
+    let runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+    try {
+      let store = await runtime.runPromise(RelayStore.Service)
+      const device = Device.make({
+        id: makeDeviceId(),
+        name: "interrupted-target",
+        hostname: "localhost",
+        platform: "linux",
+        architecture: "x64",
+        status: "online",
+        providers: ["codex"],
+        capabilities: [],
+        workspaces: [],
+        version,
+        lastSeenAt: now(),
+      })
+      await Effect.runPromise(store.upsertDevice(device))
+      const task = await Effect.runPromise(
+        store.createDelegation({ prompt: "Working" }, device.id, "owner"),
+      )
+      const assigned = await Effect.runPromise(store.assignTask(task.id))
+      if (status === "running" || status === "legacy running")
+        await Effect.runPromise(store.acceptTask(task.id, device.id, assigned.runId))
+      if (status === "legacy assigned" || status === "legacy running")
+        database.query("UPDATE tasks SET run_id = NULL WHERE id = ?").run(task.id)
+      if (interruption === "upgrade") {
+        const unsent = await Effect.runPromise(
+          store.createDelegation({ prompt: "Never assigned" }, device.id, "owner"),
+        )
+        database.query("UPDATE tasks SET status = 'queued' WHERE id = ?").run(task.id)
+        await runtime.dispose()
+        runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+        store = await runtime.runPromise(RelayStore.Service)
+        expect((await Effect.runPromise(store.requestCancellation(unsent.id))).status).toBe(
+          "cancelled",
+        )
+        await Effect.runPromise(store.acknowledgeCompletion(unsent.id, "owner"))
+      } else {
+        await Effect.runPromise(
+          interruption === "restart" ? store.recover() : store.requeueTasksFor(device.id),
+        )
+      }
+      const interrupted = await Effect.runPromise(store.getTask(task.id))
+      if (interruption === "reconnect") {
+        const reassigned = await Effect.runPromise(store.assignTask(task.id))
+        expect(reassigned.runId).toBe(interrupted.runId)
+      }
+      const cancelling = await Effect.runPromise(store.requestCancellation(task.id))
+      expect(cancelling.status).toBe("cancelling")
+      expect(cancelling.runId).toBe(interrupted.runId)
+      expect(cancelling.completedAt).toBeUndefined()
+      expect(
+        (await Effect.runPromise(store.pendingTasksFor(device.id))).map((item) => item.id),
+      ).toContain(task.id)
+      expect((await Effect.runPromise(store.inboxFor("owner"))).items).toEqual([])
+      expect(
+        await Effect.runPromise(
+          store.acknowledgeCancellation(task.id, device.id, interrupted.runId),
+        ),
+      ).toMatchObject({ status: "cancelled" })
+      expect(
+        (await Effect.runPromise(store.inboxFor("owner"))).items.map((item) => item.id),
+      ).toEqual([task.id])
+    } finally {
+      await runtime.dispose()
+      database.close()
+    }
+  },
+)
+
 it("persists the latest progress, restricts its target, and clears it on recovery and completion", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-progress-"))
   const path = join(directory, "relay.db")

@@ -3,8 +3,10 @@ import {
   BotId,
   Device,
   SocketEvent,
+  Timestamp,
   makeDeviceId,
   now,
+  taskDeadlineError,
   version,
 } from "../packages/protocol/src/index.ts"
 import { Effect, Schema } from "effect"
@@ -17,7 +19,7 @@ import { join } from "node:path"
 import { expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
-it("restores work and delivers paused-task cancellation when the device reconnects", async () => {
+it("expires undispatched offline work and delivers interrupted-task cancellation on reconnect", async () => {
   const reservation = createServer()
   reservation.listen(0, "127.0.0.1")
   await once(reservation, "listening")
@@ -27,7 +29,7 @@ it("restores work and delivers paused-task cancellation when the device reconnec
   const directory = await mkdtemp(join(tmpdir(), "cohall-reconnect-"))
   const token = "reconnect-test-owner-token".padEnd(64, "0")
   const baseUrl = `http://127.0.0.1:${address.port}`
-  const relay = spawn(process.execPath, ["apps/relay/src/main.ts"], {
+  const relay = spawn(process.execPath, ["bin/cohall.js", "relay"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -48,7 +50,10 @@ it("restores work and delivers paused-task cancellation when the device reconnec
     architecture: "x64",
     providers: ["codex", "grok-bot"],
     bots: [{ id: botId, name: "Research" }],
-    capabilities: [{ id: "task-clarification", label: "Clarification" }],
+    capabilities: [
+      { id: "task-clarification", label: "Clarification" },
+      { id: "task-deadlines", label: "Deadlines" },
+    ],
     workspaces: [],
     version,
     status: "online",
@@ -100,6 +105,13 @@ it("restores work and delivers paused-task cancellation when the device reconnec
     await vi.waitFor(async () => {
       expect((await Effect.runPromise(client.getTask(bot.id))).status).toBe("running")
     })
+    const coding = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, provider: "codex", prompt: "Keep working" }),
+    )
+    original.send({ _tag: "TaskAccepted", taskId: coding.id, runId: coding.runId })
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(coding.id))).status).toBe("running")
+    })
     const [upgrade] = await Effect.runPromise(
       client.createUpgradeOperations({ target: "latest", restart: true }),
     )
@@ -111,8 +123,46 @@ it("restores work and delivers paused-task cancellation when the device reconnec
     await vi.waitFor(async () => {
       expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("offline")
     })
+    const offline = await Effect.runPromise(
+      client.createTask({
+        targetDeviceId: device.id,
+        provider: "codex",
+        prompt: "Expire without dispatch",
+        expiresAt: Timestamp.make(new Date(Date.now() + 2_000).toISOString()),
+      }),
+    )
+    expect(offline.status).toBe("queued")
+    expect(offline.runId).toBeUndefined()
+    await vi.waitFor(
+      async () => {
+        expect(await Effect.runPromise(client.getTask(offline.id))).toMatchObject({
+          status: "failed",
+          error: taskDeadlineError,
+        })
+      },
+      { timeout: 10_000 },
+    )
+    const unsent = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, provider: "codex", prompt: "Cancel unsent" }),
+    )
+    expect((await Effect.runPromise(client.cancelTask(unsent.id))).status).toBe("cancelled")
+    expect((await Effect.runPromise(client.cancelTask(coding.id))).status).toBe("cancelling")
+    expect(
+      (await Effect.runPromise(client.inbox())).items.some((item) => item.id === coding.id),
+    ).toBe(false)
 
     const resumed = await connect(credential.token)
+    await vi.waitFor(() => {
+      expect(resumed.events).toContainEqual({
+        _tag: "CancelTask",
+        taskId: coding.id,
+        runId: coding.runId,
+      })
+    })
+    resumed.send({ _tag: "TaskCancelled", taskId: coding.id, runId: coding.runId })
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(coding.id))).status).toBe("cancelled")
+    })
     await vi.waitFor(() => {
       expect(
         resumed.events.some((event) => event._tag === "TaskAssigned" && event.task.id === bot.id),
