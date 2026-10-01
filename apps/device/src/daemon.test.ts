@@ -71,6 +71,88 @@ afterEach(async () => {
 })
 
 describe("device relay connection", () => {
+  it("waits for provider cleanup during shutdown without starting queued work", async () => {
+    const { server, relayUrl } = await startServer()
+    const cleanup = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const disconnected = Promise.withResolvers<void>()
+    const provider = vi.spyOn(Providers, "run").mockImplementation(() =>
+      Effect.never.pipe(
+        Effect.ensuring(
+          Effect.promise(() => {
+            cleanup.resolve()
+            return release.promise
+          }),
+        ),
+      ),
+    )
+    const upgrade = vi.spyOn(Upgrades, "upgrade").mockRejectedValue(new Error("test upgrade"))
+    const task = Task.make({
+      id: makeTaskId(),
+      threadId: makeThreadId(),
+      targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      prompt: "Active work",
+      provider: "codex",
+      status: "assigned",
+      runId: TaskRunId.make(crypto.randomUUID()),
+      createdAt: now(),
+      updatedAt: now(),
+    })
+    server.once("connection", (socket) => {
+      socket.once("close", () => disconnected.resolve())
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({ _tag: "Connected", serverVersion: "test", connectedAt: now() }),
+        ),
+      )
+      socket.on("message", (message) => {
+        const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
+        if (event._tag !== "DeviceHello") return
+        socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+        socket.send(
+          JSON.stringify({
+            _tag: "TaskAssigned",
+            task: Task.make({ ...task, id: makeTaskId(), prompt: "Queued work" }),
+          }),
+        )
+        socket.send(
+          JSON.stringify({
+            _tag: "OperationAssigned",
+            operation: DeviceOperation.make({
+              id: OperationId.make(crypto.randomUUID()),
+              kind: "upgrade",
+              status: "assigned",
+              targetDeviceId: task.targetDeviceId,
+              requestedVersion: "latest",
+              restart: true,
+              createdAt: now(),
+              updatedAt: now(),
+            }),
+          }),
+        )
+      })
+    })
+    let stopped = false
+    const stopping = run(relayUrl).then(() => {
+      stopped = true
+    })
+    try {
+      await vi.waitFor(() => expect(provider).toHaveBeenCalledOnce())
+      const controller = controllers.at(-1)
+      if (controller === undefined) throw new Error("Missing worker controller")
+      controller.abort()
+      await Promise.all([cleanup.promise, disconnected.promise])
+      expect(stopped).toBe(false)
+      expect(provider).toHaveBeenCalledOnce()
+      expect(upgrade).not.toHaveBeenCalled()
+    } finally {
+      release.resolve()
+      await stopping
+    }
+    expect(provider).toHaveBeenCalledOnce()
+    expect(upgrade).not.toHaveBeenCalled()
+  })
+
   it("replays each run's terminal event without restarting a cancelled turn", async () => {
     const { server, relayUrl } = await startServer()
     const old = Task.make({
