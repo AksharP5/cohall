@@ -24,6 +24,8 @@ it.each([
   ["legacy assigned", "disconnect"],
   ["legacy assigned", "restart"],
   ["legacy assigned", "upgrade"],
+  ["legacy assigned", "reconnect"],
+  ["legacy running", "reconnect"],
 ] as const)(
   "waits for cancellation acknowledgement for %s coding work after %s",
   async (status, interruption) => {
@@ -67,10 +69,14 @@ it.each([
         await Effect.runPromise(store.acknowledgeCompletion(unsent.id, "owner"))
       } else {
         await Effect.runPromise(
-          interruption === "disconnect" ? store.requeueTasksFor(device.id) : store.recover(),
+          interruption === "restart" ? store.recover() : store.requeueTasksFor(device.id),
         )
       }
       const interrupted = await Effect.runPromise(store.getTask(task.id))
+      if (interruption === "reconnect") {
+        const reassigned = await Effect.runPromise(store.assignTask(task.id))
+        expect(reassigned.runId).toBe(interrupted.runId)
+      }
       const cancelling = await Effect.runPromise(store.requestCancellation(task.id))
       expect(cancelling.status).toBe("cancelling")
       expect(cancelling.runId).toBe(interrupted.runId)

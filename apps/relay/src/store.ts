@@ -1752,8 +1752,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           const result = db
             .query(
               `UPDATE tasks SET status = 'assigned', updated_at = ?, run_id = CASE
-                 WHEN provider = 'grok-bot' AND (
-                   dispatched_at IS NOT NULL OR started_at IS NOT NULL OR NOT EXISTS (
+                 WHEN dispatched_at IS NOT NULL OR started_at IS NOT NULL OR (
+                   provider = 'grok-bot' AND NOT EXISTS (
                      SELECT 1 FROM devices, json_each(devices.capabilities_json) capability
                      WHERE devices.id = tasks.target_device_id
                        AND json_extract(capability.value, '$.id') = 'task-clarification'
