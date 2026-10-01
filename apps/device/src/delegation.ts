@@ -147,12 +147,17 @@ export const taskResult = (task: Task): TaskResult => {
 export const acknowledgedTaskResult = async (
   client: RelayClient,
   task: Task,
+  signal?: AbortSignal,
 ): Promise<TaskResult> => {
+  signal?.throwIfAborted()
   const result = taskResult(task)
   if (!isTerminalTask(task)) return result
-  const acknowledgementError = await Effect.runPromise(client.acknowledgeCompletion(task.id))
+  const acknowledgementError = await Effect.runPromise(client.acknowledgeCompletion(task.id), {
+    signal,
+  })
     .then(() => undefined)
     .catch((cause: unknown) => {
+      signal?.throwIfAborted()
       if (cause instanceof RelayRequestError && cause.status === 404) return undefined
       return cause instanceof Error ? cause.message : String(cause)
     })

@@ -10,6 +10,10 @@ result with `cohall status <task-id>` or `task_status`, then use
 `cohall inbox ack <task-id>` or `acknowledge_completion` to remove it from the inbox. A synchronous `delegate`
 call acknowledges its result automatically.
 
+Cancelling an MCP `delegate` or `wait_task` request stops its wait and polling.
+Accepted work continues; use `cancel_task` or a task deadline to stop it.
+Later completions stay in the inbox.
+
 ## Retrying submissions
 
 Generate and save a UUID v4 before submitting work. Pass it as `--request-id`

@@ -122,6 +122,41 @@ it("returns successful work even when inbox acknowledgement is unavailable", asy
   })
 })
 
+it("does not acknowledge a result after its requester cancelled", async () => {
+  const controller = new AbortController()
+  controller.abort(new Error("Requester cancelled"))
+  const relay = {
+    ...client(),
+    acknowledgeCompletion: vi.fn(() =>
+      Effect.fail(
+        new RelayRequestError({ operation: "ack", message: "Unexpected acknowledgement" }),
+      ),
+    ),
+  }
+  await expect(acknowledgedTaskResult(relay, task, controller.signal)).rejects.toBe(
+    controller.signal.reason,
+  )
+  expect(relay.acknowledgeCompletion).not.toHaveBeenCalled()
+})
+
+it("rejects requester cancellation during inbox acknowledgement instead of returning a warning", async () => {
+  const controller = new AbortController()
+  const started = Promise.withResolvers<void>()
+  const relay = {
+    ...client(),
+    acknowledgeCompletion: vi.fn(() =>
+      Effect.gen(function* () {
+        started.resolve()
+        return yield* Effect.never
+      }),
+    ),
+  }
+  const result = acknowledgedTaskResult(relay, task, controller.signal)
+  await started.promise
+  controller.abort(new Error("Requester cancelled"))
+  await expect(result).rejects.toBe(controller.signal.reason)
+})
+
 describe("bot delegation", () => {
   it("discovers every bot with a stable target and host availability", () => {
     expect(listBots([Device.make({ ...device, status: "offline" })])).toEqual([

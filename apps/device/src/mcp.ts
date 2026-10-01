@@ -198,20 +198,23 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
           ),
       },
     },
-    async ({
-      prompt,
-      request_id,
-      target,
-      provider,
-      context,
-      thread_id,
-      parent_task_id,
-      workspace,
-      attachment_paths,
-      wait,
-      timeout_seconds,
-      deadline,
-    }) => {
+    async (
+      {
+        prompt,
+        request_id,
+        target,
+        provider,
+        context,
+        thread_id,
+        parent_task_id,
+        workspace,
+        attachment_paths,
+        wait,
+        timeout_seconds,
+        deadline,
+      },
+      { signal },
+    ) => {
       const attachments = await readInputAttachments(attachment_paths ?? [])
       const task = await Effect.runPromise(
         createDelegation(client, configuration, {
@@ -230,11 +233,14 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
             ? {}
             : { expiresAt: Schema.decodeUnknownSync(TaskDeadline)(deadline) }),
         }),
+        { signal },
       )
       const completed = wait
-        ? await Effect.runPromise(waitForTask(client, task, timeout_seconds))
+        ? await Effect.runPromise(waitForTask(client, task, timeout_seconds), { signal })
         : task
-      return output(wait ? await acknowledgedTaskResult(client, completed) : taskResult(completed))
+      return output(
+        wait ? await acknowledgedTaskResult(client, completed, signal) : taskResult(completed),
+      )
     },
   )
 
@@ -330,9 +336,11 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
         timeout_seconds: z.number().int().min(5).max(86_400).default(900),
       },
     },
-    async ({ task_id, timeout_seconds }) => {
-      const task = await Effect.runPromise(client.getTask(TaskId.make(task_id)))
-      return output(taskResult(await Effect.runPromise(waitForTask(client, task, timeout_seconds))))
+    async ({ task_id, timeout_seconds }, { signal }) => {
+      const task = await Effect.runPromise(client.getTask(TaskId.make(task_id)), { signal })
+      return output(
+        taskResult(await Effect.runPromise(waitForTask(client, task, timeout_seconds), { signal })),
+      )
     },
   )
 
