@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
-import { run } from "./index.ts"
+import { run, type CliProvider } from "./index.ts"
 
 const directories: Array<string> = []
 const originalPath = process.env.PATH
@@ -34,6 +34,61 @@ const isRunning = (pid: number): boolean => {
   } catch {
     return false
   }
+}
+
+const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknown>) => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-provider-events-"))
+  directories.push(directory)
+  const program = `require("node:fs").createReadStream(require("node:path").join(__dirname, "events.ndjson")).pipe(process.stdout)`
+  if (process.platform === "win32") {
+    await writeFile(join(directory, "provider.cjs"), program)
+    await writeFile(
+      join(directory, `${provider}.cmd`),
+      `@ECHO off\r\n"${process.execPath}" "%~dp0provider.cjs"\r\n`,
+    )
+  } else {
+    await writeFile(join(directory, provider), `#!${process.execPath}\n${program}\n`, {
+      mode: 0o755,
+    })
+  }
+  await writeFile(
+    join(directory, "events.ndjson"),
+    events.map((event) => JSON.stringify(event)).join("\n"),
+  )
+  process.env.PATH = directory
+  return Effect.runPromise(run({ provider, threadId: "test", prompt: "test", cwd: directory }))
+}
+
+for (const provider of ["codex", "opencode"] as const) {
+  const response = (text: string) =>
+    provider === "codex"
+      ? { type: "item.completed", item: { type: "agent_message", text } }
+      : { type: "text", part: { text } }
+
+  it.each([undefined, "earlier answer"])(
+    `${provider} rejects a discarded final answer after %s`,
+    async (earlier) => {
+      await expect(
+        runWithEvents(provider, [
+          ...(earlier === undefined ? [] : [response(earlier)]),
+          response("x".repeat(1_126_400)),
+        ]),
+      ).rejects.toMatchObject({
+        _tag: "CohallProvider.RunError",
+        message: "Provider JSON event exceeded 1 MiB without a later text response",
+      })
+    },
+  )
+
+  it(`${provider} accepts a later answer after an oversized tool event`, async () => {
+    await expect(
+      runWithEvents(provider, [
+        response("earlier answer"),
+        { type: "tool_result", content: "x".repeat(1_126_400) },
+        response("final answer"),
+      ]),
+    ).resolves.toMatchObject({ result: "final answer" })
+  })
 }
 
 it.skipIf(process.platform === "win32")(
