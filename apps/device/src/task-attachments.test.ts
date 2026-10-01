@@ -1,4 +1,5 @@
 import { AttachmentName, maxAttachmentBytes, makeTaskId, makeDeviceId } from "@cohall/protocol"
+import { Effect } from "effect"
 import { createServer } from "node:http"
 import { type AddressInfo } from "node:net"
 import {
@@ -103,49 +104,56 @@ it("stages input bytes and collects selected output before removing temporary fi
     name: "worker",
     workspaces: [process.cwd()],
   })
-  const files = await prepareTaskFiles(
-    configuration,
-    makeTaskId(),
-    [AttachmentName.make("screen.png")],
-    new AbortController().signal,
-  )
   try {
-    expect(await readFile(join(files.input, "screen.png"), "utf8")).toBe("image")
-    await writeFile(join(files.output, "report.txt"), "answer")
-    const nested = join(files.output, "nested")
-    await mkdir(nested)
-    await expect(files.collectOutputs()).rejects.toThrow("regular file")
-    await rm(nested, { recursive: true })
-    if (process.platform !== "win32") {
-      const linked = join(files.output, "linked.txt")
-      await symlink(join(files.input, "screen.png"), linked)
-      await expect(files.collectOutputs()).rejects.toThrow("regular file")
-      await rm(linked)
-    }
-    expect(await files.collectOutputs()).toEqual([
-      { name: "report.txt", data: Buffer.from("answer").toString("base64") },
-    ])
-    await writeFile(join(files.output, "report.txt"), Buffer.alloc(1_024))
-    const prototype = await fileHandlePrototype(join(files.output, "report.txt"))
-    const originalStat = prototype.stat
-    const stat = vi.spyOn(prototype, "stat").mockImplementation(async function (this: FileHandle) {
-      const metadata = await originalStat.call(this)
-      await truncate(join(files.output, "report.txt"), 8 * 1024 * 1024)
-      return metadata
-    })
-    const readFileSpy = vi.spyOn(prototype, "readFile").mockImplementation(async () => {
-      throw new Error("Unbounded file read")
-    })
-    try {
-      await expect(files.collectOutputs()).rejects.toThrow("changed size while reading")
-      expect(readFileSpy).not.toHaveBeenCalled()
-    } finally {
-      stat.mockRestore()
-      readFileSpy.mockRestore()
-    }
+    const input = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const files = yield* prepareTaskFiles(configuration, makeTaskId(), [
+            AttachmentName.make("screen.png"),
+          ])
+          yield* Effect.promise(async () => {
+            expect(await readFile(join(files.input, "screen.png"), "utf8")).toBe("image")
+            await writeFile(join(files.output, "report.txt"), "answer")
+            const nested = join(files.output, "nested")
+            await mkdir(nested)
+            await expect(files.collectOutputs()).rejects.toThrow("regular file")
+            await rm(nested, { recursive: true })
+            if (process.platform !== "win32") {
+              const linked = join(files.output, "linked.txt")
+              await symlink(join(files.input, "screen.png"), linked)
+              await expect(files.collectOutputs()).rejects.toThrow("regular file")
+              await rm(linked)
+            }
+            expect(await files.collectOutputs()).toEqual([
+              { name: "report.txt", data: Buffer.from("answer").toString("base64") },
+            ])
+            await writeFile(join(files.output, "report.txt"), Buffer.alloc(1_024))
+            const prototype = await fileHandlePrototype(join(files.output, "report.txt"))
+            const originalStat = prototype.stat
+            const stat = vi
+              .spyOn(prototype, "stat")
+              .mockImplementation(async function (this: FileHandle) {
+                const metadata = await originalStat.call(this)
+                await truncate(join(files.output, "report.txt"), 8 * 1024 * 1024)
+                return metadata
+              })
+            const readFileSpy = vi.spyOn(prototype, "readFile").mockImplementation(async () => {
+              throw new Error("Unbounded file read")
+            })
+            try {
+              await expect(files.collectOutputs()).rejects.toThrow("changed size while reading")
+              expect(readFileSpy).not.toHaveBeenCalled()
+            } finally {
+              stat.mockRestore()
+              readFileSpy.mockRestore()
+            }
+          })
+          return join(files.input, "screen.png")
+        }),
+      ),
+    )
+    await expect(readFile(input)).rejects.toBeDefined()
   } finally {
-    await files.cleanup()
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }
-  await expect(readFile(join(files.input, "screen.png"))).rejects.toBeDefined()
 })

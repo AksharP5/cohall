@@ -391,44 +391,47 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
       readonly question?: RequestTaskInput["question"]
     },
     Providers.ProviderError
-  > = Effect.gen(function* () {
-    if (task.provider === "grok-bot") {
-      return yield* Effect.tryPromise({
-        try: (signal) =>
-          runGrokBot(configuration.grokGateway, task, signal, state.supportsClarification),
-        catch: (cause) =>
-          new Providers.ProviderRunError({
-            provider: task.provider,
-            message: cause instanceof Error ? cause.message : String(cause),
-          }),
-      })
-    }
-    const provider = task.provider
-    if (!state.supportsAttachments && (task.inputAttachmentNames?.length ?? 0) > 0) {
-      return yield* new Providers.ProviderRunError({
-        provider,
-        message: "The relay does not support task file attachments",
-      })
-    }
-    const workspace = yield* Effect.tryPromise({
-      try: () => openAllowedWorkspace(configuration, task.workspace),
-      catch: (cause) =>
-        new Providers.ProviderRunError({
+  > = Effect.scoped(
+    Effect.gen(function* () {
+      if (task.provider === "grok-bot") {
+        return yield* Effect.tryPromise({
+          try: (signal) =>
+            runGrokBot(configuration.grokGateway, task, signal, state.supportsClarification),
+          catch: (cause) =>
+            new Providers.ProviderRunError({
+              provider: task.provider,
+              message: cause instanceof Error ? cause.message : String(cause),
+            }),
+        })
+      }
+      const provider = task.provider
+      if (!state.supportsAttachments && (task.inputAttachmentNames?.length ?? 0) > 0) {
+        return yield* new Providers.ProviderRunError({
           provider,
-          message: cause instanceof Error ? cause.message : String(cause),
+          message: "The relay does not support task file attachments",
+        })
+      }
+      const workspace = yield* Effect.acquireRelease(
+        Effect.tryPromise({
+          try: () => openAllowedWorkspace(configuration, task.workspace),
+          catch: (cause) =>
+            new Providers.ProviderRunError({
+              provider,
+              message: cause instanceof Error ? cause.message : String(cause),
+            }),
         }),
-    })
-    return yield* Effect.gen(function* () {
+        (workspace) => Effect.promise(() => workspace.close().catch(() => undefined)),
+      )
       const files = state.supportsAttachments
-        ? yield* Effect.tryPromise({
-            try: (signal) =>
-              prepareTaskFiles(configuration, task.id, task.inputAttachmentNames ?? [], signal),
-            catch: (cause) =>
-              new Providers.ProviderRunError({
-                provider,
-                message: cause instanceof Error ? cause.message : String(cause),
-              }),
-          })
+        ? yield* prepareTaskFiles(configuration, task.id, task.inputAttachmentNames ?? []).pipe(
+            Effect.mapError(
+              (cause) =>
+                new Providers.ProviderRunError({
+                  provider,
+                  message: cause instanceof Error ? cause.message : String(cause),
+                }),
+            ),
+          )
         : undefined
       const sessionId = task.providerSessionId ?? state.sessions.get(sessionKey(task))
       return yield* Providers.run({
@@ -453,12 +456,11 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
                     provider,
                     message: cause instanceof Error ? cause.message : String(cause),
                   }),
-              }),
+              }).pipe(Effect.uninterruptible),
         ),
-        Effect.ensuring(files === undefined ? Effect.void : Effect.promise(() => files.cleanup())),
       )
-    }).pipe(Effect.ensuring(Effect.promise(() => workspace.close().catch(() => undefined))))
-  })
+    }),
+  )
 
   const done = Effect.runPromise(workflow, { signal: controller.signal })
     .then((result) => {
