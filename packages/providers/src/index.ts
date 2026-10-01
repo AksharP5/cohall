@@ -412,6 +412,7 @@ const parseOpenCode = async (stdout: Readable, existingSession?: string): Promis
         text(event.session_id) ??
         text(record(event.info)?.sessionID) ??
         sessionId
+      if (text(event.type) !== "text") return
       const content = textFromPart(event.part) ?? textFromPart(event) ?? text(event.result)
       if (content !== undefined && content.length > 0) {
         result = content

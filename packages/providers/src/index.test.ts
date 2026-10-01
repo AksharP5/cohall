@@ -89,6 +89,18 @@ for (const provider of ["codex", "opencode"] as const) {
       ]),
     ).resolves.toMatchObject({ result: "final answer" })
   })
+
+  it(`${provider} rejects a discarded answer followed only by tool output`, async () => {
+    await expect(
+      runWithEvents(provider, [
+        response("x".repeat(1_126_400)),
+        { type: "tool_result", content: "tool output" },
+      ]),
+    ).rejects.toMatchObject({
+      _tag: "CohallProvider.RunError",
+      message: "Provider JSON event exceeded 1 MiB without a later text response",
+    })
+  })
 }
 
 it.skipIf(process.platform === "win32")(
