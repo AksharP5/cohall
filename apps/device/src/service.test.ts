@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path"
 import { promisify } from "node:util"
 import { describe, expect, it } from "vitest"
 import { deviceServicePlan, installDeviceService, restartDeviceService } from "./service.ts"
-import type { CommandRunner } from "./upgrade.ts"
+import { serviceCandidates, type CommandRunner } from "./upgrade.ts"
 
 describe("device service plans", () => {
   it.skipIf(process.platform !== "win32")(
@@ -22,6 +22,8 @@ describe("device service plans", () => {
         "v1.0",
         "powershell.exe",
       )
+      const inspection = serviceCandidates("win32", undefined)[0]?.entrypoint
+      if (inspection === undefined) throw new Error("Missing Windows task inspection")
       try {
         await writeFile(
           entrypoint,
@@ -29,16 +31,16 @@ describe("device service plans", () => {
         )
         await writeFile(
           harness,
-          `param($Installer, $NodeExecutable, $Entrypoint, $Config)
+          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $Inspection)
 $ErrorActionPreference = 'Stop'
-function New-ScheduledTaskAction { param($Execute, $Argument) return @{ Execute = $Execute; Argument = $Argument } }
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) return @{} }
 function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit, $RestartCount, $RestartInterval, $MultipleInstances) return @{} }
 function Register-ScheduledTask { param($TaskName, $Description, $Action, $Trigger, $Settings, [switch]$Force) $global:CohallTestAction = $Action }
 function Stop-ScheduledTask { param($TaskName, $ErrorAction) $global:CohallTestStopped = $true }
 function Start-ScheduledTask { param($TaskName) if (-not $global:CohallTestStopped) { throw 'Existing task was not stopped before restarting' } }
+function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) return @{ Actions = @($global:CohallTestAction) } }
 & $Installer -NodeExecutable $NodeExecutable -Entrypoint $Entrypoint -ConfigurationPath $Config | Out-Null
-$global:CohallTestAction | ConvertTo-Json -Compress
+Invoke-Expression $Inspection
 `,
         )
         const installed = await promisify(execFile)(
@@ -56,6 +58,8 @@ $global:CohallTestAction | ConvertTo-Json -Compress
             entrypoint,
             "-Config",
             config,
+            "-Inspection",
+            inspection.inspect.arguments.at(-1) ?? "",
           ],
           { env: { ...process.env, COHALL_UNRELATED_SECRET: "not-service-state" } },
         )
@@ -65,14 +69,15 @@ $global:CohallTestAction | ConvertTo-Json -Compress
           action === null ||
           !("Execute" in action) ||
           typeof action.Execute !== "string" ||
-          !("Argument" in action) ||
-          typeof action.Argument !== "string"
+          !("Arguments" in action) ||
+          typeof action.Arguments !== "string"
         ) {
           throw new Error("Installer did not register a runnable task")
         }
         expect(action.Execute.toLowerCase()).toBe(powerShell.toLowerCase())
+        expect(inspection.parse(installed.stdout)).toBe(entrypoint)
         const executable = action.Execute
-        const arguments_ = action.Argument.split(" ")
+        const arguments_ = action.Arguments.split(" ")
         const encoded = arguments_.at(-1)
         expect(encoded).toBeDefined()
         expect(Buffer.from(encoded ?? "", "base64").toString("utf16le")).not.toContain(
