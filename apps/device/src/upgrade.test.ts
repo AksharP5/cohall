@@ -612,7 +612,7 @@ describe("Windows service upgrades", () => {
     const action = (path: string) => ({
       Execute: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       Arguments: `-NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(
-        `$ErrorActionPreference = 'Stop'\r\n& 'C:\\Program Files\\nodejs\\node.exe' '${path.replaceAll("'", "''")}' device\r\nexit $LASTEXITCODE\r\n`,
+        `$ErrorActionPreference = 'Stop'\r\n$env:COHALL_CONFIG = 'C:\\chosen config.json'\r\n$env:PATH = 'C:\\Program Files\\nodejs' + ';' + $env:PATH\r\n& 'C:\\Program Files\\nodejs\\node.exe' '${path.replaceAll("'", "''")}' device\r\nexit $LASTEXITCODE\r\n`,
         "utf16le",
       ).toString("base64")}`,
     })
@@ -660,16 +660,38 @@ describe("Windows service upgrades", () => {
     expect(inspection).toBeLessThan(invocations.findIndex(({ command }) => command === "npm"))
   })
 
-  it.each(["different installation", "unrecognized action", "multiple actions"] as const)(
+  it.each([
+    "different installation",
+    "unrecognized action",
+    "multiple actions",
+    "modified bootstrap",
+    "non-Node runtime",
+  ] as const)(
     "leaves files and services unchanged for a Windows task with %s",
     async (scenario) => {
       const { entrypoint, other, metadata, action, invocations, run } = await fixture()
+      const current = action(entrypoint)
+      const encoded = current.Arguments.split(" ").at(-1) ?? ""
+      const bootstrap = Buffer.from(encoded, "base64").toString("utf16le")
       const definition =
         scenario === "different installation"
           ? action(other)
           : scenario === "unrecognized action"
             ? { Execute: "cohall.cmd", Arguments: "device" }
-            : [action(entrypoint), action(other)]
+            : scenario === "multiple actions"
+              ? [current, action(other)]
+              : {
+                  ...current,
+                  Arguments: current.Arguments.replace(
+                    encoded,
+                    Buffer.from(
+                      scenario === "modified bootstrap"
+                        ? `exit 0\r\n${bootstrap}`
+                        : bootstrap.replace("node.exe", "other-runner.exe"),
+                      "utf16le",
+                    ).toString("base64"),
+                  ),
+                }
       await expect(run(definition)).rejects.toThrow(
         scenario === "different installation" ? "uses" : "Could not determine the executable",
       )

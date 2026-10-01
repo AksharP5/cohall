@@ -394,6 +394,16 @@ const ScheduledTaskAction = Schema.Struct({
   Execute: Schema.NonEmptyString,
   Arguments: Schema.NonEmptyString,
 })
+const powershellLiteral = "(?:[^'\\r\\n]|'')+"
+const scheduledTaskBootstrap = new RegExp(
+  [
+    "^\\$ErrorActionPreference = 'Stop'",
+    `\\$env:COHALL_CONFIG = '${powershellLiteral}'`,
+    `\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
+    `& '(${powershellLiteral})' '(${powershellLiteral})' device`,
+    "exit \\$LASTEXITCODE(?:\\r?\\n)?$",
+  ].join("\\r?\\n"),
+)
 
 const scheduledTaskEntrypoint = (output: string): string | undefined => {
   let value: unknown
@@ -413,13 +423,11 @@ const scheduledTaskEntrypoint = (output: string): string | undefined => {
   if (encoded === undefined) return undefined
   const bytes = Buffer.from(encoded, "base64")
   if (bytes.length % 2 !== 0 || bytes.toString("base64") !== encoded) return undefined
-  // Read the installer's literal Node invocation without executing the saved script.
-  const commands = [
-    ...bytes
-      .toString("utf16le")
-      .matchAll(/^& '(?:[^'\r\n]|'')+' '((?:[^'\r\n]|'')+)' device\r?$/gm),
-  ]
-  return commands.length === 1 ? commands[0]?.[1]?.replaceAll("''", "'") : undefined
+  // Recognize the complete installer bootstrap without executing the saved script.
+  const bootstrap = scheduledTaskBootstrap.exec(bytes.toString("utf16le"))
+  const node = bootstrap?.[1]?.replaceAll("''", "'")
+  if (node === undefined || !/(?:^|[/\\])node\.exe$/i.test(node)) return undefined
+  return bootstrap?.[2]?.replaceAll("''", "'")
 }
 
 export const serviceCandidates = (
@@ -588,7 +596,9 @@ const assertServiceInstallations = async (
     const result = await checked(runner, service.entrypoint.inspect, 10_000)
     const serviceEntrypoint = service.entrypoint.parse(`${result.stdout}\n${result.stderr}`)
     if (serviceEntrypoint === undefined) {
-      throw new Error(`Could not determine the executable used by active ${service.label}`)
+      throw new Error(
+        `Could not determine the executable used by active ${service.label}${service.manager === "scheduled-task" ? ". Reinstall the task with cohall service install." : ""}`,
+      )
     }
     const canonicalServiceEntrypoint = await realpath(serviceEntrypoint).catch((cause: unknown) => {
       throw new Error(
