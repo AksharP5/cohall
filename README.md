@@ -285,9 +285,10 @@ rejected before any work is sent, including with `--no-wait`.
 To stop coding work at a fixed time, pass `--deadline <UTC-ISO-timestamp>` to
 `delegate`, or `deadline` to the MCP tool. The future deadline is saved on the
 task and stays unchanged through retries and clarification. Expired tasks fail
-with `Task deadline exceeded` after the worker confirms termination. Dispatched
-tasks can stay `cancelling` while awaiting that confirmation. Upgrade the requester, relay, and worker
-before using deadlines. Named Grok Bots do not support them.
+with `Task deadline exceeded`. Tasks awaiting their first dispatch fail on the
+relay. Tasks that may have reached a worker stay `cancelling` until it confirms
+termination, including after a disconnect. Upgrade the requester, relay, and
+worker before using deadlines. Named Grok Bots do not support them.
 See [task deadlines](docs/integrations.md#task-deadlines) for details.
 
 Reuse the returned `thread_id` for follow-ups so the target resumes its provider

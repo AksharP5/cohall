@@ -2202,8 +2202,11 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       return current
     }
     const timestamp = now()
-    return current.status === "queued" ||
-      (current.status === "needs_input" && current.provider === "grok-bot")
+    const neverDispatched =
+      current.status === "queued" &&
+      (current.provider === "grok-bot" ||
+        (current.runId === undefined && current.startedAt === undefined))
+    return neverDispatched || (current.status === "needs_input" && current.provider === "grok-bot")
       ? yield* transition(
           taskId,
           ["queued", "needs_input"],
@@ -2212,7 +2215,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         )
       : yield* transition(
           taskId,
-          ["assigned", "running", "needs_input"],
+          ["queued", "assigned", "running", "needs_input"],
           {
             status: "cancelling",
           },

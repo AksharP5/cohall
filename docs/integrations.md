@@ -86,8 +86,10 @@ provider session when available. Answered questions are included in the resumed
 prompt, including after a restart. An offline target waits in the queue. Each
 task permits ten questions; each question and answer must be nonblank and at most
 4096 UTF-8 bytes. Cancel a paused task with `cohall cancel <task-id>`.
-Coding task cancellation stays `cancelling` until the worker confirms termination,
-including for paused tasks. An offline worker acknowledges it after reconnecting.
+Tasks awaiting their first dispatch cancel immediately. Coding tasks that may
+have reached a worker stay `cancelling` until it confirms termination, including
+tasks requeued after a disconnect and paused tasks. An offline worker acknowledges
+the cancellation after reconnecting.
 
 The assigned task, including its prompt, context, and clarification history,
 must fit the 1 MiB transfer limit. Oversized assignments fail with an explicit
@@ -115,8 +117,9 @@ traces use `expiresAt`. Omit the field for work without a deadline.
 
 The deadline covers queueing, execution, and time awaiting clarification.
 Restarting or resuming a task keeps its original deadline. An expired task
-fails with `Task deadline exceeded` after termination is confirmed. Tasks that
-have been dispatched can stay `cancelling` until the worker confirms it. An offline worker
+fails with `Task deadline exceeded`. Tasks awaiting their first dispatch fail
+without contacting the worker. Tasks that may have reached a worker stay
+`cancelling` until it confirms termination. An offline worker
 acknowledges after reconnecting; its local timer stops active coding work even
 while disconnected. A manual cancellation requested before the deadline still
 finishes as `cancelled`.

@@ -17,6 +17,60 @@ import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
+it.each(["assigned", "running", "running without a run ID"] as const)(
+  "waits for cancellation acknowledgement after an interrupted %s coding task",
+  async (status) => {
+    const database = new Database(":memory:")
+    const runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+    try {
+      const store = await runtime.runPromise(RelayStore.Service)
+      const device = Device.make({
+        id: makeDeviceId(),
+        name: "interrupted-target",
+        hostname: "localhost",
+        platform: "linux",
+        architecture: "x64",
+        status: "online",
+        providers: ["codex"],
+        capabilities: [],
+        workspaces: [],
+        version,
+        lastSeenAt: now(),
+      })
+      await Effect.runPromise(store.upsertDevice(device))
+      const task = await Effect.runPromise(
+        store.createDelegation({ prompt: "Working" }, device.id, "owner"),
+      )
+      const assigned = await Effect.runPromise(store.assignTask(task.id))
+      if (status !== "assigned")
+        await Effect.runPromise(store.acceptTask(task.id, device.id, assigned.runId))
+      if (status === "running without a run ID")
+        database.query("UPDATE tasks SET run_id = NULL WHERE id = ?").run(task.id)
+      await Effect.runPromise(store.requeueTasksFor(device.id))
+      const interrupted = await Effect.runPromise(store.getTask(task.id))
+      const cancelling = await Effect.runPromise(store.requestCancellation(task.id))
+      expect(cancelling.status).toBe("cancelling")
+      expect(cancelling.runId).toBe(interrupted.runId)
+      expect(cancelling.completedAt).toBeUndefined()
+      expect(
+        (await Effect.runPromise(store.pendingTasksFor(device.id))).map((item) => item.id),
+      ).toContain(task.id)
+      expect((await Effect.runPromise(store.inboxFor("owner"))).items).toEqual([])
+      expect(
+        await Effect.runPromise(
+          store.acknowledgeCancellation(task.id, device.id, interrupted.runId),
+        ),
+      ).toMatchObject({ status: "cancelled" })
+      expect(
+        (await Effect.runPromise(store.inboxFor("owner"))).items.map((item) => item.id),
+      ).toEqual([task.id])
+    } finally {
+      await runtime.dispose()
+      database.close()
+    }
+  },
+)
+
 it("persists the latest progress, restricts its target, and clears it on recovery and completion", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-progress-"))
   const path = join(directory, "relay.db")
