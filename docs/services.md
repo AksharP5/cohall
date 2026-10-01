@@ -17,6 +17,12 @@ The relay's data directory must be persistent. Cohall uses at-least-once deliver
 work interrupted during execution can run again after recovery, so consequential
 tasks should be idempotent.
 
+Device workers retry the connection after two seconds if the relay does not
+accept it within ten seconds. Once connected, workers reconnect if no relay ping
+arrives for 45 seconds. The relay sends a ping every 30 seconds. This also recovers
+connections that go silent without closing the socket. Active work continues
+during a disconnect, and pending results are sent after reconnecting.
+
 On macOS and Linux, `cohall device` handles SIGINT and SIGTERM by stopping active
 coding providers and waiting for their process cleanup. It starts no queued work
 during shutdown. Forced termination, including SIGKILL, cannot run that cleanup;
