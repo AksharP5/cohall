@@ -722,11 +722,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     previous?.version === options.currentVersion &&
     (target === "latest" || target === previous.version)
   ) {
-    const byId = new Map(candidates.map((service) => [service.id, service]))
-    const pending = previous.pendingServices.flatMap((id) => {
-      const service = byId.get(id)
-      return service === undefined ? [] : [service]
-    })
+    const pending = candidates.filter((service) => previous.pendingServices.includes(service.id))
     const active = await activeServices(runner, pending)
     await assertServiceInstallations(runner, active, canonicalEntrypoint, entrypoint)
     if (options.dryRun || !options.restart) {
@@ -794,6 +790,9 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
 
   const services = await activeServices(runner, candidates)
   await assertServiceInstallations(runner, services, canonicalEntrypoint, entrypoint)
+  const pendingServices = [
+    ...new Set([...(previous?.pendingServices ?? []), ...services.map((service) => service.id)]),
+  ]
 
   const resolvePackageManager = (): Promise<string> =>
     options.resolveExecutable === undefined
@@ -875,7 +874,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
       requested_version: target,
       package_manager: installation.manager,
       services_restarted: [],
-      services_pending_restart: options.restart ? services.map((service) => service.id) : [],
+      services_pending_restart: pendingServices,
       resumed_after_restart: false,
       dry_run: true,
     }
@@ -892,37 +891,20 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   }
   const upgraded = nextVersion !== options.currentVersion
 
-  if (!options.restart || services.length === 0) {
-    await rm(statePath, { force: true })
-    return {
-      upgraded,
-      from_version: options.currentVersion,
-      installed_version: nextVersion,
-      requested_version: target,
-      package_manager: installation.manager,
-      services_restarted: [],
-      services_pending_restart: options.restart ? [] : services.map((service) => service.id),
-      resumed_after_restart: false,
-      dry_run: false,
-    }
-  }
-
   const initial: RestartReceipt = {
     version: nextVersion,
     fromVersion: options.currentVersion,
     packageManager: installation.manager,
-    pendingServices: services.map((service) => service.id),
+    pendingServices,
     restartedServices: [],
   }
-  await writeReceipt(statePath, initial)
-  const completed = await restartServices(
-    runner,
-    services,
-    statePath,
-    initial,
-    options.delegated === true,
-  )
-  if (completed.restartingService === undefined) {
+  if (initial.pendingServices.length > 0) {
+    await writeReceipt(statePath, initial)
+  }
+  const completed = options.restart
+    ? await restartServices(runner, services, statePath, initial, options.delegated === true)
+    : initial
+  if (completed.pendingServices.length === 0) {
     await rm(statePath, { force: true })
   }
   return {
@@ -932,7 +914,9 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     requested_version: target,
     package_manager: installation.manager,
     services_restarted: reportedRestartServices(completed),
-    services_pending_restart: [],
+    services_pending_restart: completed.pendingServices.filter(
+      (id) => id !== completed.restartingService,
+    ),
     resumed_after_restart: false,
     dry_run: false,
   }
