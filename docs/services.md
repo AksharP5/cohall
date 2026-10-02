@@ -234,6 +234,11 @@ files already match the requested version. Socket-activated relays keep acceptin
 new connections while their process is replaced, and delegated upgrades finish
 through durable restart recovery.
 
+If a restart fails, inactive or missing services remain listed in
+`services_pending_restart` and their recovery state is preserved. Repair or start
+the affected service, then rerun the same upgrade command. Recovery verifies each
+active service's installation before restarting it.
+
 Before changing files, Cohall verifies that active systemd jobs, launchd jobs,
 and Windows scheduled tasks use the same global installation as the invoked
 CLI. If they differ, use the executable named in the error or reinstall the

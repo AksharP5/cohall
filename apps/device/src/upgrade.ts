@@ -711,6 +711,12 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   )
   const statePath = options.statePath ?? restartReceiptPath()
   const previous = await readReceipt(statePath)
+  const entrypoint = options.entrypoint ?? process.argv[1]
+  if (entrypoint === undefined) {
+    throw new Error("Could not resolve the Cohall executable path")
+  }
+  const canonicalEntrypoint = await realpath(entrypoint)
+  const installation = packageInstallation(canonicalEntrypoint, entrypoint)
 
   if (
     previous?.version === options.currentVersion &&
@@ -722,6 +728,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
       return service === undefined ? [] : [service]
     })
     const active = await activeServices(runner, pending)
+    await assertServiceInstallations(runner, active, canonicalEntrypoint, entrypoint)
     if (options.dryRun || !options.restart) {
       return {
         upgraded: previous.fromVersion !== previous.version,
@@ -730,7 +737,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
         requested_version: previous.version,
         package_manager: previous.packageManager,
         services_restarted: previous.restartedServices,
-        services_pending_restart: active.map((service) => service.id),
+        services_pending_restart: previous.pendingServices,
         resumed_after_restart: false,
         dry_run: options.dryRun,
       }
@@ -738,7 +745,10 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     const activeIds = new Set(active.map((service) => service.id))
     const completedByRestart = pending.filter(
       (service) =>
-        service.device && service.id === previous.restartingService && activeIds.has(service.id),
+        options.delegated === true &&
+        service.device &&
+        service.id === previous.restartingService &&
+        activeIds.has(service.id),
     )
     const completedIds = new Set(completedByRestart.map((service) => service.id))
     const remaining = active.filter((service) => !completedIds.has(service.id))
@@ -761,8 +771,10 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
         resumed,
         options.delegated === true,
       )
+    } else if (completedIds.size > 0) {
+      await writeReceipt(statePath, resumed)
     }
-    if (resumed.restartingService === undefined) {
+    if (resumed.pendingServices.length === 0) {
       await rm(statePath, { force: true })
     }
     return {
@@ -772,18 +784,14 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
       requested_version: previous.version,
       package_manager: previous.packageManager,
       services_restarted: reportedRestartServices(resumed),
-      services_pending_restart: [],
+      services_pending_restart: resumed.pendingServices.filter(
+        (id) => id !== resumed.restartingService,
+      ),
       resumed_after_restart: true,
       dry_run: false,
     }
   }
 
-  const entrypoint = options.entrypoint ?? process.argv[1]
-  if (entrypoint === undefined) {
-    throw new Error("Could not resolve the Cohall executable path")
-  }
-  const canonicalEntrypoint = await realpath(entrypoint)
-  const installation = packageInstallation(canonicalEntrypoint, entrypoint)
   const services = await activeServices(runner, candidates)
   await assertServiceInstallations(runner, services, canonicalEntrypoint, entrypoint)
 

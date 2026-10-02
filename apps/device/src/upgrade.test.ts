@@ -617,15 +617,16 @@ describe("Windows service upgrades", () => {
       ).toString("base64")}`,
     })
     const invocations: Array<{ command: string; arguments: ReadonlyArray<string> }> = []
-    const run = (definition: unknown) =>
+    const statePath = join(root, "receipt.json")
+    const run = (definition: unknown, currentVersion = "1.2.3") =>
       upgrade({
-        currentVersion: "1.2.3",
+        currentVersion,
         target: "1.2.4",
         restart: true,
         dryRun: false,
         platform: "win32",
         entrypoint,
-        statePath: join(root, "receipt.json"),
+        statePath,
         resolveExecutable: async (command) => command,
         runner: {
           run: async (command, arguments_) => {
@@ -643,7 +644,7 @@ describe("Windows service upgrades", () => {
           },
         },
       })
-    return { entrypoint, other, metadata, action, invocations, run }
+    return { entrypoint, other, metadata, statePath, action, invocations, run }
   }
 
   it("upgrades and restarts a Windows task using the same installation", async () => {
@@ -709,6 +710,41 @@ describe("Windows service upgrades", () => {
       await expect(run(action(entrypoint.toUpperCase()))).resolves.toMatchObject({
         installed_version: "1.2.4",
       })
+    },
+  )
+
+  it.each(["different installation", "unrecognized action"])(
+    "preserves Windows restart recovery when the task uses a %s",
+    async (scenario) => {
+      const { entrypoint, other, metadata, statePath, action, invocations, run } = await fixture()
+      await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }))
+      const receipt = JSON.stringify({
+        version: "1.2.4",
+        fromVersion: "1.2.3",
+        packageManager: "npm",
+        pendingServices: ["scheduled-task:Cohall Device"],
+        restartedServices: [],
+      })
+      await writeFile(statePath, receipt)
+      const definition =
+        scenario === "different installation"
+          ? action(other)
+          : { Execute: "cohall.cmd", Arguments: "device" }
+
+      await expect(run(definition, "1.2.4")).rejects.toThrow(
+        scenario === "different installation" ? "uses" : "Could not determine the executable",
+      )
+      expect(
+        invocations.some(({ command }) => command === "npm" || command === "schtasks.exe"),
+      ).toBe(false)
+      expect(await readFile(statePath, "utf8")).toBe(receipt)
+
+      await expect(run(action(entrypoint), "1.2.4")).resolves.toMatchObject({
+        installed_version: "1.2.4",
+        services_restarted: ["scheduled-task:Cohall Device"],
+        services_pending_restart: [],
+      })
+      await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
     },
   )
 })
@@ -922,64 +958,181 @@ describe("managed service upgrades", () => {
     expect(invocations.some((invocation) => invocation.includes(" restart "))).toBe(false)
   })
 
-  it("finishes a delegated upgrade after its device daemon restarts", async () => {
-    const root = await temporaryDirectory()
-    const statePath = join(root, "upgrade-restart.json")
-    await writeFile(
-      statePath,
-      JSON.stringify({
-        version: "1.2.3",
-        fromVersion: "1.2.2",
-        packageManager: "npm",
+  it.each([true, false])(
+    "verifies device restart recovery with delegated=%s",
+    async (delegated) => {
+      const root = await temporaryDirectory()
+      const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+      await mkdir(dirname(entrypoint), { recursive: true })
+      await writeFile(entrypoint, "")
+      await writeFile(
+        join(dirname(dirname(entrypoint)), "package.json"),
+        JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
+      )
+      const statePath = join(root, "upgrade-restart.json")
+      await writeFile(
+        statePath,
+        JSON.stringify({
+          version: "1.2.3",
+          fromVersion: "1.2.2",
+          packageManager: "npm",
+          pendingServices: ["systemd-user:cohall-device.service"],
+          restartedServices: ["systemd-user:cohall-relay.service"],
+          restartingService: "systemd-user:cohall-device.service",
+        }),
+      )
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: (command, arguments_) => {
+          invocations.push([command, ...arguments_].join(" "))
+          if (arguments_.includes("show"))
+            return Promise.resolve({
+              exitCode: 0,
+              stdout: `{ path=${entrypoint} ; argv[]=${entrypoint} device ; }`,
+              stderr: "",
+            })
+          return Promise.resolve(success())
+        },
+      }
+
+      const preview = await upgrade({
+        currentVersion: "1.2.3",
+        restart: true,
+        dryRun: true,
+        delegated,
+        entrypoint,
+        platform: "linux",
+        uid: 1000,
+        statePath,
+        runner,
+      })
+
+      expect(preview.services_pending_restart).toEqual(["systemd-user:cohall-device.service"])
+      expect(await readFile(statePath, "utf8")).toContain("systemd-user:cohall-device.service")
+      invocations.length = 0
+
+      const result = await upgrade({
+        currentVersion: "1.2.3",
+        restart: true,
+        dryRun: false,
+        delegated,
+        entrypoint,
+        platform: "linux",
+        uid: 1000,
+        statePath,
+        runner,
+      })
+
+      expect(result.resumed_after_restart).toBe(true)
+      expect(result.services_restarted).toEqual([
+        "systemd-user:cohall-relay.service",
+        "systemd-user:cohall-device.service",
+      ])
+      expect(invocations).toEqual([
+        "/usr/bin/systemctl --user is-active --quiet cohall-device.service",
+        "/usr/bin/systemctl --user show --property=ExecStart --value cohall-device.service",
+        ...(delegated ? [] : ["/usr/bin/systemctl --user restart cohall-device.service"]),
+      ])
+      await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+    },
+  )
+
+  it.each(["stopped worker", "changed installation"])(
+    "keeps failed upgrade recovery intact after a %s",
+    async (scenario) => {
+      const root = await temporaryDirectory()
+      const entrypoint = join(root, "current/lib/node_modules/@akshar5/cohall/bin/cohall.js")
+      const other = join(root, "other/lib/node_modules/@akshar5/cohall/bin/cohall.js")
+      for (const path of [entrypoint, other]) {
+        await mkdir(dirname(path), { recursive: true })
+        await writeFile(path, "")
+        await writeFile(
+          join(dirname(dirname(path)), "package.json"),
+          JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
+        )
+      }
+      const statePath = join(root, "receipt.json")
+      const commands: Array<ReadonlyArray<string>> = []
+      let running = true
+      let serviceEntrypoint = entrypoint
+      let failRestart = true
+      const runner: CommandRunner = {
+        run: async (command, arguments_) => {
+          commands.push(arguments_)
+          if (arguments_.includes("is-active"))
+            return {
+              exitCode: running && arguments_.includes("cohall-device.service") ? 0 : 3,
+              stdout: "",
+              stderr: "",
+            }
+          if (arguments_.includes("show"))
+            return {
+              exitCode: 0,
+              stdout: `{ path=${serviceEntrypoint} ; argv[]=${serviceEntrypoint} device ; }`,
+              stderr: "",
+            }
+          if (command === "npm")
+            await writeFile(
+              join(dirname(dirname(entrypoint)), "package.json"),
+              JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }),
+            )
+          if (arguments_.includes("restart") && failRestart) {
+            if (scenario === "stopped worker") running = false
+            return { exitCode: 1, stdout: "", stderr: "fixture restart failed" }
+          }
+          return success()
+        },
+      }
+      const options = {
+        currentVersion: "1.2.3",
+        target: "1.2.4",
+        restart: true,
+        dryRun: false,
+        entrypoint,
+        platform: "linux" as const,
+        uid: 1000,
+        statePath,
+        runner,
+        resolveExecutable,
+      }
+      await expect(upgrade(options)).rejects.toThrow("fixture restart failed")
+      const receipt = await readFile(statePath, "utf8")
+      expect(JSON.parse(receipt)).toMatchObject({
         pendingServices: ["systemd-user:cohall-device.service"],
-        restartedServices: ["systemd-user:cohall-relay.service"],
-        restartingService: "systemd-user:cohall-device.service",
-      }),
-    )
-    const invocations: Array<string> = []
-    const runner: CommandRunner = {
-      run: (command, arguments_) => {
-        invocations.push([command, ...arguments_].join(" "))
-        return Promise.resolve(success())
-      },
-    }
+      })
+      failRestart = false
+      if (scenario === "changed installation") serviceEntrypoint = other
+      commands.length = 0
+      const retry = { ...options, currentVersion: "1.2.4" }
 
-    const preview = await upgrade({
-      currentVersion: "1.2.3",
-      restart: true,
-      dryRun: true,
-      delegated: true,
-      platform: "linux",
-      uid: 1000,
-      statePath,
-      runner,
-    })
+      if (scenario === "stopped worker") {
+        for (const overrides of [{ dryRun: true }, { restart: false }, {}]) {
+          await expect(upgrade({ ...retry, ...overrides })).resolves.toMatchObject({
+            services_restarted: [],
+            services_pending_restart: ["systemd-user:cohall-device.service"],
+          })
+          expect(await readFile(statePath, "utf8")).toBe(receipt)
+        }
+      } else {
+        await expect(upgrade(retry)).rejects.toThrow("uses")
+        expect(await readFile(statePath, "utf8")).toBe(receipt)
+      }
+      expect(
+        commands.some(
+          (arguments_) => arguments_.includes("restart") || arguments_.includes("install"),
+        ),
+      ).toBe(false)
 
-    expect(preview.services_pending_restart).toEqual(["systemd-user:cohall-device.service"])
-    expect(await readFile(statePath, "utf8")).toContain("systemd-user:cohall-device.service")
-    invocations.length = 0
-
-    const result = await upgrade({
-      currentVersion: "1.2.3",
-      restart: true,
-      dryRun: false,
-      delegated: true,
-      platform: "linux",
-      uid: 1000,
-      statePath,
-      runner,
-    })
-
-    expect(result.resumed_after_restart).toBe(true)
-    expect(result.services_restarted).toEqual([
-      "systemd-user:cohall-relay.service",
-      "systemd-user:cohall-device.service",
-    ])
-    expect(invocations).toEqual([
-      "/usr/bin/systemctl --user is-active --quiet cohall-device.service",
-    ])
-    await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
-  })
+      running = true
+      serviceEntrypoint = entrypoint
+      await expect(upgrade(retry)).resolves.toMatchObject({
+        services_restarted: ["systemd-user:cohall-device.service"],
+        services_pending_restart: [],
+        resumed_after_restart: true,
+      })
+      await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+    },
+  )
 
   it("preserves recovery state during a preview or failed installation", async () => {
     const root = await temporaryDirectory()
