@@ -230,7 +230,8 @@ run in place.
 An exact version already installed on disk skips package installation and still
 restarts active services. Dry runs and failed installations preserve restart
 recovery state. A new explicit version takes precedence over an older recovery
-record.
+record, while retaining unfinished restarts for the new version. `--no-restart`
+also preserves pending restarts for a later retry.
 
 Upgrade tools use the first PATH candidate that passes ownership and permission
 checks. Unsafe candidates are skipped; an explicit executable path must pass

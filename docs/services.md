@@ -237,7 +237,8 @@ through durable restart recovery.
 If a restart fails, inactive or missing services remain listed in
 `services_pending_restart` and their recovery state is preserved. Repair or start
 the affected service, then rerun the same upgrade command. Recovery verifies each
-active service's installation before restarting it.
+active service's installation before restarting it. Changing the target version
+retains unfinished restarts under the new version, including with `--no-restart`.
 
 Before changing files, Cohall verifies that active systemd jobs, launchd jobs,
 and Windows scheduled tasks use the same global installation as the invoked
