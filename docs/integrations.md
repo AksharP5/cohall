@@ -193,6 +193,15 @@ infers `grok-bot` from a Bot target. See [Grok Bot setup](../README.md#talk-to-y
 for messaging details, and [computer setup](grok-bot.md) for Tailscale, pairing,
 and the local gateway.
 
+Device discovery uses `GET /api/devices/page`, returning `devices` and an
+optional `nextCursor`. Pass that cursor as `after` on the next request; an absent
+cursor ends the list. Pages contain up to 16 devices and at most 3 MiB of JSON.
+They follow device UUID order; clients sort the complete list by name.
+`GET /api/devices` still returns the full array for older clients.
+Updated clients fall back to that array on older relays, retaining its 2 MiB
+response limit. Upgrade both the relay and client for large device or Bot
+inventories.
+
 When delegating from a conversation, the sending agent must distill why the user
 is asking, relevant facts and prior findings, constraints, and the intended
 decision into Cohall's `context` field. Cohall cannot read the harness transcript

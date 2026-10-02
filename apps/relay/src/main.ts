@@ -848,6 +848,12 @@ export const runRelay = async (): Promise<void> => {
         hub.closeSession(id)
         return json(session)
       }
+      if (url.pathname === "/api/devices/page" && request.method === "GET") {
+        const after = url.searchParams.get("after")
+        return json(
+          yield* store.listDevicePage(after === null ? undefined : yield* pathId(DeviceId, after)),
+        )
+      }
       if (url.pathname === "/api/devices" && request.method === "GET") {
         return json(yield* store.listDevices())
       }

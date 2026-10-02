@@ -180,6 +180,26 @@ export const Device = Schema.Struct({
 })
 export interface Device extends Schema.Schema.Type<typeof Device> {}
 
+export const maxDevicePageDevices = 16
+export const maxDevicePageResponseBytes = 3 * 1024 * 1024
+export const DevicePage = Schema.Struct({
+  devices: boundedArray(Device, maxDevicePageDevices),
+  nextCursor: Schema.optionalKey(DeviceId),
+}).check(
+  Schema.makeFilter((page) => {
+    let previous: DeviceId | undefined
+    for (const device of page.devices) {
+      if (previous !== undefined && device.id <= previous)
+        return "Device pages must be ordered by ID"
+      previous = device.id
+    }
+    return page.nextCursor === undefined || page.nextCursor === previous
+      ? undefined
+      : "The next cursor must be the last device ID"
+  }),
+)
+export interface DevicePage extends Schema.Schema.Type<typeof DevicePage> {}
+
 export const minimumDeviceOperationVersion = "0.5.0"
 
 const parsedVersion = (value: string): readonly [number, number, number, boolean] | undefined => {

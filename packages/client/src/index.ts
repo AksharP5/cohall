@@ -4,6 +4,7 @@ import {
   CreateTaskInput,
   CreateUpgradeOperationsInput,
   Device,
+  DevicePage,
   DeviceOperation,
   ErrorResponse,
   ExchangePairingInput,
@@ -17,6 +18,7 @@ import {
   type TaskProgressInput,
   TaskAttachment,
   maxAttachmentBytes,
+  maxDevicePageResponseBytes,
   TaskInbox,
   TaskInboxItem,
   TaskTrace,
@@ -103,6 +105,13 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@cohall/RelayClient") {}
 
 const normalizeBaseUrl = (url: string): string => url.replace(/\/+$/, "")
+
+const compareDevices = (left: Device, right: Device): number => {
+  // SQLite NOCASE folds ASCII only; match the legacy device-list order.
+  const fold = (name: string) => name.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+  const byName = Buffer.compare(Buffer.from(fold(left.name)), Buffer.from(fold(right.name)))
+  return byName || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+}
 
 const maxJsonResponseBytes = 2 * 1024 * 1024
 const maxTraceResponseBytes = 4 * 1024 * 1024
@@ -206,8 +215,42 @@ export const make = (options: RelayClientOptions): Interface => {
       )
     })
 
+  const devicePage = (after?: DeviceId) =>
+    request(
+      "RelayClient.devices",
+      `/api/devices/page${after === undefined ? "" : `?after=${encodeURIComponent(after)}`}`,
+      DevicePage,
+      undefined,
+      maxDevicePageResponseBytes,
+    )
+
   return Service.of({
-    devices: () => request("RelayClient.devices", "/api/devices", Schema.Array(Device)),
+    devices: () =>
+      Effect.gen(function* () {
+        const first = yield* devicePage().pipe(
+          Effect.catch((cause) =>
+            cause instanceof RelayRequestError && cause.status === 404
+              ? request("RelayClient.devices", "/api/devices", Schema.Array(Device))
+              : Effect.fail(cause),
+          ),
+        )
+        if (!("devices" in first)) return first
+        const devices = [...first.devices]
+        let cursor = first.nextCursor
+        while (cursor !== undefined) {
+          const page = yield* devicePage(cursor)
+          const next = page.devices[0]
+          if (next === undefined) break
+          if (next.id <= cursor)
+            return yield* new RelayDecodeError({
+              operation: "RelayClient.devices",
+              message: "Relay device page did not advance",
+            })
+          devices.push(...page.devices)
+          cursor = page.nextCursor
+        }
+        return devices.sort(compareDevices)
+      }),
     forgetDevice: (deviceId) =>
       request(
         "RelayClient.forgetDevice",

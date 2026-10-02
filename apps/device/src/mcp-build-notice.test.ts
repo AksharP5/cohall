@@ -110,8 +110,13 @@ else setInterval(() => {}, 1000)`,
     const directory = await mkdtemp(join(dirname(packaged), "mcp-build-"))
     const entrypoint = join(directory, "cohall.js")
     const client = new Client({ name: "cohall-build-test", version: "1.0.0" })
-    const relay = createServer((_request, response) => {
+    const relay = createServer((request, response) => {
       response.setHeader("content-type", "application/json")
+      if (request.url !== "/api/devices") {
+        response.statusCode = 404
+        response.end(JSON.stringify({ error: "Route not found" }))
+        return
+      }
       response.end("[]")
     })
     await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve))

@@ -4,7 +4,11 @@ import { Effect } from "effect"
 import { expect, it, vi } from "vitest"
 import { make } from "./index.ts"
 import {
+  Bot,
+  BotId,
   Device,
+  DeviceId,
+  DevicePage,
   RequestTaskInput,
   TaskTrace,
   TaskProgressInput,
@@ -13,9 +17,158 @@ import {
   makeDeviceId,
   makeTaskId,
   makeThreadId,
+  maxDevicePageResponseBytes,
   now,
 } from "@cohall/protocol"
 import { Schema } from "effect"
+
+const pageDevice = (index: number, name: string) =>
+  Device.make({
+    id: DeviceId.make(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`),
+    name,
+    hostname: "localhost",
+    platform: "linux",
+    architecture: "x64",
+    status: "online",
+    providers: ["grok-bot"],
+    capabilities: [],
+    workspaces: [],
+    version: "0.9.0",
+    lastSeenAt: now(),
+  })
+
+it("assembles large device pages and restores name ordering", async () => {
+  const description =
+    "A research assistant for planning, documentation, review, and implementation. "
+      .repeat(7)
+      .slice(0, 512)
+  const bots = Array.from({ length: 256 }, (_, index) =>
+    Bot.make({ id: BotId.make(`agent-${index}`), name: `Agent ${index}`, description }),
+  )
+  const devices = Array.from({ length: 15 }, (_, index) =>
+    Device.make({
+      ...pageDevice(index + 1, `machine-${String(15 - index).padStart(2, "0")}`),
+      bots,
+    }),
+  )
+  const firstCursor = devices[13]?.id
+  if (firstCursor === undefined) throw new Error("Missing first-page cursor")
+  const first = DevicePage.make({ devices: devices.slice(0, 14), nextCursor: firstCursor })
+  const second = DevicePage.make({ devices: devices.slice(14) })
+  expect(Buffer.byteLength(JSON.stringify(devices))).toBeGreaterThan(2 * 1024 * 1024)
+  expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(2 * 1024 * 1024)
+
+  const paths: Array<string> = []
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = new URL(String(input))
+    paths.push(`${url.pathname}${url.search}`)
+    if (url.pathname !== "/api/devices/page") throw new Error("Unexpected legacy request")
+    return Response.json(url.searchParams.get("after") === null ? first : second)
+  })
+  try {
+    const client = make({ baseUrl: "http://relay.test", token: "test" })
+    const result = await Effect.runPromise(client.devices())
+    expect(result.map((device) => device.name)).toEqual(
+      Array.from({ length: 15 }, (_, index) => `machine-${String(index + 1).padStart(2, "0")}`),
+    )
+    expect(paths).toEqual(["/api/devices/page", `/api/devices/page?after=${firstCursor}`])
+  } finally {
+    fetch.mockRestore()
+  }
+})
+
+it("falls back to the full legacy list only when the page route is missing", async () => {
+  const devices = [pageDevice(1, "Zulu"), pageDevice(2, "Alpha")]
+  const paths: Array<string> = []
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const path = new URL(String(input)).pathname
+    paths.push(path)
+    return path === "/api/devices/page"
+      ? Response.json({ error: "Route not found" }, { status: 404 })
+      : Response.json(devices)
+  })
+  try {
+    const client = make({ baseUrl: "http://relay.test", token: "test" })
+    expect(await Effect.runPromise(client.devices())).toEqual(devices)
+    expect(paths).toEqual(["/api/devices/page", "/api/devices"])
+  } finally {
+    fetch.mockRestore()
+  }
+})
+
+it("does not hide a page failure by requesting the legacy list", async () => {
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValue(Response.json({ error: "Unavailable" }, { status: 500 }))
+  try {
+    const client = make({ baseUrl: "http://relay.test", token: "test" })
+    await expect(Effect.runPromise(client.devices())).rejects.toMatchObject({ status: 500 })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  } finally {
+    fetch.mockRestore()
+  }
+})
+
+it("rejects a page that repeats the previous cursor", async () => {
+  const first = pageDevice(1, "Alpha")
+  const second = pageDevice(2, "Beta")
+  const pages = [
+    DevicePage.make({ devices: [first], nextCursor: first.id }),
+    DevicePage.make({ devices: [first, second], nextCursor: second.id }),
+  ]
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async () => Response.json(pages.shift()))
+  try {
+    const client = make({ baseUrl: "http://relay.test", token: "test" })
+    await expect(Effect.runPromise(client.devices())).rejects.toMatchObject({
+      message: "Relay device page did not advance",
+    })
+  } finally {
+    fetch.mockRestore()
+  }
+})
+
+it("accepts an empty terminal page if devices disappear between requests", async () => {
+  const first = pageDevice(1, "Alpha")
+  const pages = [
+    DevicePage.make({ devices: [first], nextCursor: first.id }),
+    DevicePage.make({ devices: [] }),
+  ]
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async () => Response.json(pages.shift()))
+  try {
+    const client = make({ baseUrl: "http://relay.test", token: "test" })
+    expect(await Effect.runPromise(client.devices())).toEqual([first])
+  } finally {
+    fetch.mockRestore()
+  }
+})
+
+it("rejects a later device page over its response limit", async () => {
+  const first = pageDevice(1, "Alpha")
+  const page = JSON.stringify(DevicePage.make({ devices: [] }))
+  const oversized = `${page}${" ".repeat(maxDevicePageResponseBytes + 1 - Buffer.byteLength(page))}`
+  const responses = [
+    Response.json(DevicePage.make({ devices: [first], nextCursor: first.id })),
+    new Response(oversized),
+  ]
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+    const response = responses.shift()
+    if (response === undefined) throw new Error("Unexpected page request")
+    return response
+  })
+  try {
+    const client = make({ baseUrl: "http://relay.test", token: "test" })
+    await expect(Effect.runPromise(client.devices())).rejects.toMatchObject({
+      message: "Relay response exceeded 3 MiB",
+    })
+    expect(fetch).toHaveBeenCalledTimes(2)
+  } finally {
+    fetch.mockRestore()
+  }
+})
 
 const largeTrace = () => {
   const at = now()
@@ -113,7 +266,13 @@ it("keeps the 2 MiB limit for ordinary JSON responses", async () => {
   const device = largeTrace().targetDevice
   const payload = JSON.stringify([device, { ...device, id: makeDeviceId() }])
   expect(Buffer.byteLength(payload)).toBeGreaterThan(2 * 1024 * 1024)
-  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(payload))
+  const fetch = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (input) =>
+      new URL(String(input)).pathname === "/api/devices/page"
+        ? Response.json({ error: "Route not found" }, { status: 404 })
+        : new Response(payload),
+    )
   try {
     const client = make({ baseUrl: "http://relay.test", token: "test" })
     await expect(Effect.runPromise(client.devices())).rejects.toMatchObject({

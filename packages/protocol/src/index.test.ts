@@ -4,6 +4,9 @@ import {
   BotId,
   CreateTaskInput,
   CreateUpgradeOperationsInput,
+  Device,
+  DevicePage,
+  DeviceId,
   SocketEvent,
   Task,
   TaskProgressInput,
@@ -28,6 +31,36 @@ import {
   supportsDeviceOperations,
   taskSlot,
 } from "./index.ts"
+
+it("rejects device pages with invalid or nonadvancing cursors", () => {
+  const makeDevice = (index: number) =>
+    Device.make({
+      id: DeviceId.make(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`),
+      name: `device-${index}`,
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version: "0.9.0",
+      lastSeenAt: now(),
+    })
+  const first = makeDevice(1)
+  const second = makeDevice(2)
+  expect(Schema.decodeUnknownSync(DevicePage)({ devices: [first], nextCursor: first.id })).toEqual({
+    devices: [first],
+    nextCursor: first.id,
+  })
+  for (const page of [
+    { devices: [first], nextCursor: "invalid" },
+    { devices: [first], nextCursor: second.id },
+    { devices: [second, first], nextCursor: first.id },
+    { devices: [], nextCursor: first.id },
+  ])
+    expect(() => Schema.decodeUnknownSync(DevicePage)(page)).toThrow()
+})
 
 it("accepts valid UTC deadlines and rejects impossible dates", () => {
   const decode = Schema.decodeUnknownSync(TaskDeadline)

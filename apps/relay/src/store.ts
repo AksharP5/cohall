@@ -2,6 +2,7 @@ import {
   AuthSession,
   ConnectionRole,
   Device,
+  DevicePage,
   DeviceId,
   DeviceOperation,
   DeviceUsage,
@@ -37,6 +38,8 @@ import {
   makeTaskId,
   makeThreadId,
   maxAttachmentBytes,
+  maxDevicePageDevices,
+  maxDevicePageResponseBytes,
   maxTaskAttachments,
   maxTaskClarifications,
   taskDeadlinePassed,
@@ -225,6 +228,7 @@ export interface TaskUpdate {
 export interface Interface {
   readonly recover: () => Effect.Effect<void, PersistenceError>
   readonly listDevices: () => Effect.Effect<ReadonlyArray<Device>, PersistenceError>
+  readonly listDevicePage: (after?: DeviceId) => Effect.Effect<DevicePage, PersistenceError>
   readonly usage: () => Effect.Effect<UsageSummary, PersistenceError>
   readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, PersistenceError>
   readonly upsertDevice: (device: Device) => Effect.Effect<Device, PersistenceError>
@@ -935,6 +939,62 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       catch: operationError("RelayStore.listDevices"),
     })
     return yield* Effect.forEach(rows, deviceFromRow)
+  })
+
+  const listDevicePage = Effect.fn("RelayStore.listDevicePage")(function* (after?: DeviceId) {
+    const nextRow = yield* Effect.try({
+      try: () =>
+        db.query<DeviceRow, [string]>(
+          `SELECT devices.*,
+                  (SELECT COUNT(*) FROM tasks
+                   WHERE target_device_id = devices.id AND status = 'queued') AS queued_tasks,
+                  (SELECT MIN(created_at) FROM tasks
+                   WHERE target_device_id = devices.id AND status = 'queued') AS oldest_queued_at
+           FROM devices WHERE forgotten_at IS NULL AND devices.id > ?
+           ORDER BY devices.id LIMIT 1`,
+        ),
+      catch: operationError("RelayStore.listDevicePage.query"),
+    })
+    const devices: Array<Device> = []
+    const targetBytes = 2 * 1024 * 1024 - 1024
+    let bytes = 0
+    let cursor = after ?? ""
+    while (devices.length < maxDevicePageDevices) {
+      const row = yield* Effect.try({
+        try: () => nextRow.get(cursor),
+        catch: operationError("RelayStore.listDevicePage.read"),
+      })
+      if (row === null) break
+      const device = yield* deviceFromRow(row)
+      const size = Buffer.byteLength(JSON.stringify(device)) + (devices.length === 0 ? 0 : 1)
+      if (devices.length > 0 && bytes + size > targetBytes) break
+      devices.push(device)
+      bytes += size
+      cursor = device.id
+      if (bytes > targetBytes) break
+    }
+    const last = devices.at(-1)
+    const hasMore =
+      last !== undefined &&
+      (yield* Effect.try({
+        try: () =>
+          db
+            .query<{ readonly found: number }, [string]>(
+              "SELECT 1 AS found FROM devices WHERE forgotten_at IS NULL AND id > ? ORDER BY id LIMIT 1",
+            )
+            .get(last.id) !== null,
+        catch: operationError("RelayStore.listDevicePage.hasMore"),
+      }))
+    const page = DevicePage.make({
+      devices,
+      ...(hasMore && last !== undefined ? { nextCursor: last.id } : {}),
+    })
+    if (Buffer.byteLength(JSON.stringify(page)) > maxDevicePageResponseBytes)
+      return yield* new PersistenceError({
+        operation: "RelayStore.listDevicePage",
+        message: "A device page exceeds the transfer limit",
+      })
+    return page
   })
 
   const usage = Effect.fn("RelayStore.usage")(function* () {
@@ -2447,6 +2507,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   return Service.of({
     recover,
     listDevices,
+    listDevicePage,
     usage,
     forgetDevice,
     upsertDevice,
