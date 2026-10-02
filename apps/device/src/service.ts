@@ -5,6 +5,7 @@ import { dirname, join } from "node:path"
 import { configurationPath } from "./config.ts"
 import {
   packageInstallation,
+  serviceCandidates,
   trustedExecutable,
   type CommandResult,
   type CommandRunner,
@@ -194,34 +195,21 @@ export const restartDeviceService = async (
 ): Promise<DeviceServiceRestart> => {
   const platform = options.platform ?? process.platform
   const runner = options.runner ?? defaultRunner
-  if (platform === "linux") {
-    const service = "cohall-device.service"
-    const check = await runner.run("systemctl", ["--user", "is-active", "--quiet", service], 10_000)
-    if (check.exitCode !== 0) {
-      return { running: false, restarted: false }
-    }
-    await checked(runner, "systemctl", ["--user", "restart", service])
-    return { running: true, restarted: true, service }
+  const service = serviceCandidates(platform, options.uid ?? process.getuid?.()).find(
+    (candidate) => candidate.device,
+  )
+  if (service === undefined) return { running: false, restarted: false }
+
+  const check = await runner.run(service.check.command, service.check.arguments, 10_000)
+  if (
+    check.exitCode !== 0 ||
+    (service.activeOutput !== undefined &&
+      !service.activeOutput.test(`${check.stdout}\n${check.stderr}`))
+  ) {
+    return { running: false, restarted: false }
   }
-  if (platform === "darwin") {
-    const service = "com.cohall.device"
-    const target = `gui/${options.uid ?? process.getuid?.() ?? 0}/${service}`
-    const check = await runner.run("launchctl", ["print", target], 10_000)
-    if (check.exitCode !== 0) {
-      return { running: false, restarted: false }
-    }
-    await checked(runner, "launchctl", ["kickstart", "-k", target])
-    return { running: true, restarted: true, service }
+  for (const command of service.restart) {
+    await checked(runner, command.command, command.arguments, command.allowFailure)
   }
-  if (platform === "win32") {
-    const service = "Cohall Device"
-    const check = await runner.run("schtasks.exe", ["/Query", "/TN", service], 10_000)
-    if (check.exitCode !== 0) {
-      return { running: false, restarted: false }
-    }
-    await checked(runner, "schtasks.exe", ["/End", "/TN", service], true)
-    await checked(runner, "schtasks.exe", ["/Run", "/TN", service])
-    return { running: true, restarted: true, service }
-  }
-  return { running: false, restarted: false }
+  return { running: true, restarted: true, service: service.label }
 }

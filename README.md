@@ -178,8 +178,10 @@ cohall relay use https://new-relay.example.com
 ```
 
 The switch verifies the existing credentials against the restored relay before
-changing local configuration, then restarts an active device service. Remote
-addresses require HTTPS by default. Use `--allow-http` only when another layer,
+changing local configuration, then restarts an active device service. Stopped
+workers stay stopped. Repeat the command to retry a failed restart, even when
+the address is already saved. Remote addresses require HTTPS by default. Use
+`--allow-http` only when another layer,
 such as Tailscale, already encrypts the connection.
 
 The backup contains the SQLite relay state, the plaintext owner token, and a

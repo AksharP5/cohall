@@ -372,9 +372,9 @@ export const switchRelay = async (options: {
   }
   let service: DeviceServiceRestart = { running: false, restarted: false }
   let warning: string | undefined
-  if (updated && options.restart && deviceTokens.length > 0) {
+  if (options.restart && deviceTokens.length > 0) {
     service = await (options.restartService ?? restartDeviceService)().catch((cause: unknown) => {
-      warning = `Relay URL changed, but the device service could not restart: ${cause instanceof Error ? cause.message : String(cause)}`
+      warning = `Relay URL is saved, but the device service could not restart: ${cause instanceof Error ? cause.message : String(cause)}. Retry cohall relay use ${relayUrl} to restart an active worker.`
       return { running: true, restarted: false }
     })
   }

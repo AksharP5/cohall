@@ -203,6 +203,78 @@ describe("relay migration", () => {
     }
   })
 
+  it.each(["restart failure", "--no-restart"])(
+    "restarts a worker on the saved relay after %s",
+    async (firstAttempt) => {
+      const root = await temporary()
+      const names = [
+        "COHALL_CONFIG",
+        "COHALL_RELAY_URL",
+        "COHALL_CLIENT_TOKEN",
+        "COHALL_DEVICE_TOKEN",
+      ] as const
+      const previous = new Map(names.map((name) => [name, process.env[name]]))
+      for (const name of names) delete process.env[name]
+      process.env.COHALL_CONFIG = join(root, "config.json")
+      const events: Array<string> = []
+      let attempts = 0
+
+      try {
+        await writeStoredConfiguration(
+          StoredConfiguration.make({
+            version: 1,
+            relayUrl: "https://old.example",
+            deviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+            deviceName: "workstation",
+            workspaces: [root],
+            clientToken: "client-token",
+            deviceToken: "device-token",
+          }),
+        )
+        const options = {
+          relayUrl: "https://new.example",
+          restart: true,
+          verifyClient: async () => {
+            events.push("client verified")
+          },
+          verifyDevice: async () => {
+            events.push("device verified")
+          },
+          restartService: async () => {
+            events.push("restart")
+            attempts += 1
+            if (firstAttempt === "restart failure" && attempts === 1) {
+              throw new Error("transient restart failure")
+            }
+            return { running: true, restarted: true, service: "cohall-device.service" }
+          },
+        }
+        const first = await switchRelay({ ...options, restart: firstAttempt !== "--no-restart" })
+        expect(first.updated).toBe(true)
+        expect(first.service.restarted).toBe(false)
+        if (firstAttempt === "restart failure") {
+          expect(first.warning).toContain("transient restart failure")
+        }
+        await expect(readStoredConfiguration()).resolves.toMatchObject({
+          relayUrl: options.relayUrl,
+        })
+        events.length = 0
+
+        const retry = await switchRelay(options)
+        expect(retry).toMatchObject({ updated: false, service: { running: true, restarted: true } })
+        expect(retry.warning).toBeUndefined()
+        expect(events).toEqual(["client verified", "device verified", "restart"])
+        expect(attempts).toBe(firstAttempt === "restart failure" ? 2 : 1)
+        events.length = 0
+
+        await switchRelay({ ...options, restart: false })
+        expect(events).toEqual(["client verified", "device verified"])
+      } finally {
+        for (const name of names) restoreEnvironment(name, previous.get(name))
+      }
+    },
+  )
+
   it("leaves the current relay untouched when verification fails", async () => {
     const root = await temporary()
     const previousConfig = process.env.COHALL_CONFIG

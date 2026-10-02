@@ -238,6 +238,130 @@ Invoke-Expression $Inspection
     })
   })
 
+  it.each(["running", "waiting"])(
+    "restarts a macOS worker only when its state is running (%s)",
+    async (state) => {
+      const commands: Array<ReadonlyArray<string>> = []
+      const runner: CommandRunner = {
+        run: async (_command, arguments_) => {
+          commands.push(arguments_)
+          return { exitCode: 0, stdout: `state = ${state}`, stderr: "" }
+        },
+      }
+      const result = await restartDeviceService({ platform: "darwin", uid: 501, runner })
+      expect(result.running).toBe(state === "running")
+      expect(result.restarted).toBe(state === "running")
+      expect(commands).toEqual(
+        state === "running"
+          ? [
+              ["print", "gui/501/com.cohall.device"],
+              ["kickstart", "-k", "gui/501/com.cohall.device"],
+            ]
+          : [["print", "gui/501/com.cohall.device"]],
+      )
+    },
+  )
+
+  it.each(["Ready", "Disabled", "missing"])(
+    "does not start a Windows task that is %s while changing relays",
+    async (state) => {
+      const commands: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, arguments_) => {
+          commands.push([command, ...arguments_].join(" "))
+          return {
+            exitCode: command === "powershell.exe" || state === "missing" ? 1 : 0,
+            stdout: `Status: ${state}`,
+            stderr: "",
+          }
+        },
+      }
+
+      await expect(restartDeviceService({ platform: "win32", runner })).resolves.toEqual({
+        running: false,
+        restarted: false,
+      })
+      expect(commands).toHaveLength(1)
+    },
+  )
+
+  it("restarts a running Windows task even if it stops before the end command", async () => {
+    const commands: Array<ReadonlyArray<string>> = []
+    const runner: CommandRunner = {
+      run: async (_command, arguments_) => {
+        commands.push(arguments_)
+        return { exitCode: arguments_.includes("/End") ? 1 : 0, stdout: "", stderr: "" }
+      },
+    }
+
+    await expect(restartDeviceService({ platform: "win32", runner })).resolves.toEqual({
+      running: true,
+      restarted: true,
+      service: "Cohall Device",
+    })
+    expect(commands.slice(1)).toEqual([
+      ["/End", "/TN", "Cohall Device"],
+      ["/Run", "/TN", "Cohall Device"],
+    ])
+  })
+
+  it.skipIf(process.platform !== "win32")(
+    "checks Windows task state through PowerShell before restarting",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "cohall-Windows-task-state-"))
+      const harness = join(directory, "task-state.ps1")
+      try {
+        await writeFile(
+          harness,
+          `param($Check, $State)
+function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) if ($State -eq 'missing') { return $null }; return @{ State = $State } }
+Invoke-Expression $Check
+`,
+        )
+        for (const state of ["Running", "Ready", "Disabled", "missing"]) {
+          const restarts: Array<ReadonlyArray<string>> = []
+          const runner: CommandRunner = {
+            run: async (command, arguments_) => {
+              if (command !== "powershell.exe") {
+                restarts.push(arguments_)
+                return { exitCode: 0, stdout: "", stderr: "" }
+              }
+              return new Promise((resolveResult) => {
+                execFile(
+                  command,
+                  [
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-File",
+                    harness,
+                    "-Check",
+                    arguments_.at(-1) ?? "",
+                    "-State",
+                    state,
+                  ],
+                  (error: ExecFileException | null, stdout, stderr) =>
+                    resolveResult({
+                      exitCode:
+                        typeof error?.code === "number" ? error.code : error === null ? 0 : 1,
+                      stdout,
+                      stderr,
+                    }),
+                )
+              })
+            },
+          }
+
+          const result = await restartDeviceService({ platform: "win32", runner })
+          expect(result.running).toBe(state === "Running")
+          expect(result.restarted).toBe(state === "Running")
+          expect(restarts).toHaveLength(state === "Running" ? 2 : 0)
+        }
+      } finally {
+        await rm(directory, { recursive: true })
+      }
+    },
+  )
+
   it.skipIf(process.platform === "win32")(
     "rejects service managers found beneath writable directories",
     async () => {
