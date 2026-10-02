@@ -169,8 +169,11 @@ cohall doctor
 
 `relay use` first proves that every stored client and device credential works
 against the new relay. Only then does it save the address. It restarts an
-active managed device service automatically; use `--no-restart` when another
-supervisor owns the process. Environment-based configurations must update
+active managed device service automatically and leaves stopped workers stopped.
+Repeat the command to retry a failed restart or apply a previously saved address;
+credentials are verified again, and an unchanged address is not rewritten.
+Use `--no-restart` when another supervisor owns the process.
+Environment-based configurations must update
 `COHALL_RELAY_URL` in their service environment instead.
 
 HTTPS is required for non-loopback addresses because verification sends the

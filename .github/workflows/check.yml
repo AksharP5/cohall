@@ -44,4 +44,4 @@ jobs:
       - run: bun run build:package
       - run: node bin/cohall.js --version
       - run: bunx vitest run --testNamePattern Windows packages/providers/src/index.test.ts apps/device/src/upgrade.test.ts apps/device/src/service.test.ts
-      - run: bunx vitest run apps/device/src/daemon-connection.test.ts
+      - run: bunx vitest run apps/device/src/daemon-connection.test.ts apps/device/src/relay-migration.test.ts
