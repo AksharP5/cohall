@@ -33,12 +33,12 @@ it.skipIf(process.platform === "win32").each(["SIGTERM", "SIGINT"] as const)(
       join(directory, "codex"),
       `#!${process.execPath}
 const { writeFileSync } = require("node:fs")
-writeFileSync(process.env.AUDIT_PID_FILE, String(process.pid))
-console.log(JSON.stringify({ type: "thread.started", thread_id: "shutdown-test" }))
 process.on("SIGTERM", () => setTimeout(() => {
   writeFileSync(process.env.AUDIT_CLEANED_FILE, "done")
   process.exit(0)
 }, 150))
+writeFileSync(process.env.AUDIT_PID_FILE, String(process.pid))
+console.log(JSON.stringify({ type: "thread.started", thread_id: "shutdown-test" }))
 setInterval(() => {}, 1000)
 `,
       { mode: 0o755 },
