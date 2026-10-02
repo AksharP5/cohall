@@ -1,11 +1,15 @@
 import {
   AttachmentName,
+  Bot,
+  BotId,
   Device,
   DeviceId,
   makeDeviceId,
   now,
   version,
   maxAttachmentBytes,
+  maxDevicePageResponseBytes,
+  maxSocketPayloadBytes,
   TaskProgressInput,
 } from "@cohall/protocol"
 import { Effect, ManagedRuntime, Schema } from "effect"
@@ -16,6 +20,163 @@ import { expect, it, vi } from "vitest"
 import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
+
+const orderedDeviceId = (index: number) =>
+  DeviceId.make(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`)
+
+it("pages Bot rosters by UUID without skipping a renamed device", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const description =
+      "A research assistant for planning, documentation, review, and implementation. "
+        .repeat(7)
+        .slice(0, 512)
+    const bots = Array.from({ length: 256 }, (_, index) =>
+      Bot.make({ id: BotId.make(`agent-${index}`), name: `Agent ${index}`, description }),
+    )
+    const devices = Array.from({ length: 15 }, (_, index) =>
+      Device.make({
+        id: orderedDeviceId(index + 1),
+        name: `workstation-${index + 1}`,
+        hostname: "localhost",
+        platform: "linux",
+        architecture: "x64",
+        status: "online",
+        providers: ["grok-bot"],
+        bots: [],
+        capabilities: [],
+        workspaces: [{ path: "/home/user/projects", label: "projects" }],
+        version,
+        lastSeenAt: now(),
+      }),
+    )
+    for (const device of devices) {
+      await Effect.runPromise(store.upsertDevice(device))
+      await Effect.runPromise(store.heartbeat(device.id, "online", bots))
+    }
+
+    const first = await Effect.runPromise(store.listDevicePage())
+    expect(first.devices).toHaveLength(14)
+    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(2 * 1024 * 1024)
+    expect(first.nextCursor).toBe(first.devices.at(-1)?.id)
+
+    const last = devices[14]
+    if (last === undefined || first.nextCursor === undefined) throw new Error("Missing page cursor")
+    await Effect.runPromise(store.upsertDevice(Device.make({ ...last, name: "Aardvark", bots })))
+    const second = await Effect.runPromise(store.listDevicePage(first.nextCursor))
+    expect(second.devices.map((device) => device.id)).toEqual([last.id])
+    expect(second.nextCursor).toBeUndefined()
+    expect((await Effect.runPromise(store.listDevices()))[0]?.name).toBe("Aardvark")
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+it("continues after one device merges near-limit hello and heartbeat frames", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const first = Device.make({
+      id: orderedDeviceId(1),
+      name: "large",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      bots: [],
+      capabilities: Array.from({ length: 64 }, (_, index) => ({
+        id: `cap-${index}`,
+        label: "x",
+        detail: "\0".repeat(512),
+      })),
+      workspaces: Array.from({ length: 64 }, () => ({
+        path: "\0".repeat(1951),
+        label: "\0".repeat(256),
+      })),
+      version,
+      lastSeenAt: now(),
+    })
+    const bots = Array.from({ length: 256 }, (_, index) =>
+      Bot.make({
+        id: BotId.make(`bot-${index}${"\0".repeat(36)}`),
+        name: `x${"\0".repeat(127)}`,
+        description: "\0".repeat(512),
+      }),
+    )
+    expect(Buffer.byteLength(JSON.stringify({ _tag: "DeviceHello", device: first }))).toBeLessThan(
+      maxSocketPayloadBytes,
+    )
+    expect(
+      Buffer.byteLength(
+        JSON.stringify({ _tag: "DeviceHeartbeat", deviceId: first.id, status: "online", bots }),
+      ),
+    ).toBeLessThan(maxSocketPayloadBytes)
+    expect(Buffer.byteLength(JSON.stringify(Device.make({ ...first, bots })))).toBeGreaterThan(
+      2 * 1024 * 1024 - 1024,
+    )
+    await Effect.runPromise(store.upsertDevice(first))
+    await Effect.runPromise(store.heartbeat(first.id, "online", bots))
+    const second = Device.make({
+      ...first,
+      id: orderedDeviceId(2),
+      name: "small",
+      bots: [],
+      capabilities: [],
+      workspaces: [],
+    })
+    await Effect.runPromise(store.upsertDevice(second))
+
+    const page = await Effect.runPromise(store.listDevicePage())
+    expect(page.devices.map((device) => device.id)).toEqual([first.id])
+    expect(page.nextCursor).toBe(first.id)
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(maxDevicePageResponseBytes)
+    const finalPage = await Effect.runPromise(store.listDevicePage(page.nextCursor))
+    expect(finalPage.devices.map((device) => device.id)).toEqual([second.id])
+    expect(finalPage.nextCursor).toBeUndefined()
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+it.each([16, 32])("ends a device list on an exact %i-device page boundary", async (count) => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    for (let index = 1; index <= count; index++)
+      await Effect.runPromise(
+        store.upsertDevice(
+          Device.make({
+            id: orderedDeviceId(index),
+            name: `device-${index}`,
+            hostname: "localhost",
+            platform: "linux",
+            architecture: "x64",
+            status: "online",
+            providers: ["codex"],
+            capabilities: [],
+            workspaces: [],
+            version,
+            lastSeenAt: now(),
+          }),
+        ),
+      )
+
+    const first = await Effect.runPromise(store.listDevicePage())
+    expect(first.devices).toHaveLength(16)
+    if (count === 16) {
+      expect(first.nextCursor).toBeUndefined()
+      return
+    }
+    expect(first.nextCursor).toBe(first.devices.at(-1)?.id)
+    const second = await Effect.runPromise(store.listDevicePage(first.nextCursor))
+    expect(second.devices).toHaveLength(16)
+    expect(second.nextCursor).toBeUndefined()
+  } finally {
+    await runtime.dispose()
+  }
+})
 
 it.each([
   ["assigned", "disconnect"],
