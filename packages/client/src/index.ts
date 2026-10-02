@@ -104,7 +104,14 @@ export class Service extends Context.Service<Service, Interface>()("@cohall/Rela
 
 const normalizeBaseUrl = (url: string): string => url.replace(/\/+$/, "")
 
-const jsonBody = async (response: Response, operation: string): Promise<unknown> => {
+const maxJsonResponseBytes = 2 * 1024 * 1024
+const maxTraceResponseBytes = 4 * 1024 * 1024
+
+const jsonBody = async (
+  response: Response,
+  operation: string,
+  maxBytes = maxJsonResponseBytes,
+): Promise<unknown> => {
   if (response.body === null) {
     throw new RelayDecodeError({ operation, message: "Relay returned an empty response" })
   }
@@ -117,9 +124,12 @@ const jsonBody = async (response: Response, operation: string): Promise<unknown>
       break
     }
     size += chunk.value.byteLength
-    if (size > 2 * 1024 * 1024) {
+    if (size > maxBytes) {
       await reader.cancel()
-      throw new RelayDecodeError({ operation, message: "Relay response exceeded 2 MiB" })
+      throw new RelayDecodeError({
+        operation,
+        message: `Relay response exceeded ${maxBytes / (1024 * 1024)} MiB`,
+      })
     }
     chunks.push(chunk.value)
   }
@@ -156,6 +166,7 @@ export const make = (options: RelayClientOptions): Interface => {
     path: string,
     schema: S,
     init?: RequestInit,
+    maxResponseBytes = maxJsonResponseBytes,
   ): Effect.Effect<S["Type"], RelayClientError> =>
     Effect.gen(function* () {
       const json = yield* Effect.tryPromise({
@@ -176,7 +187,7 @@ export const make = (options: RelayClientOptions): Interface => {
               status: response.status,
             })
           }
-          return jsonBody(response, operation).catch((cause: unknown) => {
+          return jsonBody(response, operation, maxResponseBytes).catch((cause: unknown) => {
             throw cause instanceof RelayDecodeError
               ? cause
               : new RelayDecodeError({ operation, message: String(cause) })
@@ -356,7 +367,13 @@ export const make = (options: RelayClientOptions): Interface => {
         { method: "POST" },
       ),
     traceTask: (taskId) =>
-      request("RelayClient.traceTask", `/api/tasks/${encodeURIComponent(taskId)}/trace`, TaskTrace),
+      request(
+        "RelayClient.traceTask",
+        `/api/tasks/${encodeURIComponent(taskId)}/trace`,
+        TaskTrace,
+        undefined,
+        maxTraceResponseBytes,
+      ),
     cancelTask: (taskId) =>
       request("RelayClient.cancelTask", `/api/tasks/${encodeURIComponent(taskId)}/cancel`, Task, {
         method: "POST",
