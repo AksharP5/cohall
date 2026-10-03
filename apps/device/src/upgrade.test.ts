@@ -1410,7 +1410,16 @@ describe("pnpm service upgrades", () => {
       layout === "classic" ? prefix : join(prefix, `install-${version}`)
     const packagePath = (version: string) =>
       layout === "shared-store"
-        ? join(pnpmHome, "store", "v11", "links", version, "node_modules", "@akshar5", "cohall")
+        ? join(
+            pnpmHome,
+            separateGlobalDir ? "package cache" : "store",
+            "v11",
+            "links",
+            version,
+            "node_modules",
+            "@akshar5",
+            "cohall",
+          )
         : join(
             installation(version),
             "node_modules",
@@ -1488,7 +1497,14 @@ describe("pnpm service upgrades", () => {
         resolveExecutable,
         runner: {
           run: async (_command, args) =>
-            args[0] === "root" ? { ...success(), stdout: setup.globalRoot } : success(),
+            args[0] === "root"
+              ? {
+                  ...success(),
+                  stdout: separateGlobalDir
+                    ? `Warning: this project pins a package manager\n${setup.globalRoot}\n`
+                    : setup.globalRoot,
+                }
+              : success(),
         },
       })
       const unit = await readFile(service.installed, "utf8")
@@ -1503,7 +1519,13 @@ describe("pnpm service upgrades", () => {
       let restartedVersion: unknown
       const runner: CommandRunner = {
         run: async (command, args) => {
-          if (args[0] === "root") return { ...success(), stdout: setup.globalRoot }
+          if (args[0] === "root")
+            return {
+              ...success(),
+              stdout: separateGlobalDir
+                ? `Warning: this project pins a package manager\n${setup.globalRoot}\n`
+                : setup.globalRoot,
+            }
           if (args.includes("is-active"))
             return { ...success(), exitCode: args.includes("cohall-device.service") ? 0 : 3 }
           if (args.includes("show"))

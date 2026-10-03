@@ -193,7 +193,7 @@ export const packageInstallation = (
   }
   if (
     pnpmGlobalDirectory.test(path) ||
-    /\/store\/v\d+\/links\//.test(path) ||
+    /\/v\d+\/links\//.test(path) ||
     path.includes("/node_modules/.pnpm/") ||
     pnpmGlobalDirectory.test(normalizePath(entrypoint))
   ) {
@@ -231,7 +231,7 @@ export const resolvePackageInstallation = async (
         },
         10_000,
       )
-      const reported = normalizePath(result.stdout.trim())
+      const reported = normalizePath(result.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? "")
       const root = reported.endsWith("/node_modules") ? dirname(reported) : reported
       const selected = resolve(candidate)
       const configured = isAbsolute(root) ? resolve(root) : undefined
