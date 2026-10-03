@@ -216,38 +216,41 @@ export const resolvePackageInstallation = async (
 ) => {
   const canonicalEntrypoint = await realpath(entrypoint)
   const installation = packageInstallation(canonicalEntrypoint, resolve(entrypoint))
-  if (installation.manager !== "pnpm") return { ...installation, canonicalEntrypoint }
+  if (installation.manager !== "pnpm")
+    return { ...installation, canonicalEntrypoint, pnpmExecutable: undefined }
 
   const lexicalPath = normalizePath(installation.entrypoint)
-  let globalRoot = lexicalPath.match(pnpmGlobalDirectory)?.[1]
-  if (globalRoot === undefined) {
-    const candidate = lexicalPath.match(/^(.*\/v?\d+)\//)?.[1]
-    if (candidate !== undefined) {
-      const result = await checked(
-        options.runner ?? defaultRunner,
-        {
-          command: await (options.resolveExecutable ?? trustedExecutable)("pnpm"),
-          arguments: ["root", "--global"],
-        },
-        10_000,
-      )
-      const reported = normalizePath(result.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? "")
-      const root = reported.endsWith("/node_modules") ? dirname(reported) : reported
-      const selected = resolve(candidate)
-      const configured = isAbsolute(root) ? resolve(root) : undefined
-      if (
-        configured !== undefined &&
-        (process.platform === "win32"
-          ? selected.toLowerCase() === configured.toLowerCase()
-          : selected === configured)
-      )
-        globalRoot = candidate
-    }
-  }
-  if (globalRoot === undefined)
-    throw new Error(
+  const globalRoot =
+    lexicalPath.match(pnpmGlobalDirectory)?.[1] ?? lexicalPath.match(/^(.*\/v?\d+)\//)?.[1]
+  const globalEntrypointError = () =>
+    new Error(
       "This operation requires a global pnpm entrypoint; project-local and shared-store executions cannot select a global installation. Run the global cohall command.",
     )
+  if (globalRoot === undefined) throw globalEntrypointError()
+  const selectedManager = process.env.COHALL_PNPM_EXECUTABLE ?? "pnpm"
+  const pnpmExecutable =
+    options.resolveExecutable === undefined
+      ? await trustedExecutable(selectedManager, { preserveSymlink: true })
+      : await options.resolveExecutable(selectedManager)
+  const result = await checked(
+    options.runner ?? defaultRunner,
+    {
+      command: pnpmExecutable,
+      arguments: ["root", "--global"],
+    },
+    10_000,
+  )
+  const reported = normalizePath(result.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? "")
+  const root = reported.endsWith("/node_modules") ? dirname(reported) : reported
+  const selected = resolve(globalRoot)
+  const configured = isAbsolute(root) ? resolve(root) : undefined
+  if (
+    configured === undefined ||
+    (process.platform === "win32"
+      ? selected.toLowerCase() !== configured.toLowerCase()
+      : selected !== configured)
+  )
+    throw globalEntrypointError()
   const packageEntry = (root: string) => join(root, "node_modules", packageName, "bin", "cohall.js")
   const entries = await readdir(globalRoot, { withFileTypes: true })
   const candidates = [
@@ -263,6 +266,7 @@ export const resolvePackageInstallation = async (
         entrypoint: candidate,
         canonicalEntrypoint,
         globalDir: dirname(globalRoot),
+        pnpmExecutable,
       }
   }
   throw new Error(
@@ -358,53 +362,56 @@ export const isTrustedGroupWritablePath = (options: {
 const validateExecutable = async (
   candidate: string,
   installationRoot: string | undefined,
+  preserveSymlink = false,
 ): Promise<string> => {
   const canonical = await realpath(candidate)
   if (operatingSystem() === "win32") {
-    return canonical
+    return preserveSymlink ? resolve(candidate) : canonical
   }
   const uid = process.getuid?.()
   const writableRoot = installationRoot === undefined ? undefined : await realpath(installationRoot)
-  for (let path = canonical; ; path = dirname(path)) {
-    const metadata = await stat(path)
-    // Homebrew's shared prefix is admin-group writable. Local administrators are already inside
-    // the OS trust boundary; arbitrary shared Unix groups remain rejected.
-    const trustedGroupWritablePath = isTrustedGroupWritablePath({
-      platform: operatingSystem(),
-      canonical,
-      writableRoot,
-      path,
-      uid,
-      ownerUid: metadata.uid,
-      ownerGid: metadata.gid,
-    })
-    if (
-      (metadata.mode & 0o002) !== 0 ||
-      ((metadata.mode & 0o020) !== 0 && !trustedGroupWritablePath)
-    ) {
-      throw new Error(`Refusing executable beneath group- or world-writable path ${path}`)
-    }
-    // User namespaces can hide host-root ownership. Only fixed OS paths are trusted this way;
-    // user-installed executables and their private ancestors must still belong to this user.
-    if (
-      uid !== undefined &&
-      metadata.uid !== 0 &&
-      metadata.uid !== uid &&
-      !isTrustedSystemPath(operatingSystem(), path)
-    ) {
-      throw new Error(`Refusing executable owned by another user at ${path}`)
-    }
-    const parent = dirname(path)
-    if (parent === path) {
-      break
+  for (const executablePath of preserveSymlink ? [canonical, resolve(candidate)] : [canonical]) {
+    for (let path = executablePath; ; path = dirname(path)) {
+      const metadata = await stat(path)
+      // Homebrew's shared prefix is admin-group writable. Local administrators are already inside
+      // the OS trust boundary; arbitrary shared Unix groups remain rejected.
+      const trustedGroupWritablePath = isTrustedGroupWritablePath({
+        platform: operatingSystem(),
+        canonical,
+        writableRoot,
+        path,
+        uid,
+        ownerUid: metadata.uid,
+        ownerGid: metadata.gid,
+      })
+      if (
+        (metadata.mode & 0o002) !== 0 ||
+        ((metadata.mode & 0o020) !== 0 && !trustedGroupWritablePath)
+      ) {
+        throw new Error(`Refusing executable beneath group- or world-writable path ${path}`)
+      }
+      // User namespaces can hide host-root ownership. Only fixed OS paths are trusted this way;
+      // user-installed executables and their private ancestors must still belong to this user.
+      if (
+        uid !== undefined &&
+        metadata.uid !== 0 &&
+        metadata.uid !== uid &&
+        !isTrustedSystemPath(operatingSystem(), path)
+      ) {
+        throw new Error(`Refusing executable owned by another user at ${path}`)
+      }
+      const parent = dirname(path)
+      if (parent === path) {
+        break
+      }
     }
   }
-  return canonical
+  return preserveSymlink ? resolve(candidate) : canonical
 }
 
 export const trustedExecutable = async (
   command: string,
-  options: { readonly writableRoot?: string } = {},
+  options: { readonly writableRoot?: string; readonly preserveSymlink?: boolean } = {},
 ): Promise<string> => {
   const candidates = isAbsolute(command)
     ? [command]
@@ -422,7 +429,7 @@ export const trustedExecutable = async (
       .catch(() => false)
     if (!available) continue
     try {
-      return await validateExecutable(path, options.writableRoot)
+      return await validateExecutable(path, options.writableRoot, options.preserveSymlink)
     } catch (cause) {
       failure ??= cause
     }
@@ -480,7 +487,7 @@ const scheduledTaskBootstrap = new RegExp(
   [
     "^\\$ErrorActionPreference = 'Stop'",
     `\\$env:COHALL_CONFIG = '${powershellLiteral}'`,
-    `(?:\\$env:PNPM_HOME = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
+    `(?:\\$env:PNPM_HOME = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?(?:\\$env:COHALL_PNPM_EXECUTABLE = '${powershellLiteral}'\\r?\\n)?\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
     `& '(${powershellLiteral})' '(${powershellLiteral})' device`,
     "exit \\$LASTEXITCODE(?:\\r?\\n)?$",
   ].join("\\r?\\n"),
@@ -808,7 +815,10 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   if (entrypoint === undefined) {
     throw new Error("Could not resolve the Cohall executable path")
   }
-  const installation = await resolvePackageInstallation(entrypoint, { runner, resolveExecutable })
+  const installation = await resolvePackageInstallation(entrypoint, {
+    runner,
+    ...(options.resolveExecutable === undefined ? {} : { resolveExecutable }),
+  })
 
   if (
     previous?.version === options.currentVersion &&
@@ -886,13 +896,16 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     ...new Set([...(previous?.pendingServices ?? []), ...services.map((service) => service.id)]),
   ]
 
-  const resolvePackageManager = (): Promise<string> =>
-    options.resolveExecutable === undefined
+  const resolvePackageManager = (): Promise<string> => {
+    if (installation.pnpmExecutable !== undefined)
+      return Promise.resolve(installation.pnpmExecutable)
+    return options.resolveExecutable === undefined
       ? trustedExecutable(
           installation.manager,
           installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
         )
       : resolveExecutable(installation.manager)
+  }
   let packageManagerExecutable: string | undefined
   let resolvedTarget = target
   if (target === "latest") {

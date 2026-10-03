@@ -50,10 +50,11 @@ Node.js directory first on `PATH`. Linux and macOS services include both the
 configured pnpm home directory and its `bin` subdirectory, including
 custom pnpm homes, so globally installed commands
 remain available across pnpm versions. For pnpm installations, services also
-record `PNPM_HOME`. Upgrades target the selected global package directory even
+record `PNPM_HOME` and the selected pnpm executable so a Corepack shim earlier
+on the service PATH cannot redirect upgrades. Upgrades target the selected global package directory even
 when it is configured separately from pnpm’s home. It records the resolved configuration file,
 including `COHALL_CONFIG` or `XDG_CONFIG_HOME` overrides. Reinstall the service
-after moving that file or replacing a Node.js installation at a different path.
+after moving that file or replacing a Node.js or pnpm executable at a different path.
 Reinstalling restarts an existing worker to apply the changes.
 
 Some Grok Bot cloud computers have no systemd user manager. On those hosts,

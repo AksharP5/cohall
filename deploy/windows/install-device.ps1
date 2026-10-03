@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory = $true)][string]$NodeExecutable,
   [Parameter(Mandatory = $true)][string]$Entrypoint,
   [Parameter(Mandatory = $true)][string]$ConfigurationPath,
-  [string]$PnpmHome
+  [string]$PnpmHome,
+  [string]$PnpmExecutable
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +15,10 @@ function Quote-Literal([string]$Value) {
 $pnpmEnvironment = if ($PnpmHome) {
   "`$env:PNPM_HOME = $(Quote-Literal $PnpmHome)`r`n`$env:PATH = $(Quote-Literal ((Join-Path $PnpmHome 'bin') + ';' + $PnpmHome)) + ';' + `$env:PATH`r`n"
 } else { "" }
+
+if ($PnpmExecutable) {
+  $pnpmEnvironment += "`$env:COHALL_PNPM_EXECUTABLE = $(Quote-Literal $PnpmExecutable)`r`n"
+}
 
 $bootstrap = @"
 `$ErrorActionPreference = 'Stop'

@@ -210,6 +210,8 @@ describe("latest upgrades", () => {
         run: async (command, arguments_) => {
           const invocation = [command, ...arguments_].join(" ")
           invocations.push(invocation)
+          if (command === "pnpm" && arguments_[0] === "root")
+            return { ...success(), stdout: join(root, "pnpm", "global", "5", "node_modules") }
           if (arguments_[0] === "--version") {
             return { exitCode: 0, stdout: "1.2.15\n", stderr: "" }
           }
@@ -488,6 +490,34 @@ describe("latest upgrades", () => {
 
 describe("package installation", () => {
   it.skipIf(process.platform === "win32")(
+    "preserves a selected manager symlink while validating both path ancestries",
+    async () => {
+      const root = await mkdtemp(join(process.cwd(), ".cohall-manager-path-"))
+      temporaryDirectories.push(root)
+      const safe = join(root, "safe")
+      const unsafe = join(root, "unsafe")
+      await mkdir(safe, { mode: 0o700 })
+      await mkdir(unsafe, { mode: 0o700 })
+      const target = join(safe, "pnpm")
+      const replacement = join(safe, "pnpm-next")
+      for (const path of [target, replacement])
+        await writeFile(path, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+      const shim = join(root, "pnpm")
+      await symlink(target, shim)
+      await expect(trustedExecutable(shim, { preserveSymlink: true })).resolves.toBe(shim)
+      await rm(shim)
+      await symlink(replacement, shim)
+      await expect(trustedExecutable(shim, { preserveSymlink: true })).resolves.toBe(shim)
+      const unsafeShim = join(unsafe, "pnpm")
+      await symlink(target, unsafeShim)
+      await chmod(unsafe, 0o770)
+      await expect(trustedExecutable(unsafeShim, { preserveSymlink: true })).rejects.toThrow(
+        "group- or world-writable",
+      )
+    },
+  )
+
+  it.skipIf(process.platform === "win32")(
     "uses a trusted PATH candidate when an earlier installation is unsafe",
     async () => {
       const root = await mkdtemp(join(process.cwd(), ".cohall-upgrade-path-"))
@@ -645,6 +675,8 @@ describe("Windows service upgrades", () => {
         runner: {
           run: async (command, arguments_) => {
             invocations.push({ command, arguments: arguments_ })
+            if (command === "pnpm" && arguments_[0] === "root")
+              return { ...success(), stdout: join(root, "pnpm", "global", "5", "node_modules") }
             if (arguments_.some((argument) => argument.includes("ConvertTo-Json"))) {
               return { exitCode: 0, stdout: JSON.stringify(definition), stderr: "" }
             }
@@ -1490,11 +1522,20 @@ describe("pnpm service upgrades", () => {
       const setup = await fixture(layout, customHome, separateGlobalDir)
       const pnpmHome = separateGlobalDir ? join(setup.root, "actual command home") : setup.pnpmHome
       vi.stubEnv("PNPM_HOME", pnpmHome)
+      const managerExecutable = join(pnpmHome, "bin", "pnpm")
+      const corepack = join(setup.root, "node", "pnpm")
+      let corepackFirst = false
+      const selectedExecutable = async (command: string) =>
+        command === "pnpm"
+          ? corepackFirst
+            ? corepack
+            : managerExecutable
+          : resolveExecutable(command)
       const service = await installDeviceService({
         platform: "linux",
         entrypoint: layout === "classic" ? setup.entrypoint : setup.pinned,
         home: setup.root,
-        resolveExecutable,
+        resolveExecutable: selectedExecutable,
         runner: {
           run: async (_command, args) =>
             args[0] === "root"
@@ -1515,6 +1556,18 @@ describe("pnpm service upgrades", () => {
       const saved: unknown = JSON.parse(executable)
       if (typeof saved !== "string") throw new Error("Invalid service executable")
       const bootPath = saved.replaceAll("%%", "%")
+      const managerEnvironment = unit.match(/^Environment=("COHALL_PNPM_EXECUTABLE=.+")$/m)?.[1]
+      if (managerEnvironment === undefined) throw new Error("Missing saved pnpm executable")
+      const managerSetting: unknown = JSON.parse(managerEnvironment)
+      if (typeof managerSetting !== "string") throw new Error("Invalid saved pnpm executable")
+      const savedManager = managerSetting
+        .replaceAll("%%", "%")
+        .slice("COHALL_PNPM_EXECUTABLE=".length)
+      expect(savedManager).toBe(managerExecutable)
+      if (delegated) {
+        vi.stubEnv("COHALL_PNPM_EXECUTABLE", savedManager)
+        corepackFirst = separateGlobalDir
+      }
       const statePath = join(setup.root, "receipt.json")
       let restartedVersion: unknown
       const runner: CommandRunner = {
@@ -1530,7 +1583,8 @@ describe("pnpm service upgrades", () => {
             return { ...success(), exitCode: args.includes("cohall-device.service") ? 0 : 3 }
           if (args.includes("show"))
             return { ...success(), stdout: `{ path=${bootPath} ; argv[]=${bootPath} device ; }` }
-          if (command === "pnpm") {
+          if (command === corepack) throw new Error("Used the shadowing Corepack shim")
+          if (command === managerExecutable) {
             expect(args[args.indexOf("--global-dir") + 1]).toBe(setup.globalDir)
             await setup.replace()
           }
@@ -1553,7 +1607,7 @@ describe("pnpm service upgrades", () => {
         platform: "linux",
         statePath,
         runner,
-        resolveExecutable,
+        resolveExecutable: selectedExecutable,
       })
       expect(result).toMatchObject({
         upgraded: true,
@@ -1573,7 +1627,7 @@ describe("pnpm service upgrades", () => {
           platform: "linux",
           statePath,
           runner,
-          resolveExecutable,
+          resolveExecutable: selectedExecutable,
         })
         expect(resumed.resumed_after_restart).toBe(true)
       }
@@ -1581,15 +1635,28 @@ describe("pnpm service upgrades", () => {
     },
   )
 
-  it.each(["service install", "upgrade"] as const)(
-    "rejects project-local shared-store entrypoints before %s",
-    async (operation) => {
+  it.each([
+    { operation: "service install", conventionalPath: false },
+    { operation: "upgrade", conventionalPath: false },
+    { operation: "service install", conventionalPath: true },
+    { operation: "upgrade", conventionalPath: true },
+  ] as const)(
+    "rejects project-local shared-store entrypoints before $operation, conventionalPath=$conventionalPath",
+    async ({ operation, conventionalPath }) => {
       const setup = await fixture("shared-store")
-      const projectPackage = join(setup.root, "project", "node_modules", "@akshar5", "cohall")
+      const projectPackage = join(
+        setup.root,
+        conventionalPath ? "project/global/5" : "project",
+        "node_modules",
+        "@akshar5",
+        "cohall",
+      )
       await mkdir(dirname(projectPackage), { recursive: true })
       await symlink(dirname(dirname(await realpath(setup.entrypoint))), projectPackage, "junction")
       const entrypoint = join(projectPackage, "bin", "cohall.js")
-      const run = vi.fn(async () => success())
+      const run = vi.fn(async (_command: string, args: ReadonlyArray<string>) =>
+        args[0] === "root" ? { ...success(), stdout: setup.globalRoot } : success(),
+      )
       const result =
         operation === "service install"
           ? installDeviceService({
@@ -1597,6 +1664,7 @@ describe("pnpm service upgrades", () => {
               home: setup.root,
               entrypoint,
               runner: { run },
+              resolveExecutable,
             })
           : upgrade({
               currentVersion: "1.2.3",
@@ -1609,7 +1677,7 @@ describe("pnpm service upgrades", () => {
               resolveExecutable,
             })
       await expect(result).rejects.toThrow("requires a global pnpm entrypoint")
-      expect(run).not.toHaveBeenCalled()
+      expect(run.mock.calls.every(([, args]) => args[0] === "root")).toBe(true)
     },
   )
 
@@ -1621,6 +1689,7 @@ describe("pnpm service upgrades", () => {
       const runner: CommandRunner = {
         run: async (command, args) => {
           invocations.push([command, ...args].join(" "))
+          if (args[0] === "root") return { ...success(), stdout: setup.globalRoot }
           if (args.includes("is-active"))
             return { ...success(), exitCode: args.includes("cohall-device.service") ? 0 : 3 }
           if (args.includes("show"))
@@ -1647,7 +1716,7 @@ describe("pnpm service upgrades", () => {
       ).rejects.toThrow("cohall service install")
       expect(
         invocations.some(
-          (invocation) => invocation.startsWith("pnpm ") || invocation.includes(" restart "),
+          (invocation) => invocation.startsWith("pnpm add ") || invocation.includes(" restart "),
         ),
       ).toBe(false)
       expect(
