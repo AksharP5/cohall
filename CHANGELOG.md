@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.10.0](https://github.com/AksharP5/cohall/compare/v0.9.0...v0.10.0) (2026-10-03)
+
+
+### Features
+
+* **tasks:** answer worker questions without restarting tasks ([#107](https://github.com/AksharP5/cohall/issues/107)) ([02c11a2](https://github.com/AksharP5/cohall/commit/02c11a27ca5b419eb721ed866331d350322406b8))
+* **tasks:** recover submissions after a lost response ([#113](https://github.com/AksharP5/cohall/issues/113)) ([ced2061](https://github.com/AksharP5/cohall/commit/ced20612e70b44d653b6d0e3470722aa12524cc8))
+* **tasks:** stop delegated coding work at a deadline ([#111](https://github.com/AksharP5/cohall/issues/111)) ([c221892](https://github.com/AksharP5/cohall/commit/c221892981c14478006fecd86c92e74750fe4f53))
+
+
+### Bug Fixes
+
+* **attachments:** bound local file reads after size checks ([#117](https://github.com/AksharP5/cohall/issues/117)) ([3c170e3](https://github.com/AksharP5/cohall/commit/3c170e3040add5216a835dbd9b7285993ee92f8a))
+* **client:** read large task traces without relaxing other limits ([#138](https://github.com/AksharP5/cohall/issues/138)) ([48b7022](https://github.com/AksharP5/cohall/commit/48b70227717a118f8f091f84b8931e3179728ca5))
+* **device:** clean task files before cancellation completes ([#127](https://github.com/AksharP5/cohall/issues/127)) ([9c7910e](https://github.com/AksharP5/cohall/commit/9c7910e862851b2500602a5f0f1b60fa33f0e6a7))
+* **device:** reconnect when relay connections stall ([#129](https://github.com/AksharP5/cohall/issues/129)) ([c734f1d](https://github.com/AksharP5/cohall/commit/c734f1dcee1f1aa55b6a8883ba61a19aa2e48c21))
+* **device:** restore task status after reconnect ([#150](https://github.com/AksharP5/cohall/issues/150)) ([902c49a](https://github.com/AksharP5/cohall/commit/902c49ac626a6b5b606cfce4e0b6cc697c495266))
+* **device:** retry relay switches without starting stopped workers ([#134](https://github.com/AksharP5/cohall/issues/134)) ([5a3817b](https://github.com/AksharP5/cohall/commit/5a3817b911f829a386fc11685f36f2abe3495c57))
+* **device:** stop coding providers before worker exit ([#119](https://github.com/AksharP5/cohall/issues/119)) ([5835dc5](https://github.com/AksharP5/cohall/commit/5835dc5223333836f18ad4251f7d8d0035538934))
+* **discovery:** read large device inventories through bounded pages ([#142](https://github.com/AksharP5/cohall/issues/142)) ([e02bf88](https://github.com/AksharP5/cohall/commit/e02bf884f3d7b139b70510feb5f323e5b76029ae))
+* **doctor:** warn about unavailable gateways in automatic mode ([#146](https://github.com/AksharP5/cohall/issues/146)) ([44cbbdb](https://github.com/AksharP5/cohall/commit/44cbbdb1d4d7c4d1b4bff2d6f7015f2888c2c2eb))
+* **mcp:** preserve results when requester waits are cancelled ([#123](https://github.com/AksharP5/cohall/issues/123)) ([ef7ca4a](https://github.com/AksharP5/cohall/commit/ef7ca4a13eddf1418c64e56df9a4eabd991cb998))
+* **providers:** reject answers lost to event limits ([#122](https://github.com/AksharP5/cohall/issues/122)) ([5d2877b](https://github.com/AksharP5/cohall/commit/5d2877b07d3d4cc9db351a102c0a4e1145126efd))
+* **relay:** preserve Bot questions completed while offline ([#151](https://github.com/AksharP5/cohall/issues/151)) ([024a319](https://github.com/AksharP5/cohall/commit/024a3199a171506963ac888d06bfccbb2ff5a0f7))
+* **relay:** settle worker replies after history pruning ([#149](https://github.com/AksharP5/cohall/issues/149)) ([4bec2fd](https://github.com/AksharP5/cohall/commit/4bec2fd1e74873d0964bdf3bf15b8a9e9d03c1ea))
+* **service:** keep pnpm workers on the upgraded version ([#145](https://github.com/AksharP5/cohall/issues/145)) ([d72fc2c](https://github.com/AksharP5/cohall/commit/d72fc2cac0eadbb1991bdd848780f1a52b37b8a9))
+* **tasks:** finish offline deadlines and confirm cancellation ([#118](https://github.com/AksharP5/cohall/issues/118)) ([639d185](https://github.com/AksharP5/cohall/commit/639d185b41572eb8c67f5f59c6d6fdbceb77a357))
+* **tasks:** honor wait timeouts through relay responses ([#126](https://github.com/AksharP5/cohall/issues/126)) ([7918a3c](https://github.com/AksharP5/cohall/commit/7918a3c96a3c5079f5389b09d7adcc5202e7108b))
+* **tasks:** preserve cancellation acknowledgements after reconnect ([#110](https://github.com/AksharP5/cohall/issues/110)) ([a5d503e](https://github.com/AksharP5/cohall/commit/a5d503e88a4a1585a595e2fea5ef1cf49e354c12))
+* **upgrade:** keep unfinished restarts when changing versions ([#141](https://github.com/AksharP5/cohall/issues/141)) ([32bebb0](https://github.com/AksharP5/cohall/commit/32bebb079cebb66c6731000f9e2c0764cc04f798))
+* **upgrade:** preserve newer installations when latest is older ([#103](https://github.com/AksharP5/cohall/issues/103)) ([1932a6a](https://github.com/AksharP5/cohall/commit/1932a6a359f5481a0ba11f9b6368b46c85c48553))
+* **upgrade:** preserve unfinished restarts and validate recovery ([#137](https://github.com/AksharP5/cohall/issues/137)) ([c5c7930](https://github.com/AksharP5/cohall/commit/c5c7930ee1943bc1dc6bc847ed648b8368a3d2e8))
+* **upgrade:** reject Windows tasks using a different installation ([#131](https://github.com/AksharP5/cohall/issues/131)) ([5c3987f](https://github.com/AksharP5/cohall/commit/5c3987f75ad3532788235c7195e120f65e75276f))
+
 ## [0.9.0](https://github.com/AksharP5/cohall/compare/v0.8.0...v0.9.0) (2026-09-30)
 
 
