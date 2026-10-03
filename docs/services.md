@@ -46,10 +46,18 @@ journalctl --user -u cohall-device -f
 ```
 
 The generated service uses the exact Cohall executable and puts the current
-Node.js directory first on `PATH`. It records the resolved configuration file,
-including `COHALL_CONFIG` or `XDG_CONFIG_HOME` overrides. Reinstall the service
-after moving that file or replacing a Node.js installation at a different path.
-Reinstalling restarts an existing worker to apply the changes.
+Node.js directory first on `PATH`. Linux and macOS services include the configured
+pnpm home and its `bin` subdirectory. For pnpm installations, services also save
+the selected pnpm executable, global package directory, global bin directory, and
+store directory.
+This preserves custom paths supplied through shell configuration and prevents a
+Corepack shim on the service PATH from redirecting upgrades. Global pnpm operations
+ignore the current project’s Corepack manager specification.
+
+The service records the resolved configuration file, including `COHALL_CONFIG` or
+`XDG_CONFIG_HOME` overrides. Reinstall it after moving that file or replacing a
+Node.js or pnpm executable at a different path. Reinstalling restarts an existing
+worker to apply the changes.
 
 Some Grok Bot cloud computers have no systemd user manager. On those hosts,
 follow [Grok Bot computer setup](grok-bot.md) for a supported supervisor or
@@ -227,7 +235,9 @@ change. It does not run before that user logs on.
 
 ## Upgrade running services
 
-Run `cohall upgrade` from a global npm, Bun, or pnpm installation. It updates
+Run `cohall upgrade` from a global npm, Bun, or pnpm installation. Project-local
+and shared-store entrypoints cannot select a pnpm global installation; use the
+global `cohall` command. It updates
 that installation and restarts only active managed Cohall services, with relays
 restarted before device workers. Active services restart even when the installed
 files already match the requested version. Socket-activated relays keep accepting
@@ -245,6 +255,16 @@ and Windows scheduled tasks use the same global installation as the invoked
 CLI. If they differ, use the executable named in the error or reinstall the
 device service with `cohall service install`. Windows tasks with unrecognized or
 multiple actions must also be reinstalled before upgrading.
+
+pnpm device services use the stable global package link so replacing or removing
+an old package directory does not leave the worker on the old version. Services
+installed by older Cohall versions may be pinned to a version-specific directory.
+After updating the global CLI, run `cohall service install` through pnpm's
+global `cohall` command once to replace the saved executable. Cohall rejects
+pinned active services before changing
+packages. This applies to systemd, launchd, and Windows scheduled tasks. For a
+manually configured pnpm relay, change its service executable to the stable
+package path named in the error.
 
 Direct `npm install --global`, `bun add --global`, or `pnpm add --global`
 replaces files on disk but cannot replace code already loaded by a running Node

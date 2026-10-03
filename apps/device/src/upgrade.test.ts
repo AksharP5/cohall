@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { once } from "node:events"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
@@ -7,6 +7,7 @@ import { execa } from "execa"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { DeviceId, DeviceOperation, OperationId, now } from "@cohall/protocol"
 import { performDeviceOperation } from "./daemon.ts"
+import { installDeviceService } from "./service.ts"
 import {
   deviceVersionWarning,
   isTrustedGroupWritablePath,
@@ -14,6 +15,7 @@ import {
   normalizeUpgradeTarget,
   packageInstallCommand,
   packageInstallation,
+  pnpmServiceDirectories,
   serviceCandidates,
   trustedExecutable,
   upgrade,
@@ -23,6 +25,26 @@ import {
 } from "./upgrade.ts"
 
 const temporaryDirectories: Array<string> = []
+
+it("runs pnpm discovery independently of project dispatch, including Windows cmd shims", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cohall-pnpm-dispatch-"))
+  temporaryDirectories.push(root)
+  const script = join(root, "manager.cjs")
+  const executable = process.platform === "win32" ? join(root, "pnpm.cmd") : script
+  await writeFile(
+    script,
+    `#!${process.execPath}\nif (process.env.COREPACK_ENABLE_PROJECT_SPEC !== "0") process.exit(1); process.stdout.write(${JSON.stringify(root)})`,
+  )
+  if (process.platform === "win32")
+    await writeFile(executable, `@"${process.execPath}" "${script}" %*\r\n`)
+  else await chmod(executable, 0o700)
+  vi.stubEnv("COREPACK_ENABLE_PROJECT_SPEC", "1")
+  await expect(pnpmServiceDirectories(executable, root)).resolves.toEqual({
+    bin: root,
+    store: root,
+  })
+  expect(process.env.COREPACK_ENABLE_PROJECT_SPEC).toBe("1")
+})
 
 const temporaryDirectory = async (): Promise<string> => {
   const path = await mkdtemp(join(tmpdir(), "cohall-upgrade-"))
@@ -209,6 +231,8 @@ describe("latest upgrades", () => {
         run: async (command, arguments_) => {
           const invocation = [command, ...arguments_].join(" ")
           invocations.push(invocation)
+          if (command === "pnpm" && arguments_[0] === "root")
+            return { ...success(), stdout: join(root, "pnpm", "global", "5", "node_modules") }
           if (arguments_[0] === "--version") {
             return { exitCode: 0, stdout: "1.2.15\n", stderr: "" }
           }
@@ -236,7 +260,10 @@ describe("latest upgrades", () => {
 
       expect(result).toMatchObject({ upgraded: true, installed_version: "1.2.3" })
       const install = packageInstallCommand(
-        packageInstallation(await realpath(entrypoint)),
+        {
+          ...packageInstallation(await realpath(entrypoint)),
+          ...(manager === "pnpm" ? { globalDir: join(root, "pnpm", "global") } : {}),
+        },
         "1.2.3",
       )
       expect(invocations).toContain([install.command, ...install.arguments].join(" "))
@@ -484,6 +511,34 @@ describe("latest upgrades", () => {
 
 describe("package installation", () => {
   it.skipIf(process.platform === "win32")(
+    "preserves a selected manager symlink while validating both path ancestries",
+    async () => {
+      const root = await mkdtemp(join(process.cwd(), ".cohall-manager-path-"))
+      temporaryDirectories.push(root)
+      const safe = join(root, "safe")
+      const unsafe = join(root, "unsafe")
+      await mkdir(safe, { mode: 0o700 })
+      await mkdir(unsafe, { mode: 0o700 })
+      const target = join(safe, "pnpm")
+      const replacement = join(safe, "pnpm-next")
+      for (const path of [target, replacement])
+        await writeFile(path, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+      const shim = join(root, "pnpm")
+      await symlink(target, shim)
+      await expect(trustedExecutable(shim, { preserveSymlink: true })).resolves.toBe(shim)
+      await rm(shim)
+      await symlink(replacement, shim)
+      await expect(trustedExecutable(shim, { preserveSymlink: true })).resolves.toBe(shim)
+      const unsafeShim = join(unsafe, "pnpm")
+      await symlink(target, unsafeShim)
+      await chmod(unsafe, 0o770)
+      await expect(trustedExecutable(unsafeShim, { preserveSymlink: true })).rejects.toThrow(
+        "group- or world-writable",
+      )
+    },
+  )
+
+  it.skipIf(process.platform === "win32")(
     "uses a trusted PATH candidate when an earlier installation is unsafe",
     async () => {
       const root = await mkdtemp(join(process.cwd(), ".cohall-upgrade-path-"))
@@ -592,13 +647,23 @@ describe("package installation", () => {
       packageInstallation("/home/user/.npm/_npx/123/node_modules/@akshar5/cohall/bin/cohall.js"),
     ).toThrow("temporary package-runner cache")
     expect(() => packageInstallation("/work/cohall/bin/cohall.js")).toThrow("requires a global")
+    expect(() =>
+      packageInstallation(
+        "/home/user/.local/share/pnpm/store/v11/links/package/node_modules/@akshar5/cohall/bin/cohall.js",
+        "/home/user/.local/share/pnpm/dlx/cache/node_modules/@akshar5/cohall/bin/cohall.js",
+      ),
+    ).toThrow("temporary package-runner cache")
   })
 })
 
 describe("Windows service upgrades", () => {
-  const fixture = async () => {
+  const fixture = async (manager: "npm" | "pnpm" = "npm") => {
     const root = await temporaryDirectory()
-    const entrypoint = join(root, "current ' & é", "node_modules/@akshar5/cohall/bin/cohall.js")
+    const entrypoint = join(
+      root,
+      manager === "pnpm" ? "pnpm/global/5" : "current ' & é",
+      "node_modules/@akshar5/cohall/bin/cohall.js",
+    )
     const other = join(root, "other", "node_modules/@akshar5/cohall/bin/cohall.js")
     const metadata = join(dirname(dirname(entrypoint)), "package.json")
     for (const path of [entrypoint, other]) {
@@ -612,7 +677,7 @@ describe("Windows service upgrades", () => {
     const action = (path: string) => ({
       Execute: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       Arguments: `-NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(
-        `$ErrorActionPreference = 'Stop'\r\n$env:COHALL_CONFIG = 'C:\\chosen config.json'\r\n$env:PATH = 'C:\\Program Files\\nodejs' + ';' + $env:PATH\r\n& 'C:\\Program Files\\nodejs\\node.exe' '${path.replaceAll("'", "''")}' device\r\nexit $LASTEXITCODE\r\n`,
+        `$ErrorActionPreference = 'Stop'\r\n$env:COHALL_CONFIG = 'C:\\chosen config.json'\r\n${manager === "pnpm" ? "$env:PNPM_HOME = 'C:\\custom tools'\r\n$env:PATH = 'C:\\custom tools\\bin;C:\\custom tools' + ';' + $env:PATH\r\n" : ""}$env:PATH = 'C:\\Program Files\\nodejs' + ';' + $env:PATH\r\n& 'C:\\Program Files\\nodejs\\node.exe' '${path.replaceAll("'", "''")}' device\r\nexit $LASTEXITCODE\r\n`,
         "utf16le",
       ).toString("base64")}`,
     })
@@ -631,10 +696,12 @@ describe("Windows service upgrades", () => {
         runner: {
           run: async (command, arguments_) => {
             invocations.push({ command, arguments: arguments_ })
+            if (command === "pnpm" && arguments_[0] === "root")
+              return { ...success(), stdout: join(root, "pnpm", "global", "5", "node_modules") }
             if (arguments_.some((argument) => argument.includes("ConvertTo-Json"))) {
               return { exitCode: 0, stdout: JSON.stringify(definition), stderr: "" }
             }
-            if (command === "npm") {
+            if (command === manager) {
               await writeFile(
                 metadata,
                 JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }),
@@ -646,6 +713,15 @@ describe("Windows service upgrades", () => {
       })
     return { entrypoint, other, metadata, statePath, action, invocations, run }
   }
+
+  it("upgrades a Windows pnpm task with its saved global home", async () => {
+    const { entrypoint, action, run } = await fixture("pnpm")
+    await expect(run(action(entrypoint))).resolves.toMatchObject({
+      installed_version: "1.2.4",
+      package_manager: "pnpm",
+      services_restarted: ["scheduled-task:Cohall Device"],
+    })
+  })
 
   it("upgrades and restarts a Windows task using the same installation", async () => {
     const { entrypoint, action, invocations, run } = await fixture()
@@ -703,10 +779,10 @@ describe("Windows service upgrades", () => {
     },
   )
 
-  it.skipIf(process.platform !== "win32")(
-    "accepts Windows task paths with different letter casing",
-    async () => {
-      const { entrypoint, action, run } = await fixture()
+  it.skipIf(process.platform !== "win32").each(["npm", "pnpm"] as const)(
+    "accepts Windows %s task paths with different letter casing",
+    async (manager) => {
+      const { entrypoint, action, run } = await fixture(manager)
       await expect(run(action(entrypoint.toUpperCase()))).resolves.toMatchObject({
         installed_version: "1.2.4",
       })
@@ -1368,4 +1444,355 @@ describe("managed service upgrades", () => {
       pendingServices: ["systemd-user:cohall-device.service"],
     })
   })
+})
+
+describe("pnpm service upgrades", () => {
+  const fixture = async (
+    layout: "classic" | "isolated" | "shared-store",
+    customHome = false,
+    separateGlobalDir = false,
+  ) => {
+    const root = await temporaryDirectory()
+    const pnpmHome = join(root, customHome ? "custom tools" : "pnpm")
+    const prefix = join(
+      pnpmHome,
+      separateGlobalDir ? "cohall packages" : "global",
+      layout === "classic" ? "5" : "v11",
+    )
+    const installation = (version: string) =>
+      layout === "classic" ? prefix : join(prefix, `install-${version}`)
+    const packagePath = (version: string) =>
+      layout === "shared-store"
+        ? join(
+            pnpmHome,
+            separateGlobalDir ? "package cache" : "store",
+            "v11",
+            "links",
+            version,
+            "node_modules",
+            "@akshar5",
+            "cohall",
+          )
+        : join(
+            installation(version),
+            "node_modules",
+            ".pnpm",
+            `@akshar5+cohall@${version}`,
+            "node_modules",
+            "@akshar5",
+            "cohall",
+          )
+    for (const version of ["1.2.3", "1.2.4"]) {
+      const path = packagePath(version)
+      await mkdir(join(path, "bin"), { recursive: true })
+      await writeFile(join(path, "bin", "cohall.js"), "#!/usr/bin/env node\n")
+      await writeFile(
+        join(path, "package.json"),
+        JSON.stringify({ name: "@akshar5/cohall", version }),
+      )
+      if (layout !== "classic") {
+        const packageLink = join(installation(version), "node_modules", "@akshar5", "cohall")
+        await mkdir(dirname(packageLink), { recursive: true })
+        await symlink(path, packageLink, "junction")
+      }
+    }
+    const link =
+      layout === "classic"
+        ? join(prefix, "node_modules", "@akshar5", "cohall")
+        : join(prefix, "package-slot")
+    const destination = (version: string) =>
+      layout === "classic" ? packagePath(version) : installation(version)
+    await mkdir(dirname(link), { recursive: true })
+    await symlink(destination("1.2.3"), link, "junction")
+    const entrypoint =
+      layout === "classic"
+        ? join(link, "bin", "cohall.js")
+        : join(link, "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
+    return {
+      root,
+      pnpmHome,
+      entrypoint,
+      pinned:
+        layout === "classic"
+          ? await realpath(entrypoint)
+          : join(installation("1.2.3"), "node_modules", "@akshar5", "cohall", "bin", "cohall.js"),
+      globalDir: dirname(prefix),
+      globalRoot: prefix,
+      replace: async () => {
+        await rm(link)
+        await symlink(destination("1.2.4"), link, "junction")
+        await rm(layout === "classic" ? packagePath("1.2.3") : installation("1.2.3"), {
+          recursive: true,
+        })
+      },
+    }
+  }
+
+  it.each([
+    { layout: "classic", delegated: false, customHome: false, separateGlobalDir: false },
+    { layout: "classic", delegated: true, customHome: false, separateGlobalDir: false },
+    { layout: "isolated", delegated: false, customHome: false, separateGlobalDir: false },
+    { layout: "isolated", delegated: true, customHome: false, separateGlobalDir: false },
+    { layout: "shared-store", delegated: false, customHome: false, separateGlobalDir: false },
+    { layout: "shared-store", delegated: true, customHome: false, separateGlobalDir: false },
+    { layout: "shared-store", delegated: true, customHome: true, separateGlobalDir: false },
+    { layout: "shared-store", delegated: true, customHome: true, separateGlobalDir: true },
+  ] as const)(
+    "restarts the new package after a $layout upgrade, delegated=$delegated, customHome=$customHome, separateGlobalDir=$separateGlobalDir",
+    async ({ layout, delegated, customHome, separateGlobalDir }) => {
+      const setup = await fixture(layout, customHome, separateGlobalDir)
+      const pnpmHome = separateGlobalDir ? join(setup.root, "actual command home") : setup.pnpmHome
+      vi.stubEnv("PNPM_HOME", pnpmHome)
+      const globalBin = separateGlobalDir
+        ? join(setup.root, "user tools", "bin")
+        : join(pnpmHome, "bin")
+      const managerExecutable = join(pnpmHome, "bin", "pnpm")
+      const store = join(setup.root, "custom store", "v10")
+      const corepack = join(setup.root, "node", "pnpm")
+      let corepackFirst = false
+      const selectedExecutable = async (command: string) =>
+        command === "pnpm"
+          ? corepackFirst
+            ? corepack
+            : managerExecutable
+          : resolveExecutable(command)
+      const service = await installDeviceService({
+        platform: "linux",
+        entrypoint: layout === "classic" ? setup.entrypoint : setup.pinned,
+        home: setup.root,
+        resolveExecutable: selectedExecutable,
+        runner: {
+          run: async (_command, args, _timeout, environment) => {
+            if (args.includes("store")) {
+              expect(args).toEqual([
+                "--dir",
+                setup.globalRoot,
+                "--ignore-workspace",
+                "store",
+                "path",
+              ])
+              return { ...success(), stdout: store }
+            }
+            if (args[0] === "bin") {
+              expect(args).toEqual(["bin", "--global"])
+              expect(environment).toEqual({ COREPACK_ENABLE_PROJECT_SPEC: "0" })
+              return { ...success(), stdout: globalBin }
+            }
+            return args[0] === "root"
+              ? {
+                  ...success(),
+                  stdout: separateGlobalDir
+                    ? `Warning: this project pins a package manager\n${setup.globalRoot}\n`
+                    : setup.globalRoot,
+                }
+              : success()
+          },
+        },
+      })
+      const unit = await readFile(service.installed, "utf8")
+      expect(unit).toContain(join(pnpmHome, "bin").replaceAll("\\", "\\\\").replaceAll("%", "%%"))
+      expect(unit).toContain("PNPM_HOME=")
+      const executable = unit.match(/^ExecStart=(".+") device$/m)?.[1]
+      if (executable === undefined) throw new Error("Missing service executable")
+      const saved: unknown = JSON.parse(executable)
+      if (typeof saved !== "string") throw new Error("Invalid service executable")
+      const bootPath = saved.replaceAll("%%", "%")
+      const managerEnvironment = unit.match(/^Environment=("COHALL_PNPM_EXECUTABLE=.+")$/m)?.[1]
+      if (managerEnvironment === undefined) throw new Error("Missing saved pnpm executable")
+      const managerSetting: unknown = JSON.parse(managerEnvironment)
+      if (typeof managerSetting !== "string") throw new Error("Invalid saved pnpm executable")
+      const savedManager = managerSetting
+        .replaceAll("%%", "%")
+        .slice("COHALL_PNPM_EXECUTABLE=".length)
+      expect(savedManager).toBe(managerExecutable)
+      for (const [name, expected] of [
+        ["COHALL_PNPM_STORE_DIR", store],
+        ["COHALL_PNPM_GLOBAL_DIR", setup.globalDir],
+        ["COHALL_PNPM_GLOBAL_BIN_DIR", globalBin],
+      ] as const) {
+        const setting = unit.match(new RegExp(`^Environment=("${name}=.+")$`, "m"))?.[1]
+        if (setting === undefined) throw new Error(`Missing ${name}`)
+        const value: unknown = JSON.parse(setting)
+        expect(value).toBe(`${name}=${expected}`.replaceAll("%", "%%"))
+        if (delegated) vi.stubEnv(name, expected)
+      }
+      expect(unit).toContain(globalBin.replaceAll("\\", "\\\\").replaceAll("%", "%%"))
+      if (delegated) {
+        vi.stubEnv("COHALL_PNPM_EXECUTABLE", savedManager)
+        corepackFirst = separateGlobalDir
+      }
+      const statePath = join(setup.root, "receipt.json")
+      let restartedVersion: unknown
+      const runner: CommandRunner = {
+        run: async (command, args, _timeout, environment) => {
+          if (command === managerExecutable)
+            expect(environment).toEqual({
+              COREPACK_ENABLE_PROJECT_SPEC: "0",
+              ...(delegated
+                ? {
+                    npm_config_global_dir: setup.globalDir,
+                    pnpm_config_global_dir: setup.globalDir,
+                    npm_config_global_bin_dir: globalBin,
+                    pnpm_config_global_bin_dir: globalBin,
+                    npm_config_store_dir: store,
+                    pnpm_config_store_dir: store,
+                  }
+                : {}),
+            })
+          if (args[0] === "root") {
+            expect(args).toEqual(["root", "--global"])
+            return {
+              ...success(),
+              stdout: separateGlobalDir
+                ? `Warning: this project pins a package manager\n${setup.globalRoot}\n`
+                : setup.globalRoot,
+            }
+          }
+          if (args.includes("is-active"))
+            return { ...success(), exitCode: args.includes("cohall-device.service") ? 0 : 3 }
+          if (args.includes("show"))
+            return { ...success(), stdout: `{ path=${bootPath} ; argv[]=${bootPath} device ; }` }
+          if (command === corepack) throw new Error("Used the shadowing Corepack shim")
+          if (command === managerExecutable) {
+            expect(args[args.indexOf("--global-dir") + 1]).toBe(setup.globalDir)
+            if (delegated) expect(args[args.indexOf("--global-bin-dir") + 1]).toBe(globalBin)
+            await setup.replace()
+          }
+          if (args.includes("restart")) {
+            const path = await realpath(bootPath)
+            restartedVersion = JSON.parse(
+              await readFile(join(dirname(dirname(path)), "package.json"), "utf8"),
+            ).version
+          }
+          return success()
+        },
+      }
+      const result = await upgrade({
+        currentVersion: "1.2.3",
+        target: "1.2.4",
+        restart: true,
+        dryRun: false,
+        delegated,
+        entrypoint: delegated ? bootPath : layout === "classic" ? setup.entrypoint : setup.pinned,
+        platform: "linux",
+        statePath,
+        runner,
+        resolveExecutable: selectedExecutable,
+      })
+      expect(result).toMatchObject({
+        upgraded: true,
+        installed_version: "1.2.4",
+        services_restarted: ["systemd-user:cohall-device.service"],
+        services_pending_restart: [],
+      })
+      expect(restartedVersion).toBe("1.2.4")
+      if (delegated) {
+        const resumed = await upgrade({
+          currentVersion: "1.2.4",
+          target: "1.2.4",
+          restart: true,
+          dryRun: false,
+          delegated: true,
+          entrypoint: bootPath,
+          platform: "linux",
+          statePath,
+          runner,
+          resolveExecutable: selectedExecutable,
+        })
+        expect(resumed.resumed_after_restart).toBe(true)
+      }
+      await expect(readFile(statePath)).rejects.toMatchObject({ code: "ENOENT" })
+    },
+  )
+
+  it.each([
+    { operation: "service install", conventionalPath: false },
+    { operation: "upgrade", conventionalPath: false },
+    { operation: "service install", conventionalPath: true },
+    { operation: "upgrade", conventionalPath: true },
+  ] as const)(
+    "rejects project-local shared-store entrypoints before $operation, conventionalPath=$conventionalPath",
+    async ({ operation, conventionalPath }) => {
+      const setup = await fixture("shared-store")
+      const projectPackage = join(
+        setup.root,
+        conventionalPath ? "project/global/5" : "project",
+        "node_modules",
+        "@akshar5",
+        "cohall",
+      )
+      await mkdir(dirname(projectPackage), { recursive: true })
+      await symlink(dirname(dirname(await realpath(setup.entrypoint))), projectPackage, "junction")
+      const entrypoint = join(projectPackage, "bin", "cohall.js")
+      const run = vi.fn(async (_command: string, args: ReadonlyArray<string>) =>
+        args[0] === "root" ? { ...success(), stdout: setup.globalRoot } : success(),
+      )
+      const result =
+        operation === "service install"
+          ? installDeviceService({
+              platform: "linux",
+              home: setup.root,
+              entrypoint,
+              runner: { run },
+              resolveExecutable,
+            })
+          : upgrade({
+              currentVersion: "1.2.3",
+              target: "1.2.4",
+              restart: false,
+              dryRun: false,
+              entrypoint,
+              statePath: join(setup.root, "receipt.json"),
+              runner: { run },
+              resolveExecutable,
+            })
+      await expect(result).rejects.toThrow("requires a global pnpm entrypoint")
+      expect(run.mock.calls.every(([, args]) => args[0] === "root")).toBe(true)
+    },
+  )
+
+  it.each([false, true])(
+    "rejects a pinned service before updating packages, delegated=%s",
+    async (delegated) => {
+      const setup = await fixture("classic")
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, args) => {
+          invocations.push([command, ...args].join(" "))
+          if (args[0] === "root") return { ...success(), stdout: setup.globalRoot }
+          if (args.includes("is-active"))
+            return { ...success(), exitCode: args.includes("cohall-device.service") ? 0 : 3 }
+          if (args.includes("show"))
+            return {
+              ...success(),
+              stdout: `{ path=${setup.pinned} ; argv[]=${setup.pinned} device ; }`,
+            }
+          return success()
+        },
+      }
+      await expect(
+        upgrade({
+          currentVersion: "1.2.3",
+          target: "1.2.4",
+          restart: true,
+          dryRun: false,
+          delegated,
+          entrypoint: delegated ? setup.pinned : setup.entrypoint,
+          platform: "linux",
+          statePath: join(setup.root, "receipt.json"),
+          runner,
+          resolveExecutable,
+        }),
+      ).rejects.toThrow("cohall service install")
+      expect(
+        invocations.some(
+          (invocation) => invocation.startsWith("pnpm add ") || invocation.includes(" restart "),
+        ),
+      ).toBe(false)
+      expect(
+        JSON.parse(await readFile(join(dirname(dirname(setup.pinned)), "package.json"), "utf8"))
+          .version,
+      ).toBe("1.2.3")
+    },
+  )
 })

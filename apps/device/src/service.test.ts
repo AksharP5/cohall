@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { execFile, type ExecFileException } from "node:child_process"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -14,6 +14,11 @@ describe("device service plans", () => {
       const directory = await mkdtemp(join(tmpdir(), "cohall Windows ' & 100%-"))
       const entrypoint = join(directory, "cohall.cjs")
       const config = join(directory, "chosen config.json")
+      const pnpmHome = join(directory, "custom tools")
+      const pnpmExecutable = join(pnpmHome, "pnpm.cmd")
+      const pnpmStoreDir = join(directory, "custom store", "v10")
+      const pnpmGlobalDir = join(directory, "custom packages")
+      const pnpmGlobalBinDir = join(directory, "user tools", "bin")
       const harness = join(directory, "scheduler-fixture.ps1")
       const powerShell = join(
         process.env.SystemRoot ?? "C:\\Windows",
@@ -27,11 +32,11 @@ describe("device service plans", () => {
       try {
         await writeFile(
           entrypoint,
-          `process.stdout.write(JSON.stringify({ config: process.env.COHALL_CONFIG, args: process.argv.slice(2), node: process.execPath, unrelated: process.env.COHALL_UNRELATED_SECRET })); process.exit(7)`,
+          `process.stdout.write(JSON.stringify({ config: process.env.COHALL_CONFIG, args: process.argv.slice(2), node: process.execPath, pnpmHome: process.env.PNPM_HOME, pnpmExecutable: process.env.COHALL_PNPM_EXECUTABLE, pnpmStoreDir: process.env.COHALL_PNPM_STORE_DIR, pnpmGlobalDir: process.env.COHALL_PNPM_GLOBAL_DIR, pnpmGlobalBinDir: process.env.COHALL_PNPM_GLOBAL_BIN_DIR, path: process.env.PATH, unrelated: process.env.COHALL_UNRELATED_SECRET })); process.exit(7)`,
         )
         await writeFile(
           harness,
-          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $Inspection)
+          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $PnpmExecutable, $PnpmStoreDir, $PnpmGlobalDir, $PnpmGlobalBinDir, $Inspection)
 $ErrorActionPreference = 'Stop'
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) return @{} }
 function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit, $RestartCount, $RestartInterval, $MultipleInstances) return @{} }
@@ -39,7 +44,7 @@ function Register-ScheduledTask { param($TaskName, $Description, $Action, $Trigg
 function Stop-ScheduledTask { param($TaskName, $ErrorAction) $global:CohallTestStopped = $true }
 function Start-ScheduledTask { param($TaskName) if (-not $global:CohallTestStopped) { throw 'Existing task was not stopped before restarting' } }
 function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) return @{ Actions = @($global:CohallTestAction) } }
-& $Installer -NodeExecutable $NodeExecutable -Entrypoint $Entrypoint -ConfigurationPath $Config | Out-Null
+& $Installer -NodeExecutable $NodeExecutable -Entrypoint $Entrypoint -ConfigurationPath $Config -PnpmHome $PnpmHome -PnpmExecutable $PnpmExecutable -PnpmStoreDir $PnpmStoreDir -PnpmGlobalDir $PnpmGlobalDir -PnpmGlobalBinDir $PnpmGlobalBinDir | Out-Null
 Invoke-Expression $Inspection
 `,
         )
@@ -58,6 +63,16 @@ Invoke-Expression $Inspection
             entrypoint,
             "-Config",
             config,
+            "-PnpmHome",
+            pnpmHome,
+            "-PnpmExecutable",
+            pnpmExecutable,
+            "-PnpmStoreDir",
+            pnpmStoreDir,
+            "-PnpmGlobalDir",
+            pnpmGlobalDir,
+            "-PnpmGlobalBinDir",
+            pnpmGlobalBinDir,
             "-Inspection",
             inspection.inspect.arguments.at(-1) ?? "",
           ],
@@ -96,11 +111,19 @@ Invoke-Expression $Inspection
         )
         expect(executed.stderr).toBe("")
         expect(executed.exitCode).toBe(7)
-        expect(JSON.parse(executed.stdout)).toEqual({
+        const output: unknown = JSON.parse(executed.stdout)
+        expect(output).toEqual({
           config,
           args: ["device"],
           node: process.execPath,
+          pnpmHome,
+          pnpmExecutable,
+          pnpmStoreDir,
+          pnpmGlobalDir,
+          pnpmGlobalBinDir,
+          path: expect.stringContaining(`${join(pnpmHome, "bin")};${pnpmHome};`),
         })
+        expect(JSON.parse(executed.stdout).path).toContain(`${pnpmGlobalBinDir};`)
       } finally {
         await rm(directory, { recursive: true, force: true })
       }
@@ -138,6 +161,66 @@ Invoke-Expression $Inspection
     },
   )
 
+  it.each([false, true])(
+    "recognizes a Windows task with a selected pnpm executable and default home, custom directories=%s",
+    (customDirectories) => {
+      const entrypoint = "C:\\cohall\\bin\\cohall.js"
+      const bootstrap = [
+        "$ErrorActionPreference = 'Stop'",
+        "$env:COHALL_CONFIG = 'C:\\cohall\\config.json'",
+        "$env:COHALL_PNPM_EXECUTABLE = 'C:\\tools\\pnpm.cmd'",
+        ...(customDirectories
+          ? [
+              "$env:COHALL_PNPM_STORE_DIR = 'C:\\custom store\\v10'",
+              "$env:COHALL_PNPM_GLOBAL_DIR = 'C:\\custom packages'",
+              "$env:COHALL_PNPM_GLOBAL_BIN_DIR = 'C:\\user tools\\bin'",
+              "$env:PATH = 'C:\\user tools\\bin' + ';' + $env:PATH",
+            ]
+          : []),
+        "$env:PATH = 'C:\\node' + ';' + $env:PATH",
+        `& 'C:\\node\\node.exe' '${entrypoint}' device`,
+        "exit $LASTEXITCODE",
+      ].join("\r\n")
+      const action = JSON.stringify({
+        Execute: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        Arguments: `-NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(bootstrap, "utf16le").toString("base64")}`,
+      })
+      expect(serviceCandidates("win32", undefined)[0]?.entrypoint?.parse(action)).toBe(entrypoint)
+    },
+  )
+
+  it("keeps a Windows service on the global link while locating its installer in the package", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall-service-link-"))
+    try {
+      const packagePath = join(directory, "node_modules", "@akshar5", "cohall")
+      await mkdir(join(packagePath, "bin"), { recursive: true })
+      await writeFile(join(packagePath, "bin", "cohall.js"), "#!/usr/bin/env node\n")
+      const link = join(directory, "global-command")
+      await symlink(packagePath, link, "junction")
+      const entrypoint = join(link, "bin", "cohall.js")
+      const commands: Array<ReadonlyArray<string>> = []
+      await installDeviceService({
+        platform: "win32",
+        entrypoint,
+        runner: {
+          run: async (command, args) => {
+            commands.push([command, ...args])
+            return { exitCode: 0, stdout: "", stderr: "" }
+          },
+        },
+      })
+      expect(commands).toHaveLength(1)
+      const command = commands[0]
+      if (command === undefined) throw new Error("Missing installer command")
+      expect(command[command.indexOf("-Entrypoint") + 1]).toBe(entrypoint)
+      expect(command[command.indexOf("-File") + 1]).toBe(
+        join(await realpath(packagePath), "deploy", "windows", "install-device.ps1"),
+      )
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it("uses the exact global executable in a Linux user service", () => {
     const plan = deviceServicePlan({
       platform: "linux",
@@ -148,6 +231,7 @@ Invoke-Expression $Inspection
     })
 
     expect(plan.file.path).toBe("/home/user/.config/systemd/user/cohall-device.service")
+    expect(plan.file.content).toContain("/home/user/.local/share/pnpm/bin")
     expect(plan.file.content).toContain(
       'ExecStart="/home/user/.local/lib/node_modules/@akshar5/cohall/bin/cohall.js" device',
     )
@@ -173,6 +257,7 @@ Invoke-Expression $Inspection
 
     expect(plan.file.content).toContain("/Users/A &amp; B/bin/cohall")
     expect(plan.file.content).toContain("/Users/A &amp; B/selected/config.json")
+    expect(plan.file.content).toContain("/Users/A &amp; B/Library/pnpm/bin")
     expect(plan.commands.at(-1)).toEqual({
       command: "launchctl",
       arguments: ["kickstart", "-k", "gui/501/com.cohall.device"],

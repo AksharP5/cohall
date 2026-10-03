@@ -6,13 +6,14 @@ import {
   chmod,
   mkdir,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises"
-import { delimiter, dirname, extname, isAbsolute, join, relative } from "node:path"
+import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path"
 import { platform as operatingSystem } from "node:os"
 import { configurationPath } from "./config.ts"
 
@@ -75,12 +76,14 @@ export interface CommandRunner {
     command: string,
     arguments_: ReadonlyArray<string>,
     timeoutMs?: number,
+    environment?: Readonly<Record<string, string>>,
   ) => Promise<CommandResult>
 }
 
 export interface PackageInstallation {
   readonly manager: PackageManager
   readonly prefix?: string
+  readonly globalDir?: string
   readonly entrypoint: string
 }
 
@@ -102,6 +105,7 @@ export interface CommandInvocation {
   readonly command: string
   readonly arguments: ReadonlyArray<string>
   readonly allowFailure?: boolean
+  readonly environment?: Readonly<Record<string, string>>
 }
 
 const RestartReceipt = Schema.Struct({
@@ -140,7 +144,23 @@ export interface UpgradeResult {
   readonly dry_run: boolean
 }
 
+const pnpmEnvironment = () =>
+  Object.fromEntries<string>([
+    ["COREPACK_ENABLE_PROJECT_SPEC", "0"],
+    // pnpm 11 uses its own namespace; pnpm 10 reads npm's configuration namespace.
+    ...(["GLOBAL_DIR", "GLOBAL_BIN_DIR", "STORE_DIR"] as const).flatMap((name) => {
+      const value = process.env[`COHALL_PNPM_${name}`]
+      return value === undefined
+        ? []
+        : ([
+            [`npm_config_${name.toLowerCase()}`, value],
+            [`pnpm_config_${name.toLowerCase()}`, value],
+          ] as const)
+    }),
+  ])
+
 const normalizePath = (path: string): string => path.replaceAll("\\", "/")
+const pnpmGlobalDirectory = /^(.*\/global\/v?\d+)\//
 
 export const normalizeUpgradeTarget = (target: string | undefined): string => {
   if (target === undefined || target === "latest") {
@@ -174,10 +194,12 @@ export const packageInstallation = (
     )
   }
   if (
-    path.includes("/.npm/_npx/") ||
-    path.includes("/.bunx/") ||
-    path.includes("/pnpm/dlx/") ||
-    path.includes("/dlx/")
+    [path, normalizePath(entrypoint)].some(
+      (candidate) =>
+        candidate.includes("/.npm/_npx/") ||
+        candidate.includes("/.bunx/") ||
+        candidate.includes("/dlx/"),
+    )
   ) {
     throw new Error(
       "This Cohall process is running from a temporary package-runner cache; install it globally before using cohall upgrade",
@@ -186,7 +208,12 @@ export const packageInstallation = (
   if (path.includes("/.bun/install/global/node_modules/")) {
     return { manager: "bun", entrypoint }
   }
-  if (path.includes("/pnpm/global/")) {
+  if (
+    pnpmGlobalDirectory.test(path) ||
+    /\/v\d+\/links\//.test(path) ||
+    path.includes("/node_modules/.pnpm/") ||
+    pnpmGlobalDirectory.test(normalizePath(entrypoint))
+  ) {
     return { manager: "pnpm", entrypoint }
   }
 
@@ -195,6 +222,103 @@ export const packageInstallation = (
     ? nodeModulesParent.slice(0, -"/lib".length)
     : nodeModulesParent
   return { manager: "npm", prefix, entrypoint }
+}
+
+export const resolvePackageInstallation = async (
+  entrypoint: string,
+  options: {
+    readonly runner?: CommandRunner
+    readonly resolveExecutable?: (command: string) => Promise<string>
+  } = {},
+) => {
+  const canonicalEntrypoint = await realpath(entrypoint)
+  const installation = packageInstallation(canonicalEntrypoint, resolve(entrypoint))
+  if (installation.manager !== "pnpm")
+    return {
+      ...installation,
+      canonicalEntrypoint,
+      pnpmExecutable: undefined,
+      globalRoot: undefined,
+    }
+
+  const lexicalPath = normalizePath(installation.entrypoint)
+  const globalRoot =
+    lexicalPath.match(pnpmGlobalDirectory)?.[1] ?? lexicalPath.match(/^(.*\/v?\d+)\//)?.[1]
+  const globalEntrypointError = () =>
+    new Error(
+      "This operation requires a global pnpm entrypoint; project-local and shared-store executions cannot select a global installation. Run the global cohall command.",
+    )
+  if (globalRoot === undefined) throw globalEntrypointError()
+  const selectedManager = process.env.COHALL_PNPM_EXECUTABLE ?? "pnpm"
+  const pnpmExecutable =
+    options.resolveExecutable === undefined
+      ? await trustedExecutable(selectedManager, { preserveSymlink: true })
+      : await options.resolveExecutable(selectedManager)
+  const result = await checked(
+    options.runner ?? defaultRunner,
+    {
+      command: pnpmExecutable,
+      arguments: ["root", "--global"],
+      environment: pnpmEnvironment(),
+    },
+    10_000,
+  )
+  const reported = normalizePath(result.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? "")
+  const root = reported.endsWith("/node_modules") ? dirname(reported) : reported
+  const selected = resolve(globalRoot)
+  const configured = isAbsolute(root) ? resolve(root) : undefined
+  if (
+    configured === undefined ||
+    (process.platform === "win32"
+      ? selected.toLowerCase() !== configured.toLowerCase()
+      : selected !== configured)
+  )
+    throw globalEntrypointError()
+  const packageEntry = (root: string) => join(root, "node_modules", packageName, "bin", "cohall.js")
+  const entries = await readdir(globalRoot, { withFileTypes: true })
+  const candidates = [
+    packageEntry(globalRoot),
+    ...entries
+      .filter((entry) => entry.isSymbolicLink())
+      .map((entry) => packageEntry(join(globalRoot, entry.name))),
+  ]
+  for (const candidate of candidates) {
+    if ((await realpath(candidate).catch(() => undefined)) === canonicalEntrypoint)
+      return {
+        ...installation,
+        entrypoint: candidate,
+        canonicalEntrypoint,
+        globalDir: dirname(globalRoot),
+        globalRoot,
+        pnpmExecutable,
+      }
+  }
+  throw new Error(
+    "Could not find a stable pnpm global executable for this installation. Run the global cohall command, then use cohall service install before upgrading.",
+  )
+}
+
+export const pnpmServiceDirectories = async (
+  executable: string,
+  globalRoot: string,
+  runner: CommandRunner = defaultRunner,
+) => {
+  const query = async (arguments_: ReadonlyArray<string>): Promise<string> => {
+    const result = await checked(
+      runner,
+      { command: executable, arguments: arguments_, environment: pnpmEnvironment() },
+      10_000,
+    )
+    const directory = result.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? ""
+    if (!isAbsolute(directory))
+      throw new Error(`pnpm ${arguments_.join(" ")} did not report an absolute directory`)
+    return directory
+  }
+  const [bin, store] = await Promise.all([
+    query(["bin", "--global"]),
+    query(["--dir", globalRoot, "--ignore-workspace", "store", "path"]),
+  ])
+  return { bin, store }
 }
 
 export const packageInstallCommand = (
@@ -206,7 +330,19 @@ export const packageInstallCommand = (
     case "bun":
       return { command: "bun", arguments: ["add", "--global", specification] }
     case "pnpm":
-      return { command: "pnpm", arguments: ["add", "--global", specification] }
+      return {
+        command: "pnpm",
+        arguments: [
+          "add",
+          "--global",
+          ...(installation.globalDir === undefined ? [] : ["--global-dir", installation.globalDir]),
+          ...(process.env.COHALL_PNPM_GLOBAL_BIN_DIR === undefined
+            ? []
+            : ["--global-bin-dir", process.env.COHALL_PNPM_GLOBAL_BIN_DIR]),
+          specification,
+        ],
+        environment: pnpmEnvironment(),
+      }
     case "npm":
       return {
         command: "npm",
@@ -277,53 +413,56 @@ export const isTrustedGroupWritablePath = (options: {
 const validateExecutable = async (
   candidate: string,
   installationRoot: string | undefined,
+  preserveSymlink = false,
 ): Promise<string> => {
   const canonical = await realpath(candidate)
   if (operatingSystem() === "win32") {
-    return canonical
+    return preserveSymlink ? resolve(candidate) : canonical
   }
   const uid = process.getuid?.()
   const writableRoot = installationRoot === undefined ? undefined : await realpath(installationRoot)
-  for (let path = canonical; ; path = dirname(path)) {
-    const metadata = await stat(path)
-    // Homebrew's shared prefix is admin-group writable. Local administrators are already inside
-    // the OS trust boundary; arbitrary shared Unix groups remain rejected.
-    const trustedGroupWritablePath = isTrustedGroupWritablePath({
-      platform: operatingSystem(),
-      canonical,
-      writableRoot,
-      path,
-      uid,
-      ownerUid: metadata.uid,
-      ownerGid: metadata.gid,
-    })
-    if (
-      (metadata.mode & 0o002) !== 0 ||
-      ((metadata.mode & 0o020) !== 0 && !trustedGroupWritablePath)
-    ) {
-      throw new Error(`Refusing executable beneath group- or world-writable path ${path}`)
-    }
-    // User namespaces can hide host-root ownership. Only fixed OS paths are trusted this way;
-    // user-installed executables and their private ancestors must still belong to this user.
-    if (
-      uid !== undefined &&
-      metadata.uid !== 0 &&
-      metadata.uid !== uid &&
-      !isTrustedSystemPath(operatingSystem(), path)
-    ) {
-      throw new Error(`Refusing executable owned by another user at ${path}`)
-    }
-    const parent = dirname(path)
-    if (parent === path) {
-      break
+  for (const executablePath of preserveSymlink ? [canonical, resolve(candidate)] : [canonical]) {
+    for (let path = executablePath; ; path = dirname(path)) {
+      const metadata = await stat(path)
+      // Homebrew's shared prefix is admin-group writable. Local administrators are already inside
+      // the OS trust boundary; arbitrary shared Unix groups remain rejected.
+      const trustedGroupWritablePath = isTrustedGroupWritablePath({
+        platform: operatingSystem(),
+        canonical,
+        writableRoot,
+        path,
+        uid,
+        ownerUid: metadata.uid,
+        ownerGid: metadata.gid,
+      })
+      if (
+        (metadata.mode & 0o002) !== 0 ||
+        ((metadata.mode & 0o020) !== 0 && !trustedGroupWritablePath)
+      ) {
+        throw new Error(`Refusing executable beneath group- or world-writable path ${path}`)
+      }
+      // User namespaces can hide host-root ownership. Only fixed OS paths are trusted this way;
+      // user-installed executables and their private ancestors must still belong to this user.
+      if (
+        uid !== undefined &&
+        metadata.uid !== 0 &&
+        metadata.uid !== uid &&
+        !isTrustedSystemPath(operatingSystem(), path)
+      ) {
+        throw new Error(`Refusing executable owned by another user at ${path}`)
+      }
+      const parent = dirname(path)
+      if (parent === path) {
+        break
+      }
     }
   }
-  return canonical
+  return preserveSymlink ? resolve(candidate) : canonical
 }
 
 export const trustedExecutable = async (
   command: string,
-  options: { readonly writableRoot?: string } = {},
+  options: { readonly writableRoot?: string; readonly preserveSymlink?: boolean } = {},
 ): Promise<string> => {
   const candidates = isAbsolute(command)
     ? [command]
@@ -341,7 +480,7 @@ export const trustedExecutable = async (
       .catch(() => false)
     if (!available) continue
     try {
-      return await validateExecutable(path, options.writableRoot)
+      return await validateExecutable(path, options.writableRoot, options.preserveSymlink)
     } catch (cause) {
       failure ??= cause
     }
@@ -399,7 +538,7 @@ const scheduledTaskBootstrap = new RegExp(
   [
     "^\\$ErrorActionPreference = 'Stop'",
     `\\$env:COHALL_CONFIG = '${powershellLiteral}'`,
-    `\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
+    `(?:\\$env:PNPM_HOME = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?(?:\\$env:COHALL_PNPM_EXECUTABLE = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_STORE_DIR = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_GLOBAL_DIR = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_GLOBAL_BIN_DIR = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
     `& '(${powershellLiteral})' '(${powershellLiteral})' device`,
     "exit \\$LASTEXITCODE(?:\\r?\\n)?$",
   ].join("\\r?\\n"),
@@ -526,13 +665,14 @@ export const serviceCandidates = (
 }
 
 const defaultRunner: CommandRunner = {
-  run: async (command, arguments_, timeoutMs = 300_000) => {
+  run: async (command, arguments_, timeoutMs = 300_000, environment) => {
     const result = await execa(command, arguments_, {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: timeoutMs,
       windowsHide: true,
       stdin: "ignore",
+      ...(environment === undefined ? {} : { env: environment }),
       reject: false,
       stripFinalNewline: false,
     })
@@ -550,7 +690,12 @@ const checked = async (
   invocation: CommandInvocation,
   timeoutMs?: number,
 ): Promise<CommandResult> => {
-  const result = await runner.run(invocation.command, invocation.arguments, timeoutMs)
+  const result = await runner.run(
+    invocation.command,
+    invocation.arguments,
+    timeoutMs,
+    invocation.environment,
+  )
   if (result.exitCode === 0 || invocation.allowFailure === true) {
     return result
   }
@@ -586,8 +731,7 @@ const activeServices = async (
 const assertServiceInstallations = async (
   runner: CommandRunner,
   services: ReadonlyArray<ManagedService>,
-  canonicalEntrypoint: string,
-  entrypoint: string,
+  installation: Awaited<ReturnType<typeof resolvePackageInstallation>>,
 ): Promise<void> => {
   for (const service of services) {
     if (service.entrypoint === undefined) {
@@ -605,11 +749,24 @@ const assertServiceInstallations = async (
         `Could not resolve the executable used by active ${service.label}: ${cause instanceof Error ? cause.message : String(cause)}`,
       )
     })
-    if (canonicalServiceEntrypoint === canonicalEntrypoint) {
+    if (canonicalServiceEntrypoint === installation.canonicalEntrypoint) {
+      const servicePath = resolve(serviceEntrypoint)
+      const sameEntrypoint =
+        service.manager === "scheduled-task"
+          ? servicePath.toLowerCase() === installation.entrypoint.toLowerCase()
+          : servicePath === installation.entrypoint
+      if (installation.manager === "pnpm" && !sameEntrypoint)
+        throw new Error(
+          `Active ${service.label} is pinned to a pnpm package directory that changes during upgrades. ${
+            service.device
+              ? "Run cohall service install through the global cohall command before upgrading."
+              : `Update the relay service executable to ${installation.entrypoint} before upgrading.`
+          }`,
+        )
       continue
     }
     throw new Error(
-      `Active ${service.label} uses ${serviceEntrypoint}, but this Cohall CLI uses ${entrypoint}. Run the service executable's upgrade command so its installation is updated before restart.`,
+      `Active ${service.label} uses ${serviceEntrypoint}, but this Cohall CLI uses ${installation.entrypoint}. Run the service executable's upgrade command so its installation is updated before restart.`,
     )
   }
 }
@@ -715,8 +872,10 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   if (entrypoint === undefined) {
     throw new Error("Could not resolve the Cohall executable path")
   }
-  const canonicalEntrypoint = await realpath(entrypoint)
-  const installation = packageInstallation(canonicalEntrypoint, entrypoint)
+  const installation = await resolvePackageInstallation(entrypoint, {
+    runner,
+    ...(options.resolveExecutable === undefined ? {} : { resolveExecutable }),
+  })
 
   if (
     previous?.version === options.currentVersion &&
@@ -724,7 +883,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   ) {
     const pending = candidates.filter((service) => previous.pendingServices.includes(service.id))
     const active = await activeServices(runner, pending)
-    await assertServiceInstallations(runner, active, canonicalEntrypoint, entrypoint)
+    await assertServiceInstallations(runner, active, installation)
     if (options.dryRun || !options.restart) {
       return {
         upgraded: previous.fromVersion !== previous.version,
@@ -789,18 +948,21 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   }
 
   const services = await activeServices(runner, candidates)
-  await assertServiceInstallations(runner, services, canonicalEntrypoint, entrypoint)
+  await assertServiceInstallations(runner, services, installation)
   const pendingServices = [
     ...new Set([...(previous?.pendingServices ?? []), ...services.map((service) => service.id)]),
   ]
 
-  const resolvePackageManager = (): Promise<string> =>
-    options.resolveExecutable === undefined
+  const resolvePackageManager = (): Promise<string> => {
+    if (installation.pnpmExecutable !== undefined)
+      return Promise.resolve(installation.pnpmExecutable)
+    return options.resolveExecutable === undefined
       ? trustedExecutable(
           installation.manager,
           installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
         )
       : resolveExecutable(installation.manager)
+  }
   let packageManagerExecutable: string | undefined
   let resolvedTarget = target
   if (target === "latest") {
@@ -830,6 +992,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
           "version",
           "--json",
         ],
+        ...(installation.manager === "pnpm" ? { environment: pnpmEnvironment() } : {}),
       },
       30_000,
     )
@@ -839,7 +1002,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
     resolvedTarget = latest
   }
-  let nextVersion = await installedVersion(entrypoint).catch((cause: unknown) => {
+  let nextVersion = await installedVersion(installation.entrypoint).catch((cause: unknown) => {
     if (target === "latest") {
       throw new Error(
         "Could not verify the installed version before upgrading latest; use --to <version> to repair this installation",
@@ -884,7 +1047,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     const install = packageInstallCommand(installation, resolvedTarget)
     const installExecutable = packageManagerExecutable ?? (await resolvePackageManager())
     await checked(runner, { ...install, command: installExecutable })
-    nextVersion = await installedVersion(entrypoint)
+    nextVersion = await installedVersion(installation.entrypoint)
   }
   if (nextVersion !== resolvedTarget) {
     throw new Error(`Installed Cohall ${nextVersion}, expected ${resolvedTarget}`)

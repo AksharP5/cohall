@@ -358,7 +358,7 @@ describe("device relay connection", () => {
         runId: resumedRunId,
       }),
     )
-    expect(provider).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(provider).toHaveBeenCalledOnce())
     await vi.waitFor(
       () => {
         expect(connections[1]).toContainEqual({
