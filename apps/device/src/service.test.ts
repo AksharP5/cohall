@@ -14,6 +14,7 @@ describe("device service plans", () => {
       const directory = await mkdtemp(join(tmpdir(), "cohall Windows ' & 100%-"))
       const entrypoint = join(directory, "cohall.cjs")
       const config = join(directory, "chosen config.json")
+      const pnpmHome = join(directory, "custom tools")
       const harness = join(directory, "scheduler-fixture.ps1")
       const powerShell = join(
         process.env.SystemRoot ?? "C:\\Windows",
@@ -27,11 +28,11 @@ describe("device service plans", () => {
       try {
         await writeFile(
           entrypoint,
-          `process.stdout.write(JSON.stringify({ config: process.env.COHALL_CONFIG, args: process.argv.slice(2), node: process.execPath, unrelated: process.env.COHALL_UNRELATED_SECRET })); process.exit(7)`,
+          `process.stdout.write(JSON.stringify({ config: process.env.COHALL_CONFIG, args: process.argv.slice(2), node: process.execPath, pnpmHome: process.env.PNPM_HOME, path: process.env.PATH, unrelated: process.env.COHALL_UNRELATED_SECRET })); process.exit(7)`,
         )
         await writeFile(
           harness,
-          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $Inspection)
+          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $Inspection)
 $ErrorActionPreference = 'Stop'
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) return @{} }
 function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit, $RestartCount, $RestartInterval, $MultipleInstances) return @{} }
@@ -39,7 +40,7 @@ function Register-ScheduledTask { param($TaskName, $Description, $Action, $Trigg
 function Stop-ScheduledTask { param($TaskName, $ErrorAction) $global:CohallTestStopped = $true }
 function Start-ScheduledTask { param($TaskName) if (-not $global:CohallTestStopped) { throw 'Existing task was not stopped before restarting' } }
 function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) return @{ Actions = @($global:CohallTestAction) } }
-& $Installer -NodeExecutable $NodeExecutable -Entrypoint $Entrypoint -ConfigurationPath $Config | Out-Null
+& $Installer -NodeExecutable $NodeExecutable -Entrypoint $Entrypoint -ConfigurationPath $Config -PnpmHome $PnpmHome | Out-Null
 Invoke-Expression $Inspection
 `,
         )
@@ -58,6 +59,8 @@ Invoke-Expression $Inspection
             entrypoint,
             "-Config",
             config,
+            "-PnpmHome",
+            pnpmHome,
             "-Inspection",
             inspection.inspect.arguments.at(-1) ?? "",
           ],
@@ -96,10 +99,13 @@ Invoke-Expression $Inspection
         )
         expect(executed.stderr).toBe("")
         expect(executed.exitCode).toBe(7)
-        expect(JSON.parse(executed.stdout)).toEqual({
+        const output: unknown = JSON.parse(executed.stdout)
+        expect(output).toEqual({
           config,
           args: ["device"],
           node: process.execPath,
+          pnpmHome,
+          path: expect.stringContaining(`${join(pnpmHome, "bin")};${pnpmHome};`),
         })
       } finally {
         await rm(directory, { recursive: true, force: true })

@@ -42,13 +42,15 @@ export const deviceServicePlan = (options: {
   readonly entrypoint: string
   readonly home: string
   readonly nodeExecutable: string
+  readonly pnpmHome?: string
   readonly configPath: string
   readonly uid?: number
 }): DeviceServicePlan => {
   const pnpmHome =
-    options.platform === "darwin"
+    options.pnpmHome ??
+    (options.platform === "darwin"
       ? join(options.home, "Library", "pnpm")
-      : join(options.home, ".local", "share", "pnpm")
+      : join(options.home, ".local", "share", "pnpm"))
   const servicePath = [
     dirname(options.nodeExecutable),
     join(options.home, ".local", "bin"),
@@ -67,7 +69,7 @@ export const deviceServicePlan = (options: {
       file: {
         path,
         mode: 0o600,
-        content: `[Unit]\nDescription=Cohall device agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdArgument(`PATH=${servicePath}`)}\nEnvironment=${systemdArgument(`COHALL_CONFIG=${options.configPath}`)}\nExecStart=${systemdArgument(options.entrypoint)} device\nRestart=always\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`,
+        content: `[Unit]\nDescription=Cohall device agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdArgument(`PATH=${servicePath}`)}\nEnvironment=${systemdArgument(`COHALL_CONFIG=${options.configPath}`)}\n${options.pnpmHome === undefined ? "" : `Environment=${systemdArgument(`PNPM_HOME=${options.pnpmHome}`)}\n`}ExecStart=${systemdArgument(options.entrypoint)} device\nRestart=always\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`,
       },
       commands: [
         { command: "systemctl", arguments: ["--user", "daemon-reload"] },
@@ -85,7 +87,7 @@ export const deviceServicePlan = (options: {
       file: {
         path,
         mode: 0o600,
-        content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>${xml(options.entrypoint)}</string>\n    <string>device</string>\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${xml(servicePath)}</string>\n    <key>COHALL_CONFIG</key>\n    <string>${xml(options.configPath)}</string>\n  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>NetworkState</key>\n    <true/>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>3</integer>\n  <key>ProcessType</key>\n  <string>Background</string>\n</dict>\n</plist>\n`,
+        content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>${xml(options.entrypoint)}</string>\n    <string>device</string>\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${xml(servicePath)}</string>\n    <key>COHALL_CONFIG</key>\n    <string>${xml(options.configPath)}</string>\n${options.pnpmHome === undefined ? "" : `    <key>PNPM_HOME</key>\n    <string>${xml(options.pnpmHome)}</string>\n`}  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>NetworkState</key>\n    <true/>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>3</integer>\n  <key>ProcessType</key>\n  <string>Background</string>\n</dict>\n</plist>\n`,
       },
       commands: [
         { command: "launchctl", arguments: ["bootout", domain, path] },
@@ -141,7 +143,7 @@ export const installDeviceService = async (
     readonly runner?: CommandRunner
   } = {},
 ): Promise<{ readonly installed: string; readonly note?: string }> => {
-  const { entrypoint, canonicalEntrypoint } = await resolvePackageInstallation(
+  const { entrypoint, canonicalEntrypoint, pnpmHome } = await resolvePackageInstallation(
     options.entrypoint ?? process.argv[1] ?? "",
   )
   const platform = options.platform ?? process.platform
@@ -165,6 +167,7 @@ export const installDeviceService = async (
       entrypoint,
       "-ConfigurationPath",
       configurationPath(),
+      ...(pnpmHome === undefined ? [] : ["-PnpmHome", pnpmHome]),
     ])
     return { installed: "scheduled-task:Cohall Device" }
   }
@@ -175,6 +178,7 @@ export const installDeviceService = async (
     home: options.home ?? homedir(),
     nodeExecutable: process.execPath,
     configPath: configurationPath(),
+    ...(pnpmHome === undefined ? {} : { pnpmHome }),
     ...(uid === undefined ? {} : { uid }),
   })
   await mkdir(dirname(plan.file.path), { recursive: true, mode: 0o700 })

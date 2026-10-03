@@ -623,7 +623,7 @@ describe("Windows service upgrades", () => {
     const action = (path: string) => ({
       Execute: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       Arguments: `-NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(
-        `$ErrorActionPreference = 'Stop'\r\n$env:COHALL_CONFIG = 'C:\\chosen config.json'\r\n$env:PATH = 'C:\\Program Files\\nodejs' + ';' + $env:PATH\r\n& 'C:\\Program Files\\nodejs\\node.exe' '${path.replaceAll("'", "''")}' device\r\nexit $LASTEXITCODE\r\n`,
+        `$ErrorActionPreference = 'Stop'\r\n$env:COHALL_CONFIG = 'C:\\chosen config.json'\r\n${manager === "pnpm" ? "$env:PNPM_HOME = 'C:\\custom tools'\r\n$env:PATH = 'C:\\custom tools\\bin;C:\\custom tools' + ';' + $env:PATH\r\n" : ""}$env:PATH = 'C:\\Program Files\\nodejs' + ';' + $env:PATH\r\n& 'C:\\Program Files\\nodejs\\node.exe' '${path.replaceAll("'", "''")}' device\r\nexit $LASTEXITCODE\r\n`,
         "utf16le",
       ).toString("base64")}`,
     })
@@ -657,6 +657,15 @@ describe("Windows service upgrades", () => {
       })
     return { entrypoint, other, metadata, statePath, action, invocations, run }
   }
+
+  it("upgrades a Windows pnpm task with its saved global home", async () => {
+    const { entrypoint, action, run } = await fixture("pnpm")
+    await expect(run(action(entrypoint))).resolves.toMatchObject({
+      installed_version: "1.2.4",
+      package_manager: "pnpm",
+      services_restarted: ["scheduled-task:Cohall Device"],
+    })
+  })
 
   it("upgrades and restarts a Windows task using the same installation", async () => {
     const { entrypoint, action, invocations, run } = await fixture()
@@ -1382,14 +1391,15 @@ describe("managed service upgrades", () => {
 })
 
 describe("pnpm service upgrades", () => {
-  const fixture = async (layout: "classic" | "isolated" | "shared-store") => {
+  const fixture = async (layout: "classic" | "isolated" | "shared-store", customHome = false) => {
     const root = await temporaryDirectory()
-    const prefix = join(root, "pnpm", "global", layout === "classic" ? "5" : "v11")
+    const pnpmHome = join(root, customHome ? "custom tools" : "pnpm")
+    const prefix = join(pnpmHome, "global", layout === "classic" ? "5" : "v11")
     const installation = (version: string) =>
       layout === "classic" ? prefix : join(prefix, `install-${version}`)
     const packagePath = (version: string) =>
       layout === "shared-store"
-        ? join(root, "pnpm", "store", "v11", "links", version, "node_modules", "@akshar5", "cohall")
+        ? join(pnpmHome, "store", "v11", "links", version, "node_modules", "@akshar5", "cohall")
         : join(
             installation(version),
             "node_modules",
@@ -1427,6 +1437,7 @@ describe("pnpm service upgrades", () => {
         : join(link, "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
     return {
       root,
+      pnpmHome,
       entrypoint,
       pinned: await realpath(entrypoint),
       replace: async () => {
@@ -1440,16 +1451,17 @@ describe("pnpm service upgrades", () => {
   }
 
   it.each([
-    { layout: "classic", delegated: false },
-    { layout: "classic", delegated: true },
-    { layout: "isolated", delegated: false },
-    { layout: "isolated", delegated: true },
-    { layout: "shared-store", delegated: false },
-    { layout: "shared-store", delegated: true },
+    { layout: "classic", delegated: false, customHome: false },
+    { layout: "classic", delegated: true, customHome: false },
+    { layout: "isolated", delegated: false, customHome: false },
+    { layout: "isolated", delegated: true, customHome: false },
+    { layout: "shared-store", delegated: false, customHome: false },
+    { layout: "shared-store", delegated: true, customHome: false },
+    { layout: "shared-store", delegated: true, customHome: true },
   ] as const)(
-    "restarts the new package after a $layout upgrade, delegated=$delegated",
-    async ({ layout, delegated }) => {
-      const setup = await fixture(layout)
+    "restarts the new package after a $layout upgrade, delegated=$delegated, customHome=$customHome",
+    async ({ layout, delegated, customHome }) => {
+      const setup = await fixture(layout, customHome)
       const service = await installDeviceService({
         platform: "linux",
         entrypoint: layout === "classic" ? setup.entrypoint : setup.pinned,
@@ -1457,6 +1469,10 @@ describe("pnpm service upgrades", () => {
         runner: { run: async () => success() },
       })
       const unit = await readFile(service.installed, "utf8")
+      expect(unit).toContain(
+        join(setup.pnpmHome, "bin").replaceAll("\\", "\\\\").replaceAll("%", "%%"),
+      )
+      expect(unit).toContain("PNPM_HOME=")
       const executable = unit.match(/^ExecStart=(".+") device$/m)?.[1]
       if (executable === undefined) throw new Error("Missing service executable")
       const saved: unknown = JSON.parse(executable)

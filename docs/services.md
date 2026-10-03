@@ -47,8 +47,10 @@ journalctl --user -u cohall-device -f
 
 The generated service uses the exact Cohall executable and puts the current
 Node.js directory first on `PATH`. Linux and macOS services include both the
-pnpm home directory and its `bin` subdirectory so globally installed commands
-remain available across pnpm versions. It records the resolved configuration file,
+selected pnpm installation’s home directory and its `bin` subdirectory, including
+custom pnpm homes, so globally installed commands
+remain available across pnpm versions. For pnpm installations, services also
+record `PNPM_HOME` so delegated upgrades use the same global installation. It records the resolved configuration file,
 including `COHALL_CONFIG` or `XDG_CONFIG_HOME` overrides. Reinstall the service
 after moving that file or replacing a Node.js installation at a different path.
 Reinstalling restarts an existing worker to apply the changes.

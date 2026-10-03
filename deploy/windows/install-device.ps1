@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory = $true)][string]$NodeExecutable,
   [Parameter(Mandatory = $true)][string]$Entrypoint,
-  [Parameter(Mandatory = $true)][string]$ConfigurationPath
+  [Parameter(Mandatory = $true)][string]$ConfigurationPath,
+  [string]$PnpmHome
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,10 +11,14 @@ function Quote-Literal([string]$Value) {
   return "'" + $Value.Replace("'", "''") + "'"
 }
 
+$pnpmEnvironment = if ($PnpmHome) {
+  "`$env:PNPM_HOME = $(Quote-Literal $PnpmHome)`r`n`$env:PATH = $(Quote-Literal ((Join-Path $PnpmHome 'bin') + ';' + $PnpmHome)) + ';' + `$env:PATH`r`n"
+} else { "" }
+
 $bootstrap = @"
 `$ErrorActionPreference = 'Stop'
 `$env:COHALL_CONFIG = $(Quote-Literal $ConfigurationPath)
-`$env:PATH = $(Quote-Literal (Split-Path -Parent $NodeExecutable)) + ';' + `$env:PATH
+${pnpmEnvironment}`$env:PATH = $(Quote-Literal (Split-Path -Parent $NodeExecutable)) + ';' + `$env:PATH
 & $(Quote-Literal $NodeExecutable) $(Quote-Literal $Entrypoint) device
 exit `$LASTEXITCODE
 "@

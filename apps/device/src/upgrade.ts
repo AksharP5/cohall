@@ -142,6 +142,7 @@ export interface UpgradeResult {
 }
 
 const normalizePath = (path: string): string => path.replaceAll("\\", "/")
+const pnpmGlobalDirectory = /^(.*\/global\/v?\d+)\//
 
 export const normalizeUpgradeTarget = (target: string | undefined): string => {
   if (target === undefined || target === "latest") {
@@ -190,9 +191,9 @@ export const packageInstallation = (
     return { manager: "bun", entrypoint }
   }
   if (
-    path.includes("/pnpm/global/") ||
-    path.includes("/pnpm/store/") ||
-    normalizePath(entrypoint).includes("/pnpm/global/")
+    pnpmGlobalDirectory.test(path) ||
+    /\/store\/v\d+\/links\//.test(path) ||
+    pnpmGlobalDirectory.test(normalizePath(entrypoint))
   ) {
     return { manager: "pnpm", entrypoint }
   }
@@ -207,12 +208,13 @@ export const packageInstallation = (
 export const resolvePackageInstallation = async (entrypoint: string) => {
   const canonicalEntrypoint = await realpath(entrypoint)
   const installation = packageInstallation(canonicalEntrypoint, resolve(entrypoint))
-  if (installation.manager !== "pnpm") return { ...installation, canonicalEntrypoint }
+  if (installation.manager !== "pnpm")
+    return { ...installation, canonicalEntrypoint, pnpmHome: undefined }
 
   const globalRoot = [normalizePath(installation.entrypoint), normalizePath(canonicalEntrypoint)]
-    .map((path) => path.match(/^(.*?\/pnpm\/global\/[^/]+)\//)?.[1])
+    .map((path) => path.match(pnpmGlobalDirectory)?.[1])
     .find((root) => root !== undefined)
-  const pnpmHome = normalizePath(canonicalEntrypoint).match(/^(.*?\/pnpm)\/store\//)?.[1]
+  const pnpmHome = normalizePath(canonicalEntrypoint).match(/^(.*)\/store\/v\d+\/links\//)?.[1]
   const roots =
     globalRoot !== undefined
       ? [globalRoot]
@@ -232,7 +234,12 @@ export const resolvePackageInstallation = async (entrypoint: string) => {
     ]
     for (const candidate of candidates) {
       if ((await realpath(candidate).catch(() => undefined)) === canonicalEntrypoint)
-        return { ...installation, entrypoint: candidate, canonicalEntrypoint }
+        return {
+          ...installation,
+          entrypoint: candidate,
+          canonicalEntrypoint,
+          pnpmHome: dirname(dirname(root)),
+        }
     }
   }
   throw new Error(
@@ -442,7 +449,7 @@ const scheduledTaskBootstrap = new RegExp(
   [
     "^\\$ErrorActionPreference = 'Stop'",
     `\\$env:COHALL_CONFIG = '${powershellLiteral}'`,
-    `\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
+    `(?:\\$env:PNPM_HOME = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
     `& '(${powershellLiteral})' '(${powershellLiteral})' device`,
     "exit \\$LASTEXITCODE(?:\\r?\\n)?$",
   ].join("\\r?\\n"),
