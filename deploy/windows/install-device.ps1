@@ -3,7 +3,9 @@ param(
   [Parameter(Mandatory = $true)][string]$Entrypoint,
   [Parameter(Mandatory = $true)][string]$ConfigurationPath,
   [string]$PnpmHome,
-  [string]$PnpmExecutable
+  [string]$PnpmExecutable,
+  [string]$PnpmGlobalDir,
+  [string]$PnpmGlobalBinDir
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +20,13 @@ $pnpmEnvironment = if ($PnpmHome) {
 
 if ($PnpmExecutable) {
   $pnpmEnvironment += "`$env:COHALL_PNPM_EXECUTABLE = $(Quote-Literal $PnpmExecutable)`r`n"
+}
+
+if ($PnpmGlobalDir) {
+  $pnpmEnvironment += "`$env:COHALL_PNPM_GLOBAL_DIR = $(Quote-Literal $PnpmGlobalDir)`r`n"
+}
+if ($PnpmGlobalBinDir) {
+  $pnpmEnvironment += "`$env:COHALL_PNPM_GLOBAL_BIN_DIR = $(Quote-Literal $PnpmGlobalBinDir)`r`n`$env:PATH = $(Quote-Literal $PnpmGlobalBinDir) + ';' + `$env:PATH`r`n"
 }
 
 $bootstrap = @"

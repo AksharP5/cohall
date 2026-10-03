@@ -46,16 +46,17 @@ journalctl --user -u cohall-device -f
 ```
 
 The generated service uses the exact Cohall executable and puts the current
-Node.js directory first on `PATH`. Linux and macOS services include both the
-configured pnpm home directory and its `bin` subdirectory, including
-custom pnpm homes, so globally installed commands
-remain available across pnpm versions. For pnpm installations, services also
-record `PNPM_HOME` and the selected pnpm executable so a Corepack shim earlier
-on the service PATH cannot redirect upgrades. Upgrades target the selected global package directory even
-when it is configured separately from pnpm’s home. It records the resolved configuration file,
-including `COHALL_CONFIG` or `XDG_CONFIG_HOME` overrides. Reinstall the service
-after moving that file or replacing a Node.js or pnpm executable at a different path.
-Reinstalling restarts an existing worker to apply the changes.
+Node.js directory first on `PATH`. Linux and macOS services include the configured
+pnpm home and its `bin` subdirectory. For pnpm installations, services also save
+the selected pnpm executable, global package directory, and global bin directory.
+This preserves custom paths supplied through shell configuration and prevents a
+Corepack shim on the service PATH from redirecting upgrades. Global pnpm operations
+ignore the current project’s Corepack manager specification.
+
+The service records the resolved configuration file, including `COHALL_CONFIG` or
+`XDG_CONFIG_HOME` overrides. Reinstall it after moving that file or replacing a
+Node.js or pnpm executable at a different path. Reinstalling restarts an existing
+worker to apply the changes.
 
 Some Grok Bot cloud computers have no systemd user manager. On those hosts,
 follow [Grok Bot computer setup](grok-bot.md) for a supported supervisor or

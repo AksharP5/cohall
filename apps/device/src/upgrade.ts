@@ -76,6 +76,7 @@ export interface CommandRunner {
     command: string,
     arguments_: ReadonlyArray<string>,
     timeoutMs?: number,
+    environment?: Readonly<Record<string, string>>,
   ) => Promise<CommandResult>
 }
 
@@ -104,6 +105,7 @@ export interface CommandInvocation {
   readonly command: string
   readonly arguments: ReadonlyArray<string>
   readonly allowFailure?: boolean
+  readonly environment?: Readonly<Record<string, string>>
 }
 
 const RestartReceipt = Schema.Struct({
@@ -141,6 +143,8 @@ export interface UpgradeResult {
   readonly resumed_after_restart: boolean
   readonly dry_run: boolean
 }
+
+const pnpmEnvironment = { COREPACK_ENABLE_PROJECT_SPEC: "0" }
 
 const normalizePath = (path: string): string => path.replaceAll("\\", "/")
 const pnpmGlobalDirectory = /^(.*\/global\/v?\d+)\//
@@ -236,7 +240,14 @@ export const resolvePackageInstallation = async (
     options.runner ?? defaultRunner,
     {
       command: pnpmExecutable,
-      arguments: ["root", "--global"],
+      arguments: [
+        "root",
+        "--global",
+        ...(process.env.COHALL_PNPM_GLOBAL_DIR === undefined
+          ? []
+          : ["--global-dir", process.env.COHALL_PNPM_GLOBAL_DIR]),
+      ],
+      environment: pnpmEnvironment,
     },
     10_000,
   )
@@ -274,6 +285,34 @@ export const resolvePackageInstallation = async (
   )
 }
 
+export const pnpmGlobalBinDirectory = async (
+  executable: string,
+  runner: CommandRunner = defaultRunner,
+): Promise<string> => {
+  const result = await checked(
+    runner,
+    {
+      command: executable,
+      arguments: [
+        "bin",
+        "--global",
+        ...(process.env.COHALL_PNPM_GLOBAL_DIR === undefined
+          ? []
+          : ["--global-dir", process.env.COHALL_PNPM_GLOBAL_DIR]),
+        ...(process.env.COHALL_PNPM_GLOBAL_BIN_DIR === undefined
+          ? []
+          : ["--global-bin-dir", process.env.COHALL_PNPM_GLOBAL_BIN_DIR]),
+      ],
+      environment: pnpmEnvironment,
+    },
+    10_000,
+  )
+  const directory = result.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? ""
+  if (!isAbsolute(directory))
+    throw new Error("pnpm did not report an absolute global bin directory")
+  return directory
+}
+
 export const packageInstallCommand = (
   installation: PackageInstallation,
   target: string,
@@ -289,8 +328,12 @@ export const packageInstallCommand = (
           "add",
           "--global",
           ...(installation.globalDir === undefined ? [] : ["--global-dir", installation.globalDir]),
+          ...(process.env.COHALL_PNPM_GLOBAL_BIN_DIR === undefined
+            ? []
+            : ["--global-bin-dir", process.env.COHALL_PNPM_GLOBAL_BIN_DIR]),
           specification,
         ],
+        environment: pnpmEnvironment,
       }
     case "npm":
       return {
@@ -487,7 +530,7 @@ const scheduledTaskBootstrap = new RegExp(
   [
     "^\\$ErrorActionPreference = 'Stop'",
     `\\$env:COHALL_CONFIG = '${powershellLiteral}'`,
-    `(?:\\$env:PNPM_HOME = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?(?:\\$env:COHALL_PNPM_EXECUTABLE = '${powershellLiteral}'\\r?\\n)?\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
+    `(?:\\$env:PNPM_HOME = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?(?:\\$env:COHALL_PNPM_EXECUTABLE = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_GLOBAL_DIR = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_GLOBAL_BIN_DIR = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
     `& '(${powershellLiteral})' '(${powershellLiteral})' device`,
     "exit \\$LASTEXITCODE(?:\\r?\\n)?$",
   ].join("\\r?\\n"),
@@ -614,13 +657,14 @@ export const serviceCandidates = (
 }
 
 const defaultRunner: CommandRunner = {
-  run: async (command, arguments_, timeoutMs = 300_000) => {
+  run: async (command, arguments_, timeoutMs = 300_000, environment) => {
     const result = await execa(command, arguments_, {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: timeoutMs,
       windowsHide: true,
       stdin: "ignore",
+      ...(environment === undefined ? {} : { env: environment }),
       reject: false,
       stripFinalNewline: false,
     })
@@ -638,7 +682,12 @@ const checked = async (
   invocation: CommandInvocation,
   timeoutMs?: number,
 ): Promise<CommandResult> => {
-  const result = await runner.run(invocation.command, invocation.arguments, timeoutMs)
+  const result = await runner.run(
+    invocation.command,
+    invocation.arguments,
+    timeoutMs,
+    invocation.environment,
+  )
   if (result.exitCode === 0 || invocation.allowFailure === true) {
     return result
   }
@@ -935,6 +984,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
           "version",
           "--json",
         ],
+        ...(installation.manager === "pnpm" ? { environment: pnpmEnvironment } : {}),
       },
       30_000,
     )

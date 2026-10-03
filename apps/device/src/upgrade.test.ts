@@ -15,6 +15,7 @@ import {
   normalizeUpgradeTarget,
   packageInstallCommand,
   packageInstallation,
+  pnpmGlobalBinDirectory,
   serviceCandidates,
   trustedExecutable,
   upgrade,
@@ -24,6 +25,23 @@ import {
 } from "./upgrade.ts"
 
 const temporaryDirectories: Array<string> = []
+
+it("runs pnpm discovery independently of project dispatch, including Windows cmd shims", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cohall-pnpm-dispatch-"))
+  temporaryDirectories.push(root)
+  const script = join(root, "manager.cjs")
+  const executable = process.platform === "win32" ? join(root, "pnpm.cmd") : script
+  await writeFile(
+    script,
+    `#!${process.execPath}\nif (process.env.COREPACK_ENABLE_PROJECT_SPEC !== "0") process.exit(1); process.stdout.write(${JSON.stringify(root)})`,
+  )
+  if (process.platform === "win32")
+    await writeFile(executable, `@"${process.execPath}" "${script}" %*\r\n`)
+  else await chmod(executable, 0o700)
+  vi.stubEnv("COREPACK_ENABLE_PROJECT_SPEC", "1")
+  await expect(pnpmGlobalBinDirectory(executable)).resolves.toBe(root)
+  expect(process.env.COREPACK_ENABLE_PROJECT_SPEC).toBe("1")
+})
 
 const temporaryDirectory = async (): Promise<string> => {
   const path = await mkdtemp(join(tmpdir(), "cohall-upgrade-"))
@@ -1522,6 +1540,9 @@ describe("pnpm service upgrades", () => {
       const setup = await fixture(layout, customHome, separateGlobalDir)
       const pnpmHome = separateGlobalDir ? join(setup.root, "actual command home") : setup.pnpmHome
       vi.stubEnv("PNPM_HOME", pnpmHome)
+      const globalBin = separateGlobalDir
+        ? join(setup.root, "user tools", "bin")
+        : join(pnpmHome, "bin")
       const managerExecutable = join(pnpmHome, "bin", "pnpm")
       const corepack = join(setup.root, "node", "pnpm")
       let corepackFirst = false
@@ -1537,15 +1558,20 @@ describe("pnpm service upgrades", () => {
         home: setup.root,
         resolveExecutable: selectedExecutable,
         runner: {
-          run: async (_command, args) =>
-            args[0] === "root"
+          run: async (_command, args, _timeout, environment) => {
+            if (args[0] === "bin") {
+              expect(environment).toEqual({ COREPACK_ENABLE_PROJECT_SPEC: "0" })
+              return { ...success(), stdout: globalBin }
+            }
+            return args[0] === "root"
               ? {
                   ...success(),
                   stdout: separateGlobalDir
                     ? `Warning: this project pins a package manager\n${setup.globalRoot}\n`
                     : setup.globalRoot,
                 }
-              : success(),
+              : success()
+          },
         },
       })
       const unit = await readFile(service.installed, "utf8")
@@ -1564,6 +1590,17 @@ describe("pnpm service upgrades", () => {
         .replaceAll("%%", "%")
         .slice("COHALL_PNPM_EXECUTABLE=".length)
       expect(savedManager).toBe(managerExecutable)
+      for (const [name, expected] of [
+        ["COHALL_PNPM_GLOBAL_DIR", setup.globalDir],
+        ["COHALL_PNPM_GLOBAL_BIN_DIR", globalBin],
+      ] as const) {
+        const setting = unit.match(new RegExp(`^Environment=("${name}=.+")$`, "m"))?.[1]
+        if (setting === undefined) throw new Error(`Missing ${name}`)
+        const value: unknown = JSON.parse(setting)
+        expect(value).toBe(`${name}=${expected}`.replaceAll("%", "%%"))
+        if (delegated) vi.stubEnv(name, expected)
+      }
+      expect(unit).toContain(globalBin.replaceAll("\\", "\\\\").replaceAll("%", "%%"))
       if (delegated) {
         vi.stubEnv("COHALL_PNPM_EXECUTABLE", savedManager)
         corepackFirst = separateGlobalDir
@@ -1571,14 +1608,18 @@ describe("pnpm service upgrades", () => {
       const statePath = join(setup.root, "receipt.json")
       let restartedVersion: unknown
       const runner: CommandRunner = {
-        run: async (command, args) => {
-          if (args[0] === "root")
+        run: async (command, args, _timeout, environment) => {
+          if (command === managerExecutable)
+            expect(environment).toEqual({ COREPACK_ENABLE_PROJECT_SPEC: "0" })
+          if (args[0] === "root") {
+            if (delegated) expect(args[args.indexOf("--global-dir") + 1]).toBe(setup.globalDir)
             return {
               ...success(),
               stdout: separateGlobalDir
                 ? `Warning: this project pins a package manager\n${setup.globalRoot}\n`
                 : setup.globalRoot,
             }
+          }
           if (args.includes("is-active"))
             return { ...success(), exitCode: args.includes("cohall-device.service") ? 0 : 3 }
           if (args.includes("show"))
@@ -1586,6 +1627,7 @@ describe("pnpm service upgrades", () => {
           if (command === corepack) throw new Error("Used the shadowing Corepack shim")
           if (command === managerExecutable) {
             expect(args[args.indexOf("--global-dir") + 1]).toBe(setup.globalDir)
+            if (delegated) expect(args[args.indexOf("--global-bin-dir") + 1]).toBe(globalBin)
             await setup.replace()
           }
           if (args.includes("restart")) {
