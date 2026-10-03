@@ -70,7 +70,6 @@ Invoke-Expression $Inspection
             "-PnpmStoreDir",
             pnpmStoreDir,
             "-PnpmGlobalDir",
-            pnpmStoreDir,
             pnpmGlobalDir,
             "-PnpmGlobalBinDir",
             pnpmGlobalBinDir,
