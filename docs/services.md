@@ -249,8 +249,9 @@ multiple actions must also be reinstalled before upgrading.
 pnpm device services use the stable global package link so replacing or removing
 an old package directory does not leave the worker on the old version. Services
 installed by older Cohall versions may be pinned to a version-specific directory.
-Before upgrading those services, run `cohall service install` through pnpm's
-global `cohall` command once. Cohall rejects pinned active services before changing
+After updating the global CLI, run `cohall service install` through pnpm's
+global `cohall` command once to replace the saved executable. Cohall rejects
+pinned active services before changing
 packages. This applies to systemd, launchd, and Windows scheduled tasks. For a
 manually configured pnpm relay, change its service executable to the stable
 package path named in the error.

@@ -175,10 +175,12 @@ export const packageInstallation = (
     )
   }
   if (
-    path.includes("/.npm/_npx/") ||
-    path.includes("/.bunx/") ||
-    path.includes("/pnpm/dlx/") ||
-    path.includes("/dlx/")
+    [path, normalizePath(entrypoint)].some(
+      (candidate) =>
+        candidate.includes("/.npm/_npx/") ||
+        candidate.includes("/.bunx/") ||
+        candidate.includes("/dlx/"),
+    )
   ) {
     throw new Error(
       "This Cohall process is running from a temporary package-runner cache; install it globally before using cohall upgrade",
@@ -187,7 +189,11 @@ export const packageInstallation = (
   if (path.includes("/.bun/install/global/node_modules/")) {
     return { manager: "bun", entrypoint }
   }
-  if (path.includes("/pnpm/global/")) {
+  if (
+    path.includes("/pnpm/global/") ||
+    path.includes("/pnpm/store/") ||
+    normalizePath(entrypoint).includes("/pnpm/global/")
+  ) {
     return { manager: "pnpm", entrypoint }
   }
 
@@ -203,19 +209,31 @@ export const resolvePackageInstallation = async (entrypoint: string) => {
   const installation = packageInstallation(canonicalEntrypoint, resolve(entrypoint))
   if (installation.manager !== "pnpm") return { ...installation, canonicalEntrypoint }
 
-  const globalRoot = normalizePath(canonicalEntrypoint).match(/^(.*?\/pnpm\/global\/[^/]+)\//)?.[1]
-  if (globalRoot === undefined) throw new Error("Could not locate the pnpm global installation")
-  const entries = await readdir(globalRoot, { withFileTypes: true })
+  const globalRoot = [normalizePath(installation.entrypoint), normalizePath(canonicalEntrypoint)]
+    .map((path) => path.match(/^(.*?\/pnpm\/global\/[^/]+)\//)?.[1])
+    .find((root) => root !== undefined)
+  const pnpmHome = normalizePath(canonicalEntrypoint).match(/^(.*?\/pnpm)\/store\//)?.[1]
+  const roots =
+    globalRoot !== undefined
+      ? [globalRoot]
+      : pnpmHome === undefined
+        ? []
+        : (await readdir(join(pnpmHome, "global"), { withFileTypes: true }).catch(() => []))
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => join(pnpmHome, "global", entry.name))
   const packageEntry = (root: string) => join(root, "node_modules", packageName, "bin", "cohall.js")
-  const candidates = [
-    packageEntry(globalRoot),
-    ...entries
-      .filter((entry) => entry.isSymbolicLink())
-      .map((entry) => packageEntry(join(globalRoot, entry.name))),
-  ]
-  for (const candidate of candidates) {
-    if ((await realpath(candidate).catch(() => undefined)) === canonicalEntrypoint)
-      return { ...installation, entrypoint: candidate, canonicalEntrypoint }
+  for (const root of roots) {
+    const entries = await readdir(root, { withFileTypes: true })
+    const candidates = [
+      packageEntry(root),
+      ...entries
+        .filter((entry) => entry.isSymbolicLink())
+        .map((entry) => packageEntry(join(root, entry.name))),
+    ]
+    for (const candidate of candidates) {
+      if ((await realpath(candidate).catch(() => undefined)) === canonicalEntrypoint)
+        return { ...installation, entrypoint: candidate, canonicalEntrypoint }
+    }
   }
   throw new Error(
     "Could not find a stable pnpm global executable for this installation. Run the global cohall command, then use cohall service install before upgrading.",
@@ -611,8 +629,7 @@ const activeServices = async (
 const assertServiceInstallations = async (
   runner: CommandRunner,
   services: ReadonlyArray<ManagedService>,
-  canonicalEntrypoint: string,
-  entrypoint: string,
+  installation: Awaited<ReturnType<typeof resolvePackageInstallation>>,
 ): Promise<void> => {
   for (const service of services) {
     if (service.entrypoint === undefined) {
@@ -630,8 +647,7 @@ const assertServiceInstallations = async (
         `Could not resolve the executable used by active ${service.label}: ${cause instanceof Error ? cause.message : String(cause)}`,
       )
     })
-    if (canonicalServiceEntrypoint === canonicalEntrypoint) {
-      const installation = await resolvePackageInstallation(serviceEntrypoint)
+    if (canonicalServiceEntrypoint === installation.canonicalEntrypoint) {
       if (installation.manager === "pnpm" && resolve(serviceEntrypoint) !== installation.entrypoint)
         throw new Error(
           `Active ${service.label} is pinned to a pnpm package directory that changes during upgrades. ${
@@ -643,7 +659,7 @@ const assertServiceInstallations = async (
       continue
     }
     throw new Error(
-      `Active ${service.label} uses ${serviceEntrypoint}, but this Cohall CLI uses ${entrypoint}. Run the service executable's upgrade command so its installation is updated before restart.`,
+      `Active ${service.label} uses ${serviceEntrypoint}, but this Cohall CLI uses ${installation.entrypoint}. Run the service executable's upgrade command so its installation is updated before restart.`,
     )
   }
 }
@@ -750,7 +766,6 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     throw new Error("Could not resolve the Cohall executable path")
   }
   const installation = await resolvePackageInstallation(entrypoint)
-  const { canonicalEntrypoint } = installation
 
   if (
     previous?.version === options.currentVersion &&
@@ -758,7 +773,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   ) {
     const pending = candidates.filter((service) => previous.pendingServices.includes(service.id))
     const active = await activeServices(runner, pending)
-    await assertServiceInstallations(runner, active, canonicalEntrypoint, entrypoint)
+    await assertServiceInstallations(runner, active, installation)
     if (options.dryRun || !options.restart) {
       return {
         upgraded: previous.fromVersion !== previous.version,
@@ -823,7 +838,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   }
 
   const services = await activeServices(runner, candidates)
-  await assertServiceInstallations(runner, services, canonicalEntrypoint, entrypoint)
+  await assertServiceInstallations(runner, services, installation)
   const pendingServices = [
     ...new Set([...(previous?.pendingServices ?? []), ...services.map((service) => service.id)]),
   ]

@@ -593,6 +593,12 @@ describe("package installation", () => {
       packageInstallation("/home/user/.npm/_npx/123/node_modules/@akshar5/cohall/bin/cohall.js"),
     ).toThrow("temporary package-runner cache")
     expect(() => packageInstallation("/work/cohall/bin/cohall.js")).toThrow("requires a global")
+    expect(() =>
+      packageInstallation(
+        "/home/user/.local/share/pnpm/store/v11/links/package/node_modules/@akshar5/cohall/bin/cohall.js",
+        "/home/user/.local/share/pnpm/dlx/cache/node_modules/@akshar5/cohall/bin/cohall.js",
+      ),
+    ).toThrow("temporary package-runner cache")
   })
 })
 
@@ -1372,21 +1378,23 @@ describe("managed service upgrades", () => {
 })
 
 describe("pnpm service upgrades", () => {
-  const fixture = async (layout: "classic" | "isolated") => {
+  const fixture = async (layout: "classic" | "isolated" | "shared-store") => {
     const root = await temporaryDirectory()
     const prefix = join(root, "pnpm", "global", layout === "classic" ? "5" : "v11")
     const installation = (version: string) =>
       layout === "classic" ? prefix : join(prefix, `install-${version}`)
     const packagePath = (version: string) =>
-      join(
-        installation(version),
-        "node_modules",
-        ".pnpm",
-        `@akshar5+cohall@${version}`,
-        "node_modules",
-        "@akshar5",
-        "cohall",
-      )
+      layout === "shared-store"
+        ? join(root, "pnpm", "store", "v11", "links", version, "node_modules", "@akshar5", "cohall")
+        : join(
+            installation(version),
+            "node_modules",
+            ".pnpm",
+            `@akshar5+cohall@${version}`,
+            "node_modules",
+            "@akshar5",
+            "cohall",
+          )
     for (const version of ["1.2.3", "1.2.4"]) {
       const path = packagePath(version)
       await mkdir(join(path, "bin"), { recursive: true })
@@ -1395,7 +1403,7 @@ describe("pnpm service upgrades", () => {
         join(path, "package.json"),
         JSON.stringify({ name: "@akshar5/cohall", version }),
       )
-      if (layout === "isolated") {
+      if (layout !== "classic") {
         const packageLink = join(installation(version), "node_modules", "@akshar5", "cohall")
         await mkdir(dirname(packageLink), { recursive: true })
         await symlink(path, packageLink, "junction")
@@ -1432,13 +1440,15 @@ describe("pnpm service upgrades", () => {
     { layout: "classic", delegated: true },
     { layout: "isolated", delegated: false },
     { layout: "isolated", delegated: true },
+    { layout: "shared-store", delegated: false },
+    { layout: "shared-store", delegated: true },
   ] as const)(
     "restarts the new package after a $layout upgrade, delegated=$delegated",
     async ({ layout, delegated }) => {
       const setup = await fixture(layout)
       const service = await installDeviceService({
         platform: "linux",
-        entrypoint: layout === "isolated" ? setup.pinned : setup.entrypoint,
+        entrypoint: layout === "classic" ? setup.entrypoint : setup.pinned,
         home: setup.root,
         runner: { run: async () => success() },
       })
@@ -1472,7 +1482,7 @@ describe("pnpm service upgrades", () => {
         restart: true,
         dryRun: false,
         delegated,
-        entrypoint: delegated ? bootPath : layout === "isolated" ? setup.pinned : setup.entrypoint,
+        entrypoint: delegated ? bootPath : layout === "classic" ? setup.entrypoint : setup.pinned,
         platform: "linux",
         statePath,
         runner,
