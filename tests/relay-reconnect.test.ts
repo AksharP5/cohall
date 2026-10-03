@@ -60,7 +60,7 @@ it("expires undispatched offline work and delivers interrupted-task cancellation
     lastSeenAt: now(),
   })
   const client = RelayClient.make({ baseUrl, token })
-  const connect = async (credential: string) => {
+  const connect = async (credential: string, replay?: SocketEvent) => {
     const socket = new WebSocket(`${baseUrl.replace("http", "ws")}/ws/device`)
     sockets.push(socket)
     const events: Array<SocketEvent> = []
@@ -68,7 +68,10 @@ it("expires undispatched offline work and delivers interrupted-task cancellation
     socket.on("message", (message) => {
       const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
       events.push(event)
-      if (event._tag === "Connected") send({ _tag: "DeviceHello", device })
+      if (event._tag === "Connected") {
+        send({ _tag: "DeviceHello", device })
+        if (replay !== undefined) send(replay)
+      }
     })
     await once(socket, "open")
     send({ _tag: "Authenticate", token: credential })
@@ -261,6 +264,46 @@ it("expires undispatched offline work and delivers interrupted-task cancellation
     await vi.waitFor(async () => {
       expect((await Effect.runPromise(client.getTask(questionTask.id))).status).toBe("cancelled")
     })
+    reconnected.send({ _tag: "TaskFinished", taskId: followup.id, result: "Follow-up done" })
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(followup.id))).status).toBe("completed")
+    })
+    const offlineQuestion = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, botId, prompt: "Ask while disconnected" }),
+    )
+    if (offlineQuestion.runId === undefined) throw new Error("Expected Bot turn")
+    reconnected.send({
+      _tag: "TaskAccepted",
+      taskId: offlineQuestion.id,
+      runId: offlineQuestion.runId,
+    })
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(offlineQuestion.id))).status).toBe("running")
+    })
+    await disconnect(reconnected.socket)
+    const replayed = await connect(credential.token, {
+      _tag: "TaskInputRequested",
+      taskId: offlineQuestion.id,
+      runId: offlineQuestion.runId,
+      question: "Which branch?",
+    })
+    await vi.waitFor(() => {
+      expect(replayed.events).toContainEqual({
+        _tag: "TaskSettled",
+        taskId: offlineQuestion.id,
+        runId: offlineQuestion.runId,
+      })
+    })
+    expect(await Effect.runPromise(client.getTask(offlineQuestion.id))).toMatchObject({
+      status: "needs_input",
+      clarifications: [{ question: "Which branch?" }],
+    })
+    expect((await Effect.runPromise(client.inbox())).items).toContainEqual(
+      expect.objectContaining({
+        id: offlineQuestion.id,
+        inputRequest: expect.objectContaining({ question: "Which branch?" }),
+      }),
+    )
   } finally {
     for (const socket of sockets) socket.terminate()
     const exited = once(relay, "exit", { signal: AbortSignal.timeout(2_000) })

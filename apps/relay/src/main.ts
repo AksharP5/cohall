@@ -738,13 +738,10 @@ export const runRelay = async (): Promise<void> => {
             )
             return
           case "TaskInputRequested": {
-            const task = yield* store.getTask(event.taskId)
-            if (task.runId !== event.runId || task.status !== "running") return
-            yield* store.requestTaskInput(event.taskId, deviceId, {
+            yield* store.pauseTaskForInput(event.taskId, deviceId, {
               runId: event.runId,
               question: event.question,
             })
-            yield* store.finishTask(event.taskId, deviceId, "", undefined, undefined, event.runId)
             return
           }
           case "TaskFailed":

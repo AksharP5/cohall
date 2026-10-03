@@ -272,6 +272,11 @@ export interface Interface {
     deviceId: DeviceId,
     input: RequestTaskInput,
   ) => Effect.Effect<TaskClarification, PersistenceError | TaskInputError>
+  readonly pauseTaskForInput: (
+    taskId: TaskId,
+    deviceId: DeviceId,
+    input: RequestTaskInput,
+  ) => Effect.Effect<Task, PersistenceError | TaskInputError>
   readonly answerTaskInput: (
     taskId: TaskId,
     principal: AuthSession | "owner",
@@ -1921,6 +1926,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     taskId: TaskId,
     deviceId: DeviceId,
     input: RequestTaskInput,
+    turnFinished = false,
   ) {
     const task = yield* getTask(taskId)
     if (task.targetDeviceId !== deviceId) {
@@ -1931,7 +1937,10 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     }
     if (taskDeadlinePassed(task))
       return yield* new TaskInputError({ status: 409, message: taskDeadlineError })
-    if (task.status !== "running" || task.runId !== input.runId) {
+    const active =
+      task.status === "running" ||
+      (turnFinished && (task.status === "queued" || task.status === "assigned"))
+    if (!active || task.runId !== input.runId) {
       return yield* new TaskInputError({
         status: 409,
         message: "Input can only be requested by the current running turn",
@@ -1974,13 +1983,14 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           const result = db
             .query(
               `UPDATE tasks SET clarifications_json = ?, updated_at = ?
-           WHERE id = ? AND status = 'running' AND run_id = ?
+           WHERE id = ? AND status = ? AND run_id = ?
              AND COALESCE(clarifications_json, '[]') = ?`,
             )
             .run(
               JSON.stringify([...history, question]),
               question.at,
               taskId,
+              task.status,
               input.runId,
               JSON.stringify(history),
             )
@@ -2138,14 +2148,13 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           if (
             status !== "cancelled" &&
             current.clarifications?.at(-1)?.answer === undefined &&
-            (current.clarifications?.length ?? 0) > 0 &&
-            current.status === "running"
+            (current.clarifications?.length ?? 0) > 0
           ) {
             const changed = db
               .query(
                 `UPDATE tasks SET status = 'needs_input', provider_session_id = ?, updated_at = ?,
                progress_note = NULL, progress_at = NULL
-               WHERE id = ? AND status = 'running' AND run_id IS ?`,
+               WHERE id = ? AND status = ? AND run_id IS ?`,
               )
               .run(
                 current.provider === "grok-bot"
@@ -2153,6 +2162,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
                   : (providerSessionId ?? current.providerSessionId ?? null),
                 timestamp,
                 taskId,
+                current.status,
                 current.runId ?? null,
               )
             if (changed.changes === 1) {
@@ -2251,6 +2261,31 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       catch: operationError("RelayStore.terminal"),
     })
     return yield* getTask(taskId)
+  })
+
+  const pauseTaskForInput = Effect.fn("RelayStore.pauseTaskForInput")(function* (
+    taskId: TaskId,
+    deviceId: DeviceId,
+    input: RequestTaskInput,
+  ) {
+    const task = yield* requireTarget(taskId, deviceId)
+    if (
+      task.runId !== input.runId ||
+      (task.status !== "queued" && task.status !== "assigned" && task.status !== "running")
+    )
+      return task
+    // A terminal reply can arrive before the reconnect assignment is accepted.
+    yield* requestTaskInput(taskId, deviceId, input, true)
+    return yield* terminal(
+      taskId,
+      deviceId,
+      "completed",
+      "",
+      undefined,
+      undefined,
+      undefined,
+      input.runId,
+    )
   })
 
   const requestCancellation = Effect.fn("RelayStore.requestCancellation")(function* (
@@ -2525,6 +2560,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     getTask,
     reportTaskProgress,
     requestTaskInput,
+    pauseTaskForInput,
     answerTaskInput,
     listAttachments,
     readAttachment,
