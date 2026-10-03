@@ -705,6 +705,12 @@ export const runRelay = async (): Promise<void> => {
     const settleOperation = (operationId: OperationId): void => {
       socket.send(JSON.stringify(SocketEvent.make({ _tag: "OperationSettled", operationId })))
     }
+    const taskTerminal =
+      event._tag === "TaskFinished" ||
+      event._tag === "TaskInputRequested" ||
+      event._tag === "TaskFailed" ||
+      event._tag === "TaskCancelled"
+    const operationTerminal = event._tag === "OperationFinished" || event._tag === "OperationFailed"
     const processed = await run(
       Effect.gen(function* () {
         const store = yield* RelayStore.Service
@@ -769,20 +775,21 @@ export const runRelay = async (): Promise<void> => {
     )
       .then(() => true)
       .catch((cause: unknown) => {
+        // History pruning must not leave workers replaying replies that can no longer be saved.
+        if (
+          cause instanceof RelayStore.PersistenceError &&
+          ((taskTerminal && cause.missingRecord === "task") ||
+            (operationTerminal && cause.missingRecord === "operation"))
+        )
+          return true
         sendError(socket, "event_failed", cause instanceof Error ? cause.message : String(cause))
         return false
       })
-    if (
-      processed &&
-      (event._tag === "TaskFinished" ||
-        event._tag === "TaskInputRequested" ||
-        event._tag === "TaskFailed" ||
-        event._tag === "TaskCancelled")
-    ) {
+    if (processed && taskTerminal) {
       settle(event.taskId, event.runId)
       await dispatchPending(deviceId)
     }
-    if (processed && (event._tag === "OperationFinished" || event._tag === "OperationFailed")) {
+    if (processed && operationTerminal) {
       settleOperation(event.operationId)
       await dispatchPending(deviceId)
     }
