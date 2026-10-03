@@ -13,6 +13,38 @@ const relayUrl = "http://127.0.0.1:1"
 
 describe("MCP doctor check", () => {
   it.each([
+    { name: "default automatic selection", providers: undefined, gateway: true, warning: true },
+    { name: "explicit automatic selection", providers: "auto", gateway: true, warning: true },
+    { name: "explicit Grok selection", providers: "grok-bot", gateway: true, warning: true },
+    { name: "explicit coding selection", providers: "codex", gateway: true, warning: false },
+    {
+      name: "automatic selection without a gateway",
+      providers: "auto",
+      gateway: false,
+      warning: false,
+    },
+  ])("checks an unavailable gateway with $name", async ({ providers, gateway, warning }) => {
+    const { stdout } = await execa(process.execPath, [entrypoint, "doctor"], {
+      env: {
+        ...process.env,
+        COHALL_CONFIG: join(tmpdir(), `cohall-doctor-${randomUUID()}.json`),
+        COHALL_CLIENT_TOKEN: undefined,
+        COHALL_DEVICE_TOKEN: undefined,
+        COHALL_RELAY_URL: relayUrl,
+        COHALL_DEVICE_PROVIDERS: providers,
+        COHALL_GROK_GATEWAY: gateway
+          ? join(tmpdir(), `missing-grok-gateway-${randomUUID()}.json`)
+          : undefined,
+      },
+    })
+    const report = z.object({ warnings: z.array(z.string()) }).parse(JSON.parse(stdout))
+    const gatewayWarning =
+      "Configured Grok Bot gateway is unavailable; check its discovery file and host process"
+
+    expect(report.warnings.includes(gatewayWarning)).toBe(warning)
+  })
+
+  it.each([
     { name: "valid client", status: 200, deviceCredential: false },
     { name: "rejected client", status: 401, deviceCredential: false },
     { name: "rejected client on a device", status: 401, deviceCredential: true },

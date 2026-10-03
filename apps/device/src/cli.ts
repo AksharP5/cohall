@@ -845,17 +845,18 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
               : "Device daemon is not connected or is not registered with the relay",
           ]
         : []),
-      ...(selectedProviders?.flatMap((provider) =>
-        provider === "grok-bot"
-          ? grokBots === undefined
-            ? [
-                "Configured Grok Bot gateway is unavailable; check its discovery file and host process",
-              ]
-            : []
-          : providerExecutables[provider] === "not found"
-            ? [`Configured provider ${provider} is not installed or not on PATH`]
-            : [],
-      ) ?? []),
+      ...(selectedProviders ?? (grokGateway === undefined ? [] : ["grok-bot"])).flatMap(
+        (provider) =>
+          provider === "grok-bot"
+            ? grokBots === undefined
+              ? [
+                  "Configured Grok Bot gateway is unavailable; check its discovery file and host process",
+                ]
+              : []
+            : providerExecutables[provider] === "not found"
+              ? [`Configured provider ${provider} is not installed or not on PATH`]
+              : [],
+      ),
     ]
     print({
       version,
