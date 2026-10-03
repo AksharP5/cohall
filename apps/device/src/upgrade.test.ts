@@ -15,7 +15,7 @@ import {
   normalizeUpgradeTarget,
   packageInstallCommand,
   packageInstallation,
-  pnpmGlobalBinDirectory,
+  pnpmServiceDirectories,
   serviceCandidates,
   trustedExecutable,
   upgrade,
@@ -39,7 +39,10 @@ it("runs pnpm discovery independently of project dispatch, including Windows cmd
     await writeFile(executable, `@"${process.execPath}" "${script}" %*\r\n`)
   else await chmod(executable, 0o700)
   vi.stubEnv("COREPACK_ENABLE_PROJECT_SPEC", "1")
-  await expect(pnpmGlobalBinDirectory(executable)).resolves.toBe(root)
+  await expect(pnpmServiceDirectories(executable, root)).resolves.toEqual({
+    bin: root,
+    store: root,
+  })
   expect(process.env.COREPACK_ENABLE_PROJECT_SPEC).toBe("1")
 })
 
@@ -1544,6 +1547,7 @@ describe("pnpm service upgrades", () => {
         ? join(setup.root, "user tools", "bin")
         : join(pnpmHome, "bin")
       const managerExecutable = join(pnpmHome, "bin", "pnpm")
+      const store = join(setup.root, "custom store", "v10")
       const corepack = join(setup.root, "node", "pnpm")
       let corepackFirst = false
       const selectedExecutable = async (command: string) =>
@@ -1559,7 +1563,18 @@ describe("pnpm service upgrades", () => {
         resolveExecutable: selectedExecutable,
         runner: {
           run: async (_command, args, _timeout, environment) => {
+            if (args.includes("store")) {
+              expect(args).toEqual([
+                "--dir",
+                setup.globalRoot,
+                "--ignore-workspace",
+                "store",
+                "path",
+              ])
+              return { ...success(), stdout: store }
+            }
             if (args[0] === "bin") {
+              expect(args).toEqual(["bin", "--global"])
               expect(environment).toEqual({ COREPACK_ENABLE_PROJECT_SPEC: "0" })
               return { ...success(), stdout: globalBin }
             }
@@ -1591,6 +1606,7 @@ describe("pnpm service upgrades", () => {
         .slice("COHALL_PNPM_EXECUTABLE=".length)
       expect(savedManager).toBe(managerExecutable)
       for (const [name, expected] of [
+        ["COHALL_PNPM_STORE_DIR", store],
         ["COHALL_PNPM_GLOBAL_DIR", setup.globalDir],
         ["COHALL_PNPM_GLOBAL_BIN_DIR", globalBin],
       ] as const) {
@@ -1610,9 +1626,18 @@ describe("pnpm service upgrades", () => {
       const runner: CommandRunner = {
         run: async (command, args, _timeout, environment) => {
           if (command === managerExecutable)
-            expect(environment).toEqual({ COREPACK_ENABLE_PROJECT_SPEC: "0" })
+            expect(environment).toEqual({
+              COREPACK_ENABLE_PROJECT_SPEC: "0",
+              ...(delegated
+                ? {
+                    npm_config_global_dir: setup.globalDir,
+                    npm_config_global_bin_dir: globalBin,
+                    npm_config_store_dir: store,
+                  }
+                : {}),
+            })
           if (args[0] === "root") {
-            if (delegated) expect(args[args.indexOf("--global-dir") + 1]).toBe(setup.globalDir)
+            expect(args).toEqual(["root", "--global"])
             return {
               ...success(),
               stdout: separateGlobalDir

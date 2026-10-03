@@ -144,7 +144,18 @@ export interface UpgradeResult {
   readonly dry_run: boolean
 }
 
-const pnpmEnvironment = { COREPACK_ENABLE_PROJECT_SPEC: "0" }
+const pnpmEnvironment = () => ({
+  COREPACK_ENABLE_PROJECT_SPEC: "0",
+  ...(process.env.COHALL_PNPM_GLOBAL_DIR === undefined
+    ? {}
+    : { npm_config_global_dir: process.env.COHALL_PNPM_GLOBAL_DIR }),
+  ...(process.env.COHALL_PNPM_GLOBAL_BIN_DIR === undefined
+    ? {}
+    : { npm_config_global_bin_dir: process.env.COHALL_PNPM_GLOBAL_BIN_DIR }),
+  ...(process.env.COHALL_PNPM_STORE_DIR === undefined
+    ? {}
+    : { npm_config_store_dir: process.env.COHALL_PNPM_STORE_DIR }),
+})
 
 const normalizePath = (path: string): string => path.replaceAll("\\", "/")
 const pnpmGlobalDirectory = /^(.*\/global\/v?\d+)\//
@@ -221,7 +232,12 @@ export const resolvePackageInstallation = async (
   const canonicalEntrypoint = await realpath(entrypoint)
   const installation = packageInstallation(canonicalEntrypoint, resolve(entrypoint))
   if (installation.manager !== "pnpm")
-    return { ...installation, canonicalEntrypoint, pnpmExecutable: undefined }
+    return {
+      ...installation,
+      canonicalEntrypoint,
+      pnpmExecutable: undefined,
+      globalRoot: undefined,
+    }
 
   const lexicalPath = normalizePath(installation.entrypoint)
   const globalRoot =
@@ -240,14 +256,8 @@ export const resolvePackageInstallation = async (
     options.runner ?? defaultRunner,
     {
       command: pnpmExecutable,
-      arguments: [
-        "root",
-        "--global",
-        ...(process.env.COHALL_PNPM_GLOBAL_DIR === undefined
-          ? []
-          : ["--global-dir", process.env.COHALL_PNPM_GLOBAL_DIR]),
-      ],
-      environment: pnpmEnvironment,
+      arguments: ["root", "--global"],
+      environment: pnpmEnvironment(),
     },
     10_000,
   )
@@ -277,6 +287,7 @@ export const resolvePackageInstallation = async (
         entrypoint: candidate,
         canonicalEntrypoint,
         globalDir: dirname(globalRoot),
+        globalRoot,
         pnpmExecutable,
       }
   }
@@ -285,32 +296,27 @@ export const resolvePackageInstallation = async (
   )
 }
 
-export const pnpmGlobalBinDirectory = async (
+export const pnpmServiceDirectories = async (
   executable: string,
+  globalRoot: string,
   runner: CommandRunner = defaultRunner,
-): Promise<string> => {
-  const result = await checked(
-    runner,
-    {
-      command: executable,
-      arguments: [
-        "bin",
-        "--global",
-        ...(process.env.COHALL_PNPM_GLOBAL_DIR === undefined
-          ? []
-          : ["--global-dir", process.env.COHALL_PNPM_GLOBAL_DIR]),
-        ...(process.env.COHALL_PNPM_GLOBAL_BIN_DIR === undefined
-          ? []
-          : ["--global-bin-dir", process.env.COHALL_PNPM_GLOBAL_BIN_DIR]),
-      ],
-      environment: pnpmEnvironment,
-    },
-    10_000,
-  )
-  const directory = result.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? ""
-  if (!isAbsolute(directory))
-    throw new Error("pnpm did not report an absolute global bin directory")
-  return directory
+) => {
+  const query = async (arguments_: ReadonlyArray<string>): Promise<string> => {
+    const result = await checked(
+      runner,
+      { command: executable, arguments: arguments_, environment: pnpmEnvironment() },
+      10_000,
+    )
+    const directory = result.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? ""
+    if (!isAbsolute(directory))
+      throw new Error(`pnpm ${arguments_.join(" ")} did not report an absolute directory`)
+    return directory
+  }
+  const [bin, store] = await Promise.all([
+    query(["bin", "--global"]),
+    query(["--dir", globalRoot, "--ignore-workspace", "store", "path"]),
+  ])
+  return { bin, store }
 }
 
 export const packageInstallCommand = (
@@ -333,7 +339,7 @@ export const packageInstallCommand = (
             : ["--global-bin-dir", process.env.COHALL_PNPM_GLOBAL_BIN_DIR]),
           specification,
         ],
-        environment: pnpmEnvironment,
+        environment: pnpmEnvironment(),
       }
     case "npm":
       return {
@@ -530,7 +536,7 @@ const scheduledTaskBootstrap = new RegExp(
   [
     "^\\$ErrorActionPreference = 'Stop'",
     `\\$env:COHALL_CONFIG = '${powershellLiteral}'`,
-    `(?:\\$env:PNPM_HOME = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?(?:\\$env:COHALL_PNPM_EXECUTABLE = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_GLOBAL_DIR = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_GLOBAL_BIN_DIR = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
+    `(?:\\$env:PNPM_HOME = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?(?:\\$env:COHALL_PNPM_EXECUTABLE = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_STORE_DIR = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_GLOBAL_DIR = '${powershellLiteral}'\\r?\\n)?(?:\\$env:COHALL_PNPM_GLOBAL_BIN_DIR = '${powershellLiteral}'\\r?\\n\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH\\r?\\n)?\\$env:PATH = '${powershellLiteral}' \\+ ';' \\+ \\$env:PATH`,
     `& '(${powershellLiteral})' '(${powershellLiteral})' device`,
     "exit \\$LASTEXITCODE(?:\\r?\\n)?$",
   ].join("\\r?\\n"),
@@ -984,7 +990,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
           "version",
           "--json",
         ],
-        ...(installation.manager === "pnpm" ? { environment: pnpmEnvironment } : {}),
+        ...(installation.manager === "pnpm" ? { environment: pnpmEnvironment() } : {}),
       },
       30_000,
     )

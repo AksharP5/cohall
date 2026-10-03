@@ -4,6 +4,7 @@ param(
   [Parameter(Mandatory = $true)][string]$ConfigurationPath,
   [string]$PnpmHome,
   [string]$PnpmExecutable,
+  [string]$PnpmStoreDir,
   [string]$PnpmGlobalDir,
   [string]$PnpmGlobalBinDir
 )
@@ -22,6 +23,9 @@ if ($PnpmExecutable) {
   $pnpmEnvironment += "`$env:COHALL_PNPM_EXECUTABLE = $(Quote-Literal $PnpmExecutable)`r`n"
 }
 
+if ($PnpmStoreDir) {
+  $pnpmEnvironment += "`$env:COHALL_PNPM_STORE_DIR = $(Quote-Literal $PnpmStoreDir)`r`n"
+}
 if ($PnpmGlobalDir) {
   $pnpmEnvironment += "`$env:COHALL_PNPM_GLOBAL_DIR = $(Quote-Literal $PnpmGlobalDir)`r`n"
 }

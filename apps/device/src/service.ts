@@ -5,7 +5,7 @@ import { dirname, join } from "node:path"
 import { configurationPath } from "./config.ts"
 import {
   resolvePackageInstallation,
-  pnpmGlobalBinDirectory,
+  pnpmServiceDirectories,
   serviceCandidates,
   trustedExecutable,
   type CommandResult,
@@ -56,6 +56,7 @@ export const deviceServicePlan = (options: {
     readonly executable: string
     readonly globalDir: string
     readonly bin: string
+    readonly store: string
   }
   readonly configPath: string
   readonly uid?: number
@@ -84,7 +85,7 @@ export const deviceServicePlan = (options: {
       file: {
         path,
         mode: 0o600,
-        content: `[Unit]\nDescription=Cohall device agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdArgument(`PATH=${servicePath}`)}\nEnvironment=${systemdArgument(`COHALL_CONFIG=${options.configPath}`)}\n${options.pnpm === undefined ? "" : `Environment=${systemdArgument(`PNPM_HOME=${options.pnpm.home}`)}\nEnvironment=${systemdArgument(`COHALL_PNPM_EXECUTABLE=${options.pnpm.executable}`)}\nEnvironment=${systemdArgument(`COHALL_PNPM_GLOBAL_DIR=${options.pnpm.globalDir}`)}\nEnvironment=${systemdArgument(`COHALL_PNPM_GLOBAL_BIN_DIR=${options.pnpm.bin}`)}\n`}ExecStart=${systemdArgument(options.entrypoint)} device\nRestart=always\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`,
+        content: `[Unit]\nDescription=Cohall device agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment=${systemdArgument(`PATH=${servicePath}`)}\nEnvironment=${systemdArgument(`COHALL_CONFIG=${options.configPath}`)}\n${options.pnpm === undefined ? "" : `Environment=${systemdArgument(`PNPM_HOME=${options.pnpm.home}`)}\nEnvironment=${systemdArgument(`COHALL_PNPM_EXECUTABLE=${options.pnpm.executable}`)}\nEnvironment=${systemdArgument(`COHALL_PNPM_GLOBAL_DIR=${options.pnpm.globalDir}`)}\nEnvironment=${systemdArgument(`COHALL_PNPM_STORE_DIR=${options.pnpm.store}`)}\nEnvironment=${systemdArgument(`COHALL_PNPM_GLOBAL_BIN_DIR=${options.pnpm.bin}`)}\n`}ExecStart=${systemdArgument(options.entrypoint)} device\nRestart=always\nRestartSec=3\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=default.target\n`,
       },
       commands: [
         { command: "systemctl", arguments: ["--user", "daemon-reload"] },
@@ -102,7 +103,7 @@ export const deviceServicePlan = (options: {
       file: {
         path,
         mode: 0o600,
-        content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>${xml(options.entrypoint)}</string>\n    <string>device</string>\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${xml(servicePath)}</string>\n    <key>COHALL_CONFIG</key>\n    <string>${xml(options.configPath)}</string>\n${options.pnpm === undefined ? "" : `    <key>PNPM_HOME</key>\n    <string>${xml(options.pnpm.home)}</string>\n    <key>COHALL_PNPM_EXECUTABLE</key>\n    <string>${xml(options.pnpm.executable)}</string>\n    <key>COHALL_PNPM_GLOBAL_DIR</key>\n    <string>${xml(options.pnpm.globalDir)}</string>\n    <key>COHALL_PNPM_GLOBAL_BIN_DIR</key>\n    <string>${xml(options.pnpm.bin)}</string>\n`}  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>NetworkState</key>\n    <true/>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>3</integer>\n  <key>ProcessType</key>\n  <string>Background</string>\n</dict>\n</plist>\n`,
+        content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>${xml(options.entrypoint)}</string>\n    <string>device</string>\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${xml(servicePath)}</string>\n    <key>COHALL_CONFIG</key>\n    <string>${xml(options.configPath)}</string>\n${options.pnpm === undefined ? "" : `    <key>PNPM_HOME</key>\n    <string>${xml(options.pnpm.home)}</string>\n    <key>COHALL_PNPM_EXECUTABLE</key>\n    <string>${xml(options.pnpm.executable)}</string>\n    <key>COHALL_PNPM_STORE_DIR</key>\n    <string>${xml(options.pnpm.store)}</string>\n    <key>COHALL_PNPM_GLOBAL_DIR</key>\n    <string>${xml(options.pnpm.globalDir)}</string>\n    <key>COHALL_PNPM_GLOBAL_BIN_DIR</key>\n    <string>${xml(options.pnpm.bin)}</string>\n`}  </dict>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <dict>\n    <key>NetworkState</key>\n    <true/>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n  <key>ThrottleInterval</key>\n  <integer>3</integer>\n  <key>ProcessType</key>\n  <string>Background</string>\n</dict>\n</plist>\n`,
       },
       commands: [
         { command: "launchctl", arguments: ["bootout", domain, path] },
@@ -159,7 +160,7 @@ export const installDeviceService = async (
     readonly resolveExecutable?: (command: string) => Promise<string>
   } = {},
 ): Promise<{ readonly installed: string; readonly note?: string }> => {
-  const { entrypoint, canonicalEntrypoint, pnpmExecutable, globalDir } =
+  const { entrypoint, canonicalEntrypoint, pnpmExecutable, globalDir, globalRoot } =
     await resolvePackageInstallation(options.entrypoint ?? process.argv[1] ?? "", {
       ...(options.runner === undefined ? {} : { runner: options.runner }),
       ...(options.resolveExecutable === undefined
@@ -169,13 +170,13 @@ export const installDeviceService = async (
   const platform = options.platform ?? process.platform
   const home = options.home ?? homedir()
   const pnpm =
-    pnpmExecutable === undefined || globalDir === undefined
+    pnpmExecutable === undefined || globalDir === undefined || globalRoot === undefined
       ? undefined
       : {
           home: pnpmHomeDirectory(platform, home),
           executable: pnpmExecutable,
           globalDir,
-          bin: await pnpmGlobalBinDirectory(pnpmExecutable, options.runner),
+          ...(await pnpmServiceDirectories(pnpmExecutable, globalRoot, options.runner)),
         }
   const runner = options.runner ?? defaultRunner
   if (platform === "win32") {
@@ -204,6 +205,8 @@ export const installDeviceService = async (
             pnpm.home,
             "-PnpmExecutable",
             pnpm.executable,
+            "-PnpmStoreDir",
+            pnpm.store,
             "-PnpmGlobalDir",
             pnpm.globalDir,
             "-PnpmGlobalBinDir",

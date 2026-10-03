@@ -48,7 +48,8 @@ journalctl --user -u cohall-device -f
 The generated service uses the exact Cohall executable and puts the current
 Node.js directory first on `PATH`. Linux and macOS services include the configured
 pnpm home and its `bin` subdirectory. For pnpm installations, services also save
-the selected pnpm executable, global package directory, and global bin directory.
+the selected pnpm executable, global package directory, global bin directory, and
+store directory.
 This preserves custom paths supplied through shell configuration and prevents a
 Corepack shim on the service PATH from redirecting upgrades. Global pnpm operations
 ignore the current project’s Corepack manager specification.

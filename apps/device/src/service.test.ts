@@ -16,6 +16,7 @@ describe("device service plans", () => {
       const config = join(directory, "chosen config.json")
       const pnpmHome = join(directory, "custom tools")
       const pnpmExecutable = join(pnpmHome, "pnpm.cmd")
+      const pnpmStoreDir = join(directory, "custom store", "v10")
       const pnpmGlobalDir = join(directory, "custom packages")
       const pnpmGlobalBinDir = join(directory, "user tools", "bin")
       const harness = join(directory, "scheduler-fixture.ps1")
@@ -31,11 +32,11 @@ describe("device service plans", () => {
       try {
         await writeFile(
           entrypoint,
-          `process.stdout.write(JSON.stringify({ config: process.env.COHALL_CONFIG, args: process.argv.slice(2), node: process.execPath, pnpmHome: process.env.PNPM_HOME, pnpmExecutable: process.env.COHALL_PNPM_EXECUTABLE, pnpmGlobalDir: process.env.COHALL_PNPM_GLOBAL_DIR, pnpmGlobalBinDir: process.env.COHALL_PNPM_GLOBAL_BIN_DIR, path: process.env.PATH, unrelated: process.env.COHALL_UNRELATED_SECRET })); process.exit(7)`,
+          `process.stdout.write(JSON.stringify({ config: process.env.COHALL_CONFIG, args: process.argv.slice(2), node: process.execPath, pnpmHome: process.env.PNPM_HOME, pnpmExecutable: process.env.COHALL_PNPM_EXECUTABLE, pnpmStoreDir: process.env.COHALL_PNPM_STORE_DIR, pnpmGlobalDir: process.env.COHALL_PNPM_GLOBAL_DIR, pnpmGlobalBinDir: process.env.COHALL_PNPM_GLOBAL_BIN_DIR, path: process.env.PATH, unrelated: process.env.COHALL_UNRELATED_SECRET })); process.exit(7)`,
         )
         await writeFile(
           harness,
-          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $PnpmExecutable, $PnpmGlobalDir, $PnpmGlobalBinDir, $Inspection)
+          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $PnpmExecutable, $PnpmStoreDir, $PnpmGlobalDir, $PnpmGlobalBinDir, $Inspection)
 $ErrorActionPreference = 'Stop'
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) return @{} }
 function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit, $RestartCount, $RestartInterval, $MultipleInstances) return @{} }
@@ -43,7 +44,7 @@ function Register-ScheduledTask { param($TaskName, $Description, $Action, $Trigg
 function Stop-ScheduledTask { param($TaskName, $ErrorAction) $global:CohallTestStopped = $true }
 function Start-ScheduledTask { param($TaskName) if (-not $global:CohallTestStopped) { throw 'Existing task was not stopped before restarting' } }
 function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) return @{ Actions = @($global:CohallTestAction) } }
-& $Installer -NodeExecutable $NodeExecutable -Entrypoint $Entrypoint -ConfigurationPath $Config -PnpmHome $PnpmHome -PnpmExecutable $PnpmExecutable -PnpmGlobalDir $PnpmGlobalDir -PnpmGlobalBinDir $PnpmGlobalBinDir | Out-Null
+& $Installer -NodeExecutable $NodeExecutable -Entrypoint $Entrypoint -ConfigurationPath $Config -PnpmHome $PnpmHome -PnpmExecutable $PnpmExecutable -PnpmStoreDir $PnpmStoreDir -PnpmGlobalDir $PnpmGlobalDir -PnpmGlobalBinDir $PnpmGlobalBinDir | Out-Null
 Invoke-Expression $Inspection
 `,
         )
@@ -66,7 +67,10 @@ Invoke-Expression $Inspection
             pnpmHome,
             "-PnpmExecutable",
             pnpmExecutable,
+            "-PnpmStoreDir",
+            pnpmStoreDir,
             "-PnpmGlobalDir",
+            pnpmStoreDir,
             pnpmGlobalDir,
             "-PnpmGlobalBinDir",
             pnpmGlobalBinDir,
@@ -115,6 +119,7 @@ Invoke-Expression $Inspection
           node: process.execPath,
           pnpmHome,
           pnpmExecutable,
+          pnpmStoreDir,
           pnpmGlobalDir,
           pnpmGlobalBinDir,
           path: expect.stringContaining(`${join(pnpmHome, "bin")};${pnpmHome};`),
@@ -167,6 +172,7 @@ Invoke-Expression $Inspection
         "$env:COHALL_PNPM_EXECUTABLE = 'C:\\tools\\pnpm.cmd'",
         ...(customDirectories
           ? [
+              "$env:COHALL_PNPM_STORE_DIR = 'C:\\custom store\\v10'",
               "$env:COHALL_PNPM_GLOBAL_DIR = 'C:\\custom packages'",
               "$env:COHALL_PNPM_GLOBAL_BIN_DIR = 'C:\\user tools\\bin'",
               "$env:PATH = 'C:\\user tools\\bin' + ';' + $env:PATH",
