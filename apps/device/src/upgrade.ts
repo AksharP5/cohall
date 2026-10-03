@@ -648,7 +648,12 @@ const assertServiceInstallations = async (
       )
     })
     if (canonicalServiceEntrypoint === installation.canonicalEntrypoint) {
-      if (installation.manager === "pnpm" && resolve(serviceEntrypoint) !== installation.entrypoint)
+      const servicePath = resolve(serviceEntrypoint)
+      const sameEntrypoint =
+        service.manager === "scheduled-task"
+          ? servicePath.toLowerCase() === installation.entrypoint.toLowerCase()
+          : servicePath === installation.entrypoint
+      if (installation.manager === "pnpm" && !sameEntrypoint)
         throw new Error(
           `Active ${service.label} is pinned to a pnpm package directory that changes during upgrades. ${
             service.device

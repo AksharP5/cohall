@@ -603,9 +603,13 @@ describe("package installation", () => {
 })
 
 describe("Windows service upgrades", () => {
-  const fixture = async () => {
+  const fixture = async (manager: "npm" | "pnpm" = "npm") => {
     const root = await temporaryDirectory()
-    const entrypoint = join(root, "current ' & é", "node_modules/@akshar5/cohall/bin/cohall.js")
+    const entrypoint = join(
+      root,
+      manager === "pnpm" ? "pnpm/global/5" : "current ' & é",
+      "node_modules/@akshar5/cohall/bin/cohall.js",
+    )
     const other = join(root, "other", "node_modules/@akshar5/cohall/bin/cohall.js")
     const metadata = join(dirname(dirname(entrypoint)), "package.json")
     for (const path of [entrypoint, other]) {
@@ -641,7 +645,7 @@ describe("Windows service upgrades", () => {
             if (arguments_.some((argument) => argument.includes("ConvertTo-Json"))) {
               return { exitCode: 0, stdout: JSON.stringify(definition), stderr: "" }
             }
-            if (command === "npm") {
+            if (command === manager) {
               await writeFile(
                 metadata,
                 JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }),
@@ -710,10 +714,10 @@ describe("Windows service upgrades", () => {
     },
   )
 
-  it.skipIf(process.platform !== "win32")(
-    "accepts Windows task paths with different letter casing",
-    async () => {
-      const { entrypoint, action, run } = await fixture()
+  it.skipIf(process.platform !== "win32").each(["npm", "pnpm"] as const)(
+    "accepts Windows %s task paths with different letter casing",
+    async (manager) => {
+      const { entrypoint, action, run } = await fixture(manager)
       await expect(run(action(entrypoint.toUpperCase()))).resolves.toMatchObject({
         installed_version: "1.2.4",
       })
