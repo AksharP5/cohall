@@ -37,6 +37,14 @@ const xml = (value: string): string =>
 const systemdArgument = (value: string): string =>
   `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("\n", "\\n").replaceAll("\r", "\\r")}"`
 
+const pnpmHomeDirectory = (platform: NodeJS.Platform, home: string): string => {
+  if (process.env.PNPM_HOME) return process.env.PNPM_HOME
+  if (process.env.XDG_DATA_HOME) return join(process.env.XDG_DATA_HOME, "pnpm")
+  if (platform === "darwin") return join(home, "Library", "pnpm")
+  if (platform !== "win32") return join(home, ".local", "share", "pnpm")
+  return process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "pnpm") : join(home, ".pnpm")
+}
+
 export const deviceServicePlan = (options: {
   readonly platform: NodeJS.Platform
   readonly entrypoint: string
@@ -141,12 +149,21 @@ export const installDeviceService = async (
     readonly home?: string
     readonly uid?: number
     readonly runner?: CommandRunner
+    readonly resolveExecutable?: (command: string) => Promise<string>
   } = {},
 ): Promise<{ readonly installed: string; readonly note?: string }> => {
-  const { entrypoint, canonicalEntrypoint, pnpmHome } = await resolvePackageInstallation(
+  const { entrypoint, canonicalEntrypoint, manager } = await resolvePackageInstallation(
     options.entrypoint ?? process.argv[1] ?? "",
+    {
+      ...(options.runner === undefined ? {} : { runner: options.runner }),
+      ...(options.resolveExecutable === undefined
+        ? {}
+        : { resolveExecutable: options.resolveExecutable }),
+    },
   )
   const platform = options.platform ?? process.platform
+  const home = options.home ?? homedir()
+  const pnpmHome = manager === "pnpm" ? pnpmHomeDirectory(platform, home) : undefined
   const runner = options.runner ?? defaultRunner
   if (platform === "win32") {
     const script = join(
@@ -175,7 +192,7 @@ export const installDeviceService = async (
   const plan = deviceServicePlan({
     platform,
     entrypoint,
-    home: options.home ?? homedir(),
+    home,
     nodeExecutable: process.execPath,
     configPath: configurationPath(),
     ...(pnpmHome === undefined ? {} : { pnpmHome }),

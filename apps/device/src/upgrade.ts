@@ -82,6 +82,7 @@ export interface CommandRunner {
 export interface PackageInstallation {
   readonly manager: PackageManager
   readonly prefix?: string
+  readonly globalDir?: string
   readonly entrypoint: string
 }
 
@@ -193,6 +194,7 @@ export const packageInstallation = (
   if (
     pnpmGlobalDirectory.test(path) ||
     /\/store\/v\d+\/links\//.test(path) ||
+    path.includes("/node_modules/.pnpm/") ||
     pnpmGlobalDirectory.test(normalizePath(entrypoint))
   ) {
     return { manager: "pnpm", entrypoint }
@@ -205,42 +207,63 @@ export const packageInstallation = (
   return { manager: "npm", prefix, entrypoint }
 }
 
-export const resolvePackageInstallation = async (entrypoint: string) => {
+export const resolvePackageInstallation = async (
+  entrypoint: string,
+  options: {
+    readonly runner?: CommandRunner
+    readonly resolveExecutable?: (command: string) => Promise<string>
+  } = {},
+) => {
   const canonicalEntrypoint = await realpath(entrypoint)
   const installation = packageInstallation(canonicalEntrypoint, resolve(entrypoint))
-  if (installation.manager !== "pnpm")
-    return { ...installation, canonicalEntrypoint, pnpmHome: undefined }
+  if (installation.manager !== "pnpm") return { ...installation, canonicalEntrypoint }
 
-  const globalRoot = [normalizePath(installation.entrypoint), normalizePath(canonicalEntrypoint)]
-    .map((path) => path.match(pnpmGlobalDirectory)?.[1])
-    .find((root) => root !== undefined)
-  const pnpmHome = normalizePath(canonicalEntrypoint).match(/^(.*)\/store\/v\d+\/links\//)?.[1]
-  const roots =
-    globalRoot !== undefined
-      ? [globalRoot]
-      : pnpmHome === undefined
-        ? []
-        : (await readdir(join(pnpmHome, "global"), { withFileTypes: true }).catch(() => []))
-            .filter((entry) => entry.isDirectory())
-            .map((entry) => join(pnpmHome, "global", entry.name))
-  const packageEntry = (root: string) => join(root, "node_modules", packageName, "bin", "cohall.js")
-  for (const root of roots) {
-    const entries = await readdir(root, { withFileTypes: true })
-    const candidates = [
-      packageEntry(root),
-      ...entries
-        .filter((entry) => entry.isSymbolicLink())
-        .map((entry) => packageEntry(join(root, entry.name))),
-    ]
-    for (const candidate of candidates) {
-      if ((await realpath(candidate).catch(() => undefined)) === canonicalEntrypoint)
-        return {
-          ...installation,
-          entrypoint: candidate,
-          canonicalEntrypoint,
-          pnpmHome: dirname(dirname(root)),
-        }
+  const lexicalPath = normalizePath(installation.entrypoint)
+  let globalRoot = lexicalPath.match(pnpmGlobalDirectory)?.[1]
+  if (globalRoot === undefined) {
+    const candidate = lexicalPath.match(/^(.*\/v?\d+)\//)?.[1]
+    if (candidate !== undefined) {
+      const result = await checked(
+        options.runner ?? defaultRunner,
+        {
+          command: await (options.resolveExecutable ?? trustedExecutable)("pnpm"),
+          arguments: ["root", "--global"],
+        },
+        10_000,
+      )
+      const reported = normalizePath(result.stdout.trim())
+      const root = reported.endsWith("/node_modules") ? dirname(reported) : reported
+      const selected = resolve(candidate)
+      const configured = isAbsolute(root) ? resolve(root) : undefined
+      if (
+        configured !== undefined &&
+        (process.platform === "win32"
+          ? selected.toLowerCase() === configured.toLowerCase()
+          : selected === configured)
+      )
+        globalRoot = candidate
     }
+  }
+  if (globalRoot === undefined)
+    throw new Error(
+      "This operation requires a global pnpm entrypoint; project-local and shared-store executions cannot select a global installation. Run the global cohall command.",
+    )
+  const packageEntry = (root: string) => join(root, "node_modules", packageName, "bin", "cohall.js")
+  const entries = await readdir(globalRoot, { withFileTypes: true })
+  const candidates = [
+    packageEntry(globalRoot),
+    ...entries
+      .filter((entry) => entry.isSymbolicLink())
+      .map((entry) => packageEntry(join(globalRoot, entry.name))),
+  ]
+  for (const candidate of candidates) {
+    if ((await realpath(candidate).catch(() => undefined)) === canonicalEntrypoint)
+      return {
+        ...installation,
+        entrypoint: candidate,
+        canonicalEntrypoint,
+        globalDir: dirname(globalRoot),
+      }
   }
   throw new Error(
     "Could not find a stable pnpm global executable for this installation. Run the global cohall command, then use cohall service install before upgrading.",
@@ -256,7 +279,15 @@ export const packageInstallCommand = (
     case "bun":
       return { command: "bun", arguments: ["add", "--global", specification] }
     case "pnpm":
-      return { command: "pnpm", arguments: ["add", "--global", specification] }
+      return {
+        command: "pnpm",
+        arguments: [
+          "add",
+          "--global",
+          ...(installation.globalDir === undefined ? [] : ["--global-dir", installation.globalDir]),
+          specification,
+        ],
+      }
     case "npm":
       return {
         command: "npm",
@@ -777,7 +808,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   if (entrypoint === undefined) {
     throw new Error("Could not resolve the Cohall executable path")
   }
-  const installation = await resolvePackageInstallation(entrypoint)
+  const installation = await resolvePackageInstallation(entrypoint, { runner, resolveExecutable })
 
   if (
     previous?.version === options.currentVersion &&
