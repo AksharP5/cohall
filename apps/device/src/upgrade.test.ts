@@ -1631,8 +1631,11 @@ describe("pnpm service upgrades", () => {
               ...(delegated
                 ? {
                     npm_config_global_dir: setup.globalDir,
+                    pnpm_config_global_dir: setup.globalDir,
                     npm_config_global_bin_dir: globalBin,
+                    pnpm_config_global_bin_dir: globalBin,
                     npm_config_store_dir: store,
+                    pnpm_config_store_dir: store,
                   }
                 : {}),
             })

@@ -144,18 +144,20 @@ export interface UpgradeResult {
   readonly dry_run: boolean
 }
 
-const pnpmEnvironment = () => ({
-  COREPACK_ENABLE_PROJECT_SPEC: "0",
-  ...(process.env.COHALL_PNPM_GLOBAL_DIR === undefined
-    ? {}
-    : { npm_config_global_dir: process.env.COHALL_PNPM_GLOBAL_DIR }),
-  ...(process.env.COHALL_PNPM_GLOBAL_BIN_DIR === undefined
-    ? {}
-    : { npm_config_global_bin_dir: process.env.COHALL_PNPM_GLOBAL_BIN_DIR }),
-  ...(process.env.COHALL_PNPM_STORE_DIR === undefined
-    ? {}
-    : { npm_config_store_dir: process.env.COHALL_PNPM_STORE_DIR }),
-})
+const pnpmEnvironment = () =>
+  Object.fromEntries<string>([
+    ["COREPACK_ENABLE_PROJECT_SPEC", "0"],
+    // pnpm 11 uses its own namespace; pnpm 10 reads npm's configuration namespace.
+    ...(["GLOBAL_DIR", "GLOBAL_BIN_DIR", "STORE_DIR"] as const).flatMap((name) => {
+      const value = process.env[`COHALL_PNPM_${name}`]
+      return value === undefined
+        ? []
+        : ([
+            [`npm_config_${name.toLowerCase()}`, value],
+            [`pnpm_config_${name.toLowerCase()}`, value],
+          ] as const)
+    }),
+  ])
 
 const normalizePath = (path: string): string => path.replaceAll("\\", "/")
 const pnpmGlobalDirectory = /^(.*\/global\/v?\d+)\//
