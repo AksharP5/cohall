@@ -184,6 +184,10 @@ request failures from an offline device. `client_credential` reports only
 whether a credential is configured. The authentication check is skipped when
 the relay is unreachable or no client credential is configured.
 
+`doctor` warns when a configured Grok Bot gateway is unavailable in automatic
+provider mode or when `grok-bot` is explicitly selected. An explicit provider
+list that excludes `grok-bot` skips this warning.
+
 Any other harness with shell access can invoke the CLI directly. No Cohall UI
 extension is required.
 
