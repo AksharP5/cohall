@@ -173,7 +173,9 @@ describe("device relay connection", () => {
         void run(relayUrl, provider === "grok-bot" ? "/fake/gateway.json" : undefined)
         await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
         await processing
-        expect((await Effect.runPromise(store.getTask(task.id))).status).toBe("running")
+        const original = await Effect.runPromise(store.getTask(task.id))
+        expect(original.status).toBe("running")
+        expect(original.startedAt).toBeDefined()
         const first = sockets[0]
         if (first === undefined) throw new Error("Missing first device connection")
         const closed = new Promise<void>((resolve) => first.once("close", () => resolve()))
@@ -184,6 +186,14 @@ describe("device relay connection", () => {
         await processing
         const resumed = await Effect.runPromise(store.getTask(task.id))
         expect(resumed.status).toBe("running")
+        expect(resumed.startedAt).toBe(original.startedAt)
+        const trace = await Effect.runPromise(store.traceTask(task.id))
+        expect(
+          trace.events.filter((event) => event.kind === "running").map((event) => event.detail),
+        ).toEqual([
+          "Target device accepted the task and started the provider",
+          "Target device accepted the task again",
+        ])
         expect(runner).toHaveBeenCalledOnce()
         const input = Schema.decodeUnknownSync(RequestTaskInput)({
           runId: resumed.runId,
