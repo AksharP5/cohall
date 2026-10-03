@@ -65,7 +65,11 @@ import { Database } from "./database.ts"
 
 export class PersistenceError extends Schema.TaggedErrorClass<PersistenceError>()(
   "RelayStore.PersistenceError",
-  { operation: Schema.String, message: Schema.String },
+  {
+    operation: Schema.String,
+    message: Schema.String,
+    missingRecord: Schema.optionalKey(Schema.Literals(["task", "operation"])),
+  },
 ) {}
 
 export class TaskProgressError extends Schema.TaggedErrorClass<TaskProgressError>()(
@@ -759,6 +763,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         new PersistenceError({
           operation: "RelayStore.getTask",
           message: `Unknown task ${taskId}`,
+          missingRecord: "task",
         }),
       )
     }
@@ -1070,6 +1075,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         new PersistenceError({
           operation: "RelayStore.getOperation",
           message: `Unknown device operation ${operationId}`,
+          missingRecord: "operation",
         }),
       )
     }

@@ -466,7 +466,9 @@ configuration.
 - The relay must be reachable to submit new work, but persisted tasks survive a
   relay restart.
 - The relay retains the newest 1,000 terminal tasks by default so history cannot
-  grow without bound.
+  grow without bound. It acknowledges replayed task and upgrade replies after
+  pruning so workers can discard local replies; this does not restore deleted
+  history.
 - Paired clients can ask a device's local provider to act with that user's normal
   authority. Pair only devices and users you trust.
 - Workspace roots are enforced after resolving symlinks, credentials are
