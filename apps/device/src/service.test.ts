@@ -180,6 +180,7 @@ Invoke-Expression $Inspection
     })
 
     expect(plan.file.path).toBe("/home/user/.config/systemd/user/cohall-device.service")
+    expect(plan.file.content).toContain("/home/user/.local/share/pnpm/bin")
     expect(plan.file.content).toContain(
       'ExecStart="/home/user/.local/lib/node_modules/@akshar5/cohall/bin/cohall.js" device',
     )
@@ -205,6 +206,7 @@ Invoke-Expression $Inspection
 
     expect(plan.file.content).toContain("/Users/A &amp; B/bin/cohall")
     expect(plan.file.content).toContain("/Users/A &amp; B/selected/config.json")
+    expect(plan.file.content).toContain("/Users/A &amp; B/Library/pnpm/bin")
     expect(plan.commands.at(-1)).toEqual({
       command: "launchctl",
       arguments: ["kickstart", "-k", "gui/501/com.cohall.device"],

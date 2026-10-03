@@ -45,14 +45,17 @@ export const deviceServicePlan = (options: {
   readonly configPath: string
   readonly uid?: number
 }): DeviceServicePlan => {
+  const pnpmHome =
+    options.platform === "darwin"
+      ? join(options.home, "Library", "pnpm")
+      : join(options.home, ".local", "share", "pnpm")
   const servicePath = [
     dirname(options.nodeExecutable),
     join(options.home, ".local", "bin"),
     join(options.home, ".npm-global", "bin"),
     join(options.home, ".bun", "bin"),
-    options.platform === "darwin"
-      ? join(options.home, "Library", "pnpm")
-      : join(options.home, ".local", "share", "pnpm"),
+    join(pnpmHome, "bin"),
+    pnpmHome,
     ...(options.platform === "darwin" ? ["/opt/homebrew/bin"] : []),
     "/usr/local/bin",
     "/usr/bin",
