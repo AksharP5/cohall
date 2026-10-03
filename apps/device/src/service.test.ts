@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { execFile, type ExecFileException } from "node:child_process"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -137,6 +137,38 @@ Invoke-Expression $Inspection
       }
     },
   )
+
+  it("keeps a Windows service on the global link while locating its installer in the package", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall-service-link-"))
+    try {
+      const packagePath = join(directory, "node_modules", "@akshar5", "cohall")
+      await mkdir(join(packagePath, "bin"), { recursive: true })
+      await writeFile(join(packagePath, "bin", "cohall.js"), "#!/usr/bin/env node\n")
+      const link = join(directory, "global-command")
+      await symlink(packagePath, link, "junction")
+      const entrypoint = join(link, "bin", "cohall.js")
+      const commands: Array<ReadonlyArray<string>> = []
+      await installDeviceService({
+        platform: "win32",
+        entrypoint,
+        runner: {
+          run: async (command, args) => {
+            commands.push([command, ...args])
+            return { exitCode: 0, stdout: "", stderr: "" }
+          },
+        },
+      })
+      expect(commands).toHaveLength(1)
+      const command = commands[0]
+      if (command === undefined) throw new Error("Missing installer command")
+      expect(command[command.indexOf("-Entrypoint") + 1]).toBe(entrypoint)
+      expect(command[command.indexOf("-File") + 1]).toBe(
+        join(await realpath(packagePath), "deploy", "windows", "install-device.ps1"),
+      )
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 
   it("uses the exact global executable in a Linux user service", () => {
     const plan = deviceServicePlan({

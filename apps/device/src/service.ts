@@ -1,10 +1,10 @@
 import { execFile, type ExecFileException } from "node:child_process"
-import { chmod, mkdir, realpath, writeFile } from "node:fs/promises"
+import { chmod, mkdir, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { configurationPath } from "./config.ts"
 import {
-  packageInstallation,
+  resolvePackageInstallation,
   serviceCandidates,
   trustedExecutable,
   type CommandResult,
@@ -138,12 +138,18 @@ export const installDeviceService = async (
     readonly runner?: CommandRunner
   } = {},
 ): Promise<{ readonly installed: string; readonly note?: string }> => {
-  const entrypoint = await realpath(options.entrypoint ?? process.argv[1] ?? "")
-  packageInstallation(entrypoint)
+  const { entrypoint, canonicalEntrypoint } = await resolvePackageInstallation(
+    options.entrypoint ?? process.argv[1] ?? "",
+  )
   const platform = options.platform ?? process.platform
   const runner = options.runner ?? defaultRunner
   if (platform === "win32") {
-    const script = join(dirname(dirname(entrypoint)), "deploy", "windows", "install-device.ps1")
+    const script = join(
+      dirname(dirname(canonicalEntrypoint)),
+      "deploy",
+      "windows",
+      "install-device.ps1",
+    )
     await checked(runner, "powershell.exe", [
       "-NoProfile",
       "-ExecutionPolicy",

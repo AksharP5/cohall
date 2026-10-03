@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { once } from "node:events"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
@@ -7,6 +7,7 @@ import { execa } from "execa"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { DeviceId, DeviceOperation, OperationId, now } from "@cohall/protocol"
 import { performDeviceOperation } from "./daemon.ts"
+import { installDeviceService } from "./service.ts"
 import {
   deviceVersionWarning,
   isTrustedGroupWritablePath,
@@ -1368,4 +1369,182 @@ describe("managed service upgrades", () => {
       pendingServices: ["systemd-user:cohall-device.service"],
     })
   })
+})
+
+describe("pnpm service upgrades", () => {
+  const fixture = async (layout: "classic" | "isolated") => {
+    const root = await temporaryDirectory()
+    const prefix = join(root, "pnpm", "global", layout === "classic" ? "5" : "v11")
+    const installation = (version: string) =>
+      layout === "classic" ? prefix : join(prefix, `install-${version}`)
+    const packagePath = (version: string) =>
+      join(
+        installation(version),
+        "node_modules",
+        ".pnpm",
+        `@akshar5+cohall@${version}`,
+        "node_modules",
+        "@akshar5",
+        "cohall",
+      )
+    for (const version of ["1.2.3", "1.2.4"]) {
+      const path = packagePath(version)
+      await mkdir(join(path, "bin"), { recursive: true })
+      await writeFile(join(path, "bin", "cohall.js"), "#!/usr/bin/env node\n")
+      await writeFile(
+        join(path, "package.json"),
+        JSON.stringify({ name: "@akshar5/cohall", version }),
+      )
+      if (layout === "isolated") {
+        const packageLink = join(installation(version), "node_modules", "@akshar5", "cohall")
+        await mkdir(dirname(packageLink), { recursive: true })
+        await symlink(path, packageLink, "junction")
+      }
+    }
+    const link =
+      layout === "classic"
+        ? join(prefix, "node_modules", "@akshar5", "cohall")
+        : join(prefix, "package-slot")
+    const destination = (version: string) =>
+      layout === "classic" ? packagePath(version) : installation(version)
+    await mkdir(dirname(link), { recursive: true })
+    await symlink(destination("1.2.3"), link, "junction")
+    const entrypoint =
+      layout === "classic"
+        ? join(link, "bin", "cohall.js")
+        : join(link, "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
+    return {
+      root,
+      entrypoint,
+      pinned: await realpath(entrypoint),
+      replace: async () => {
+        await rm(link)
+        await symlink(destination("1.2.4"), link, "junction")
+        await rm(layout === "classic" ? packagePath("1.2.3") : installation("1.2.3"), {
+          recursive: true,
+        })
+      },
+    }
+  }
+
+  it.each([
+    { layout: "classic", delegated: false },
+    { layout: "classic", delegated: true },
+    { layout: "isolated", delegated: false },
+    { layout: "isolated", delegated: true },
+  ] as const)(
+    "restarts the new package after a $layout upgrade, delegated=$delegated",
+    async ({ layout, delegated }) => {
+      const setup = await fixture(layout)
+      const service = await installDeviceService({
+        platform: "linux",
+        entrypoint: layout === "isolated" ? setup.pinned : setup.entrypoint,
+        home: setup.root,
+        runner: { run: async () => success() },
+      })
+      const unit = await readFile(service.installed, "utf8")
+      const executable = unit.match(/^ExecStart=(".+") device$/m)?.[1]
+      if (executable === undefined) throw new Error("Missing service executable")
+      const saved: unknown = JSON.parse(executable)
+      if (typeof saved !== "string") throw new Error("Invalid service executable")
+      const bootPath = saved.replaceAll("%%", "%")
+      const statePath = join(setup.root, "receipt.json")
+      let restartedVersion: unknown
+      const runner: CommandRunner = {
+        run: async (command, args) => {
+          if (args.includes("is-active"))
+            return { ...success(), exitCode: args.includes("cohall-device.service") ? 0 : 3 }
+          if (args.includes("show"))
+            return { ...success(), stdout: `{ path=${bootPath} ; argv[]=${bootPath} device ; }` }
+          if (command === "pnpm") await setup.replace()
+          if (args.includes("restart")) {
+            const path = await realpath(bootPath)
+            restartedVersion = JSON.parse(
+              await readFile(join(dirname(dirname(path)), "package.json"), "utf8"),
+            ).version
+          }
+          return success()
+        },
+      }
+      const result = await upgrade({
+        currentVersion: "1.2.3",
+        target: "1.2.4",
+        restart: true,
+        dryRun: false,
+        delegated,
+        entrypoint: delegated ? bootPath : layout === "isolated" ? setup.pinned : setup.entrypoint,
+        platform: "linux",
+        statePath,
+        runner,
+        resolveExecutable,
+      })
+      expect(result).toMatchObject({
+        upgraded: true,
+        installed_version: "1.2.4",
+        services_restarted: ["systemd-user:cohall-device.service"],
+        services_pending_restart: [],
+      })
+      expect(restartedVersion).toBe("1.2.4")
+      if (delegated) {
+        const resumed = await upgrade({
+          currentVersion: "1.2.4",
+          target: "1.2.4",
+          restart: true,
+          dryRun: false,
+          delegated: true,
+          entrypoint: bootPath,
+          platform: "linux",
+          statePath,
+          runner,
+          resolveExecutable,
+        })
+        expect(resumed.resumed_after_restart).toBe(true)
+      }
+      await expect(readFile(statePath)).rejects.toMatchObject({ code: "ENOENT" })
+    },
+  )
+
+  it.each([false, true])(
+    "rejects a pinned service before updating packages, delegated=%s",
+    async (delegated) => {
+      const setup = await fixture("classic")
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, args) => {
+          invocations.push([command, ...args].join(" "))
+          if (args.includes("is-active"))
+            return { ...success(), exitCode: args.includes("cohall-device.service") ? 0 : 3 }
+          if (args.includes("show"))
+            return {
+              ...success(),
+              stdout: `{ path=${setup.pinned} ; argv[]=${setup.pinned} device ; }`,
+            }
+          return success()
+        },
+      }
+      await expect(
+        upgrade({
+          currentVersion: "1.2.3",
+          target: "1.2.4",
+          restart: true,
+          dryRun: false,
+          delegated,
+          entrypoint: delegated ? setup.pinned : setup.entrypoint,
+          platform: "linux",
+          statePath: join(setup.root, "receipt.json"),
+          runner,
+          resolveExecutable,
+        }),
+      ).rejects.toThrow("cohall service install")
+      expect(
+        invocations.some(
+          (invocation) => invocation.startsWith("pnpm ") || invocation.includes(" restart "),
+        ),
+      ).toBe(false)
+      expect(
+        JSON.parse(await readFile(join(dirname(dirname(setup.pinned)), "package.json"), "utf8"))
+          .version,
+      ).toBe("1.2.3")
+    },
+  )
 })

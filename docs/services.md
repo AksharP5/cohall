@@ -246,6 +246,15 @@ CLI. If they differ, use the executable named in the error or reinstall the
 device service with `cohall service install`. Windows tasks with unrecognized or
 multiple actions must also be reinstalled before upgrading.
 
+pnpm device services use the stable global package link so replacing or removing
+an old package directory does not leave the worker on the old version. Services
+installed by older Cohall versions may be pinned to a version-specific directory.
+Before upgrading those services, run `cohall service install` through pnpm's
+global `cohall` command once. Cohall rejects pinned active services before changing
+packages. This applies to systemd, launchd, and Windows scheduled tasks. For a
+manually configured pnpm relay, change its service executable to the stable
+package path named in the error.
+
 Direct `npm install --global`, `bun add --global`, or `pnpm add --global`
 replaces files on disk but cannot replace code already loaded by a running Node
 process. Use `cohall upgrade`, or restart the service manager job manually, to

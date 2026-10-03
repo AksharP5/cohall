@@ -6,13 +6,14 @@ import {
   chmod,
   mkdir,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises"
-import { delimiter, dirname, extname, isAbsolute, join, relative } from "node:path"
+import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path"
 import { platform as operatingSystem } from "node:os"
 import { configurationPath } from "./config.ts"
 
@@ -195,6 +196,30 @@ export const packageInstallation = (
     ? nodeModulesParent.slice(0, -"/lib".length)
     : nodeModulesParent
   return { manager: "npm", prefix, entrypoint }
+}
+
+export const resolvePackageInstallation = async (entrypoint: string) => {
+  const canonicalEntrypoint = await realpath(entrypoint)
+  const installation = packageInstallation(canonicalEntrypoint, resolve(entrypoint))
+  if (installation.manager !== "pnpm") return { ...installation, canonicalEntrypoint }
+
+  const globalRoot = normalizePath(canonicalEntrypoint).match(/^(.*?\/pnpm\/global\/[^/]+)\//)?.[1]
+  if (globalRoot === undefined) throw new Error("Could not locate the pnpm global installation")
+  const entries = await readdir(globalRoot, { withFileTypes: true })
+  const packageEntry = (root: string) => join(root, "node_modules", packageName, "bin", "cohall.js")
+  const candidates = [
+    packageEntry(globalRoot),
+    ...entries
+      .filter((entry) => entry.isSymbolicLink())
+      .map((entry) => packageEntry(join(globalRoot, entry.name))),
+  ]
+  for (const candidate of candidates) {
+    if ((await realpath(candidate).catch(() => undefined)) === canonicalEntrypoint)
+      return { ...installation, entrypoint: candidate, canonicalEntrypoint }
+  }
+  throw new Error(
+    "Could not find a stable pnpm global executable for this installation. Run the global cohall command, then use cohall service install before upgrading.",
+  )
 }
 
 export const packageInstallCommand = (
@@ -606,6 +631,15 @@ const assertServiceInstallations = async (
       )
     })
     if (canonicalServiceEntrypoint === canonicalEntrypoint) {
+      const installation = await resolvePackageInstallation(serviceEntrypoint)
+      if (installation.manager === "pnpm" && resolve(serviceEntrypoint) !== installation.entrypoint)
+        throw new Error(
+          `Active ${service.label} is pinned to a pnpm package directory that changes during upgrades. ${
+            service.device
+              ? "Run cohall service install through the global cohall command before upgrading."
+              : `Update the relay service executable to ${installation.entrypoint} before upgrading.`
+          }`,
+        )
       continue
     }
     throw new Error(
@@ -715,8 +749,8 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   if (entrypoint === undefined) {
     throw new Error("Could not resolve the Cohall executable path")
   }
-  const canonicalEntrypoint = await realpath(entrypoint)
-  const installation = packageInstallation(canonicalEntrypoint, entrypoint)
+  const installation = await resolvePackageInstallation(entrypoint)
+  const { canonicalEntrypoint } = installation
 
   if (
     previous?.version === options.currentVersion &&
@@ -839,7 +873,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     }
     resolvedTarget = latest
   }
-  let nextVersion = await installedVersion(entrypoint).catch((cause: unknown) => {
+  let nextVersion = await installedVersion(installation.entrypoint).catch((cause: unknown) => {
     if (target === "latest") {
       throw new Error(
         "Could not verify the installed version before upgrading latest; use --to <version> to repair this installation",
@@ -884,7 +918,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     const install = packageInstallCommand(installation, resolvedTarget)
     const installExecutable = packageManagerExecutable ?? (await resolvePackageManager())
     await checked(runner, { ...install, command: installExecutable })
-    nextVersion = await installedVersion(entrypoint)
+    nextVersion = await installedVersion(installation.entrypoint)
   }
   if (nextVersion !== resolvedTarget) {
     throw new Error(`Installed Cohall ${nextVersion}, expected ${resolvedTarget}`)
