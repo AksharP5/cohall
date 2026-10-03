@@ -29,6 +29,8 @@ After a lost response, repeat the submission with the same ID, input, and client
 credential. The relay returns the original task's current state, including
 after a relay restart. Retries create no second task or thread message. Worker
 execution remains at least once: a run interrupted by a disconnect can restart.
+If the worker is still running that turn, it confirms the active run after
+reconnecting so progress and clarification continue without starting it again.
 Requests without an ID continue to create a new task each time.
 
 Use a device UUID or `@device-uuid/bot-id` from `cohall bots` for retries. These

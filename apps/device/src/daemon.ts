@@ -606,10 +606,21 @@ export const performDeviceOperation = (
 const schedule = (configuration: DeviceConfiguration, state: State, task: Task): void => {
   if (state.stopping) return
   if (
-    (state.tasks.get(task.id)?.task.runId === task.runId && state.tasks.has(task.id)) ||
     hasCompletedRun(state, task) ||
     state.queue.some((queued) => queued.id === task.id && queued.runId === task.runId)
   ) {
+    return
+  }
+  const running = state.tasks.get(task.id)
+  if (running !== undefined && running.task.runId === task.runId) {
+    send(
+      state,
+      SocketEvent.make({
+        _tag: "TaskAccepted",
+        taskId: task.id,
+        ...(task.runId === undefined ? {} : { runId: task.runId }),
+      }),
+    )
     return
   }
   if (task.providerSessionId !== undefined) {

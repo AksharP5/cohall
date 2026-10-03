@@ -1,18 +1,21 @@
 import {
   DeviceId,
+  Device,
   AttachmentName,
   BotId,
   DeviceOperation,
   OperationId,
   Task,
   TaskRunId,
+  TaskProgressInput,
+  RequestTaskInput,
   SocketEvent,
   makeTaskId,
   makeThreadId,
   maxSocketPayloadBytes,
   now,
 } from "@cohall/protocol"
-import { Effect, Schema } from "effect"
+import { Effect, ManagedRuntime, Schema } from "effect"
 import { RelayClient } from "@cohall/client"
 import * as Providers from "@cohall/providers"
 import { type AddressInfo } from "node:net"
@@ -27,6 +30,7 @@ import { performDeviceOperation, runDaemon } from "./daemon.ts"
 import type { UpgradeOptions, UpgradeResult } from "./upgrade.ts"
 import * as Upgrades from "./upgrade.ts"
 import * as Grok from "./grok-bot.ts"
+import { RelayStore } from "../../relay/src/store.ts"
 
 const servers: Array<WebSocketServer> = []
 const controllers: Array<AbortController> = []
@@ -76,6 +80,138 @@ afterEach(async () => {
 })
 
 describe("device relay connection", () => {
+  it.each(["codex", "grok-bot"] as const)(
+    "keeps %s clarification working after reconnecting an active turn",
+    async (provider) => {
+      const { server, relayUrl } = await startServer()
+      const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+      const store = await runtime.runPromise(RelayStore.Service)
+      const target = Device.make({
+        id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        name: "test-device",
+        hostname: "localhost",
+        platform: "linux",
+        architecture: "x64",
+        status: "online",
+        providers: [provider],
+        capabilities: [{ id: "task-clarification", label: "Clarification" }],
+        workspaces: [],
+        version: "test",
+        lastSeenAt: now(),
+        ...(provider === "grok-bot"
+          ? { bots: [{ id: BotId.make("reconnect-bot"), name: "Reconnect" }] }
+          : {}),
+      })
+      const result = Promise.withResolvers<Awaited<ReturnType<typeof Grok.runGrokBot>>>()
+      const runner =
+        provider === "codex"
+          ? vi
+              .spyOn(Providers, "run")
+              .mockImplementation(() => Effect.promise(() => result.promise))
+          : vi.spyOn(Grok, "runGrokBot").mockReturnValue(result.promise)
+      vi.spyOn(Grok, "discoverGrokBots").mockResolvedValue(target.bots ?? [])
+      const sockets: Array<WebSocket> = []
+      const accepted: Array<SocketEvent> = []
+      const terminal = Promise.withResolvers<Task>()
+      let processing = Promise.resolve()
+      try {
+        await Effect.runPromise(store.upsertDevice(target))
+        const task = await Effect.runPromise(
+          store.createDelegation(
+            {
+              prompt: "Check which branch to use",
+              provider,
+              ...(provider === "grok-bot" ? { botId: BotId.make("reconnect-bot") } : {}),
+            },
+            target.id,
+            "owner",
+          ),
+        )
+        server.on("connection", (socket) => {
+          sockets.push(socket)
+          socket.on("message", (message) => {
+            processing = processing
+              .then(async () => {
+                const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
+                if (event._tag === "Authenticate") {
+                  socket.send(
+                    JSON.stringify({
+                      _tag: "Connected",
+                      serverVersion: "test",
+                      connectedAt: now(),
+                      taskClarification: true,
+                    }),
+                  )
+                }
+                if (event._tag === "DeviceHello") {
+                  const assigned = await Effect.runPromise(store.assignTask(task.id))
+                  socket.send(JSON.stringify({ _tag: "TaskAssigned", task: assigned }))
+                }
+                if (event._tag === "TaskAccepted") {
+                  accepted.push(event)
+                  await Effect.runPromise(store.acceptTask(task.id, target.id, event.runId))
+                }
+                if (event._tag === "TaskInputRequested") {
+                  await Effect.runPromise(
+                    store.requestTaskInput(task.id, target.id, {
+                      runId: event.runId,
+                      question: event.question,
+                    }),
+                  )
+                }
+                if (event._tag === "TaskFinished" || event._tag === "TaskInputRequested") {
+                  terminal.resolve(
+                    await Effect.runPromise(
+                      store.finishTask(task.id, target.id, "", undefined, undefined, event.runId),
+                    ),
+                  )
+                }
+              })
+              .catch((cause: unknown) => terminal.reject(cause))
+          })
+        })
+        void run(relayUrl, provider === "grok-bot" ? "/fake/gateway.json" : undefined)
+        await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
+        await processing
+        expect((await Effect.runPromise(store.getTask(task.id))).status).toBe("running")
+        const first = sockets[0]
+        if (first === undefined) throw new Error("Missing first device connection")
+        const closed = new Promise<void>((resolve) => first.once("close", () => resolve()))
+        first.close()
+        await closed
+        await Effect.runPromise(store.requeueTasksFor(target.id))
+        await vi.waitFor(() => expect(accepted).toHaveLength(2), { timeout: 8_000 })
+        await processing
+        const resumed = await Effect.runPromise(store.getTask(task.id))
+        expect(resumed.status).toBe("running")
+        expect(runner).toHaveBeenCalledOnce()
+        const input = Schema.decodeUnknownSync(RequestTaskInput)({
+          runId: resumed.runId,
+          question: "Which branch?",
+        })
+        if (provider === "codex") {
+          const progress = Schema.decodeUnknownSync(TaskProgressInput)({
+            note: "Checking the branch",
+          })
+          await expect(
+            Effect.runPromise(store.reportTaskProgress(task.id, target.id, progress.note)),
+          ).resolves.toMatchObject(progress)
+          await Effect.runPromise(store.requestTaskInput(task.id, target.id, input))
+          result.resolve({ result: "Asked the sender" })
+        } else {
+          result.resolve({ result: "", question: input.question })
+        }
+        expect(await terminal.promise).toMatchObject({
+          status: "needs_input",
+          clarifications: [{ question: input.question }],
+        })
+        expect(runner).toHaveBeenCalledOnce()
+      } finally {
+        await runtime.dispose()
+      }
+    },
+  )
+
   it.each([
     { phase: "mkdir", stopping: "cancel" },
     { phase: "writeFile", stopping: "cancel" },
