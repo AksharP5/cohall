@@ -31,6 +31,80 @@ const worker = () =>
     lastSeenAt: now(),
   })
 
+it.each(["queued", "assigned"] as const)(
+  "saves an offline Bot question while its replayed turn is %s",
+  async (status) => {
+    const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+    try {
+      const store = await runtime.runPromise(RelayStore.Service)
+      const botId = BotId.make("offline-bot")
+      const target = Device.make({
+        ...worker(),
+        providers: ["grok-bot"],
+        bots: [{ id: botId, name: "Offline" }],
+      })
+      await Effect.runPromise(store.upsertDevice(target))
+      const task = await Effect.runPromise(
+        store.createDelegation({ prompt: "Research", botId }, target.id, "owner"),
+      )
+      const assigned = await Effect.runPromise(store.assignTask(task.id))
+      if (assigned.runId === undefined) throw new Error("Missing Bot turn")
+      const running = await Effect.runPromise(store.acceptTask(task.id, target.id, assigned.runId))
+      await Effect.runPromise(store.requeueTasksFor(target.id))
+      if (status === "assigned") await Effect.runPromise(store.assignTask(task.id))
+      const input = Schema.decodeUnknownSync(RequestTaskInput)({
+        runId: assigned.runId,
+        question: "Which branch?",
+      })
+      await expect(
+        Effect.runPromise(store.requestTaskInput(task.id, target.id, input)),
+      ).rejects.toMatchObject({ status: 409 })
+      await expect(
+        Effect.runPromise(store.pauseTaskForInput(task.id, makeDeviceId(), input)),
+      ).rejects.toMatchObject({ message: `Task ${task.id} belongs to another device` })
+      const stale = { ...input, runId: TaskRunId.make(crypto.randomUUID()) }
+      expect(
+        (await Effect.runPromise(store.pauseTaskForInput(task.id, target.id, stale))).status,
+      ).toBe(status)
+      const paused = await Effect.runPromise(store.pauseTaskForInput(task.id, target.id, input))
+      expect(paused).toMatchObject({
+        status: "needs_input",
+        startedAt: running.startedAt,
+        clarifications: [{ question: input.question }],
+      })
+      expect(paused.result).toBeUndefined()
+      expect(await Effect.runPromise(store.pauseTaskForInput(task.id, target.id, input))).toEqual(
+        paused,
+      )
+      const question = paused.clarifications?.[0]
+      if (question === undefined) throw new Error("Missing question")
+      expect((await Effect.runPromise(store.inboxFor("owner"))).items[0]?.inputRequest).toEqual(
+        question,
+      )
+      const answered = await Effect.runPromise(
+        store.answerTaskInput(
+          task.id,
+          "owner",
+          Schema.decodeUnknownSync(AnswerTaskInput)({ requestId: question.id, answer: "main" }),
+        ),
+      )
+      expect(answered.runId).not.toBe(input.runId)
+      if (answered.runId === undefined) throw new Error("Missing resumed turn")
+      expect(await Effect.runPromise(store.pauseTaskForInput(task.id, target.id, input))).toEqual(
+        answered,
+      )
+      const cancelled = await Effect.runPromise(store.requestCancellation(task.id))
+      expect(
+        await Effect.runPromise(
+          store.pauseTaskForInput(task.id, target.id, { ...input, runId: answered.runId }),
+        ),
+      ).toEqual(cancelled)
+    } finally {
+      await runtime.dispose()
+    }
+  },
+)
+
 it.each(["failed", "cancelled"] as const)(
   "preserves a recorded question after a provider failure but honors %s termination",
   async (ending) => {
