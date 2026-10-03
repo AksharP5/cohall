@@ -2557,10 +2557,13 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             ? transition(
                 taskId,
                 ["assigned"],
-                { status: "running", startedAt: now() },
+                { status: "running", startedAt: task.startedAt ?? now() },
                 {
                   kind: "running",
-                  detail: "Target device accepted the task and started the provider",
+                  detail:
+                    task.startedAt === undefined
+                      ? "Target device accepted the task and started the provider"
+                      : "Target device accepted the task again",
                 },
               )
             : Effect.succeed(task),
