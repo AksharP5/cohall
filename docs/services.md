@@ -238,14 +238,21 @@ change. It does not run before that user logs on.
 
 ## Upgrade running services
 
-Run `cohall upgrade` from a global npm, Bun, or pnpm installation. Project-local
-and shared-store entrypoints cannot select a pnpm global installation; use the
-global `cohall` command. It updates
+Run `cohall upgrade` from a verified global npm, Bun, or pnpm installation.
+Project-local dependencies and package-runner caches cannot upgrade or install a
+device service; use the global `cohall` command. pnpm shared-store entrypoints
+must be reached through their stable global package link. It updates
 that installation and restarts only active managed Cohall services, with relays
 restarted before device workers. Active services restart even when the installed
 files already match the requested version. Socket-activated relays keep accepting
 new connections while their process is replaced, and delegated upgrades finish
 through durable restart recovery.
+
+Bun upgrades verify and retain the selected manager's configured global directory.
+If that directory is set only by shell environment variables, set
+`BUN_INSTALL_GLOBAL_DIR` in the service environment too; shell overrides are not
+copied when installing a service. A mismatched Bun global directory stops the
+upgrade before installation.
 
 If a restart fails, inactive or missing services remain listed in
 `services_pending_restart` and their recovery state is preserved. Repair or start

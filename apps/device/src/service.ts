@@ -167,6 +167,7 @@ export const installDeviceService = async (
 ): Promise<{ readonly installed: string; readonly note?: string }> => {
   const { entrypoint, canonicalEntrypoint, pnpmExecutable, globalDir, globalRoot } =
     await resolvePackageInstallation(options.entrypoint ?? process.argv[1] ?? "", {
+      ...(options.platform === undefined ? {} : { platform: options.platform }),
       ...(options.runner === undefined ? {} : { runner: options.runner }),
       ...(options.resolveExecutable === undefined
         ? {}

@@ -184,6 +184,7 @@ export const deviceVersionWarning = (
 export const packageInstallation = (
   canonicalEntrypoint: string,
   entrypoint = canonicalEntrypoint,
+  runtimePlatform: NodeJS.Platform = process.platform,
 ): PackageInstallation => {
   const path = normalizePath(canonicalEntrypoint)
   const marker = `/node_modules/${packageName}/`
@@ -218,9 +219,10 @@ export const packageInstallation = (
   }
 
   const nodeModulesParent = path.slice(0, packageIndex)
-  const prefix = nodeModulesParent.endsWith("/lib")
-    ? nodeModulesParent.slice(0, -"/lib".length)
-    : nodeModulesParent
+  const prefix =
+    runtimePlatform !== "win32" && nodeModulesParent.endsWith("/lib")
+      ? nodeModulesParent.slice(0, -"/lib".length)
+      : nodeModulesParent
   return { manager: "npm", prefix, entrypoint }
 }
 
@@ -229,17 +231,78 @@ export const resolvePackageInstallation = async (
   options: {
     readonly runner?: CommandRunner
     readonly resolveExecutable?: (command: string) => Promise<string>
+    readonly platform?: NodeJS.Platform
   } = {},
 ) => {
   const canonicalEntrypoint = await realpath(entrypoint)
-  const installation = packageInstallation(canonicalEntrypoint, resolve(entrypoint))
-  if (installation.manager !== "pnpm")
-    return {
-      ...installation,
-      canonicalEntrypoint,
-      pnpmExecutable: undefined,
-      globalRoot: undefined,
+  const runtimePlatform = options.platform ?? process.platform
+  const installation = packageInstallation(
+    canonicalEntrypoint,
+    resolve(entrypoint),
+    runtimePlatform,
+  )
+  if (installation.manager !== "pnpm") {
+    const prefix = installation.prefix
+    if (installation.manager === "npm" && prefix !== undefined) {
+      const packageEntry = join(
+        prefix,
+        ...(runtimePlatform === "win32" ? [] : ["lib"]),
+        "node_modules",
+        packageName,
+        "bin",
+        "cohall.js",
+      )
+      const command = join(prefix, ...(runtimePlatform === "win32" ? [] : ["bin"]), "cohall")
+      const globalCommand =
+        runtimePlatform === "win32"
+          ? await readFile(`${command}.cmd`, "utf8")
+              .then((shim) =>
+                /"%dp0%\\node_modules\\@akshar5\\cohall\\bin\\cohall\.js"\s+%\*/i.test(shim),
+              )
+              .catch(() => false)
+          : (await realpath(command).catch(() => undefined)) === canonicalEntrypoint
+      if (
+        globalCommand &&
+        (await realpath(packageEntry).catch(() => undefined)) === canonicalEntrypoint
+      )
+        return {
+          ...installation,
+          canonicalEntrypoint,
+          pnpmExecutable: undefined,
+          globalRoot: undefined,
+        }
     }
+    const bun = await (options.resolveExecutable ?? trustedExecutable)("bun").catch(() => undefined)
+    if (bun !== undefined) {
+      const result = await (options.runner ?? defaultRunner).run(
+        bun,
+        ["pm", "ls", "--global"],
+        10_000,
+      )
+      const root = result.stdout
+        .split(/\r?\n/, 1)[0]
+        ?.match(/^(.*?) node_modules \(\d+(?: installed)?\)$/)?.[1]
+      if (
+        result.exitCode === 0 &&
+        root !== undefined &&
+        isAbsolute(root) &&
+        (await realpath(join(root, "node_modules", packageName, "bin", "cohall.js")).catch(
+          () => undefined,
+        )) === canonicalEntrypoint
+      )
+        return {
+          manager: "bun" as const,
+          entrypoint: resolve(entrypoint),
+          canonicalEntrypoint,
+          globalDir: root,
+          pnpmExecutable: undefined,
+          globalRoot: undefined,
+        }
+    }
+    throw new Error(
+      "This operation requires a verified global npm, Bun, or pnpm installation. Project-local packages cannot upgrade or install a service; run the global cohall command with its package manager's configuration.",
+    )
+  }
 
   const lexicalPath = normalizePath(installation.entrypoint)
   const globalRoot =
@@ -328,7 +391,13 @@ export const packageInstallCommand = (
   const specification = `${packageName}@${target}`
   switch (installation.manager) {
     case "bun":
-      return { command: "bun", arguments: ["add", "--global", specification] }
+      return {
+        command: "bun",
+        arguments: ["add", "--global", specification],
+        ...(installation.globalDir === undefined
+          ? {}
+          : { environment: { BUN_INSTALL_GLOBAL_DIR: installation.globalDir } }),
+      }
     case "pnpm":
       return {
         command: "pnpm",
@@ -874,6 +943,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   }
   const installation = await resolvePackageInstallation(entrypoint, {
     runner,
+    platform: runtimePlatform,
     ...(options.resolveExecutable === undefined ? {} : { resolveExecutable }),
   })
 

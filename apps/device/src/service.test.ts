@@ -160,13 +160,23 @@ Invoke-Expression $Inspection
     async (platform) => {
       const directory = await mkdtemp(join(tmpdir(), "cohall-service-context-"))
       vi.stubEnv("XDG_CONFIG_HOME", join(directory, "config"))
-      const entrypoint = join(directory, "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
+      const entrypoint = join(
+        directory,
+        "lib",
+        "node_modules",
+        "@akshar5",
+        "cohall",
+        "bin",
+        "cohall.js",
+      )
       const config = join(directory, "selected", "config.json")
       const previousConfig = process.env.COHALL_CONFIG
       process.env.COHALL_CONFIG = config
       try {
         await mkdir(dirname(entrypoint), { recursive: true })
         await writeFile(entrypoint, "#!/usr/bin/env node\n")
+        await mkdir(join(directory, "bin"), { recursive: true })
+        await symlink(entrypoint, join(directory, "bin", "cohall"), "file")
         const result = await installDeviceService({
           platform,
           entrypoint,
@@ -220,6 +230,10 @@ Invoke-Expression $Inspection
       const packagePath = join(directory, "node_modules", "@akshar5", "cohall")
       await mkdir(join(packagePath, "bin"), { recursive: true })
       await writeFile(join(packagePath, "bin", "cohall.js"), "#!/usr/bin/env node\n")
+      await writeFile(
+        join(directory, "cohall.cmd"),
+        '@ECHO off\r\n"%_prog%" "%dp0%\\node_modules\\@akshar5\\cohall\\bin\\cohall.js" %*\r\n',
+      )
       const link = join(directory, "global-command")
       await symlink(packagePath, link, "junction")
       const entrypoint = join(link, "bin", "cohall.js")
