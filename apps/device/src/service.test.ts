@@ -3,11 +3,35 @@ import { execFile, type ExecFileException } from "node:child_process"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { promisify } from "node:util"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { deviceServicePlan, installDeviceService, restartDeviceService } from "./service.ts"
 import { serviceCandidates, type CommandRunner } from "./upgrade.ts"
 
+afterEach(() => vi.unstubAllEnvs())
+
 describe("device service plans", () => {
+  it.each(["/chosen config", "", "relative-config"])(
+    "uses the Linux unit search path with XDG_CONFIG_HOME=%s",
+    (configHome) => {
+      vi.stubEnv("XDG_CONFIG_HOME", configHome)
+      const plan = deviceServicePlan({
+        platform: "linux",
+        entrypoint: "/home/user/.local/lib/node_modules/@akshar5/cohall/bin/cohall.js",
+        home: "/home/user",
+        nodeExecutable: "/usr/bin/node",
+        configPath: "/home/user/cohall/config.json",
+      })
+      expect(plan.file.path).toBe(
+        join(
+          configHome.startsWith("/") ? configHome : "/home/user/.config",
+          "systemd",
+          "user",
+          "cohall-device.service",
+        ),
+      )
+    },
+  )
+
   it.skipIf(process.platform !== "win32")(
     "installs a Windows task with the selected runtime and configuration",
     async () => {
@@ -135,6 +159,7 @@ Invoke-Expression $Inspection
     "keeps the selected configuration and Node runtime in an installed %s service",
     async (platform) => {
       const directory = await mkdtemp(join(tmpdir(), "cohall-service-context-"))
+      vi.stubEnv("XDG_CONFIG_HOME", join(directory, "config"))
       const entrypoint = join(directory, "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
       const config = join(directory, "selected", "config.json")
       const previousConfig = process.env.COHALL_CONFIG
@@ -222,6 +247,7 @@ Invoke-Expression $Inspection
   })
 
   it("uses the exact global executable in a Linux user service", () => {
+    vi.stubEnv("XDG_CONFIG_HOME", undefined)
     const plan = deviceServicePlan({
       platform: "linux",
       entrypoint: "/home/user/.local/lib/node_modules/@akshar5/cohall/bin/cohall.js",

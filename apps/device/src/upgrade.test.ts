@@ -1541,6 +1541,7 @@ describe("pnpm service upgrades", () => {
     "restarts the new package after a $layout upgrade, delegated=$delegated, customHome=$customHome, separateGlobalDir=$separateGlobalDir",
     async ({ layout, delegated, customHome, separateGlobalDir }) => {
       const setup = await fixture(layout, customHome, separateGlobalDir)
+      vi.stubEnv("XDG_CONFIG_HOME", join(setup.root, "config"))
       const pnpmHome = separateGlobalDir ? join(setup.root, "actual command home") : setup.pnpmHome
       vi.stubEnv("PNPM_HOME", pnpmHome)
       const globalBin = separateGlobalDir

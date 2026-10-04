@@ -45,6 +45,9 @@ cohall service install
 journalctl --user -u cohall-device -f
 ```
 
+The user unit is written under `$XDG_CONFIG_HOME/systemd/user` when that variable
+is an absolute path, or `$HOME/.config/systemd/user` otherwise.
+
 The generated service uses the exact Cohall executable and puts the current
 Node.js directory first on `PATH`. Linux and macOS services include the configured
 pnpm home and its `bin` subdirectory. For pnpm installations, services also save
