@@ -2,7 +2,7 @@ import { createServer } from "node:http"
 import { type AddressInfo } from "node:net"
 import { Effect } from "effect"
 import { expect, it, vi } from "vitest"
-import { make } from "./index.ts"
+import { exchangePairing, make } from "./index.ts"
 import {
   Bot,
   BotId,
@@ -283,40 +283,83 @@ it("keeps the 2 MiB limit for ordinary JSON responses", async () => {
   }
 })
 
-it.each([200, 503])("closes a partial %s response when its caller cancels", async (status) => {
-  const headersReceived = Promise.withResolvers<void>()
-  const originalFetch = globalThis.fetch
-  let responseClosed = false
-  const server = createServer((_request, response) => {
-    response.once("close", () => {
-      responseClosed = true
+it.each([
+  { status: 200, operation: "getTask" },
+  { status: 503, operation: "getTask" },
+  { status: 200, operation: "exchangePairing" },
+  { status: 503, operation: "exchangePairing" },
+])(
+  "closes a partial $status $operation response when its caller cancels",
+  async ({ status, operation }) => {
+    const headersReceived = Promise.withResolvers<void>()
+    const originalFetch = globalThis.fetch
+    let responseClosed = false
+    const server = createServer((_request, response) => {
+      response.once("close", () => {
+        responseClosed = true
+      })
+      response.writeHead(status, { "content-type": "application/json" })
+      response.write("{")
     })
-    response.writeHead(status, { "content-type": "application/json" })
-    response.write("{")
-  })
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
-  const controller = new AbortController()
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const controller = new AbortController()
+    try {
+      const address = server.address()
+      if (address === null || typeof address === "string") throw new Error("Missing test port")
+      vi.stubGlobal("fetch", async (...arguments_: Parameters<typeof fetch>) => {
+        const response = await originalFetch(...arguments_)
+        headersReceived.resolve()
+        return response
+      })
+      const baseUrl = `http://127.0.0.1:${address.port}`
+      const running =
+        operation === "getTask"
+          ? Effect.runPromise(make({ baseUrl, token: "test" }).getTask(makeTaskId()), {
+              signal: controller.signal,
+            })
+          : Effect.runPromise(exchangePairing(baseUrl, { token: "test" }), {
+              signal: controller.signal,
+            })
+      const rejected = expect(running).rejects.toBeDefined()
+      await headersReceived.promise
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      controller.abort()
+      await rejected
+      await vi.waitFor(() => expect(responseClosed).toBe(true))
+    } finally {
+      controller.abort()
+      vi.unstubAllGlobals()
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  },
+)
+
+it.each([
+  {
+    name: "a rejected pairing",
+    status: 503,
+    body: JSON.stringify({ error: "Pairing unavailable" }),
+    error: {
+      _tag: "RelayClient.RequestError",
+      message: "Pairing unavailable",
+      status: 503,
+    },
+  },
+  {
+    name: "an oversized pairing response",
+    status: 200,
+    body: " ".repeat(2 * 1024 * 1024 + 1),
+    error: { _tag: "RelayClient.DecodeError", message: "Relay response exceeded 2 MiB" },
+  },
+])("preserves the error for $name", async ({ status, body, error }) => {
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(body, { status }))
   try {
-    const address = server.address()
-    if (address === null || typeof address === "string") throw new Error("Missing test port")
-    vi.stubGlobal("fetch", async (...arguments_: Parameters<typeof fetch>) => {
-      const response = await originalFetch(...arguments_)
-      headersReceived.resolve()
-      return response
-    })
-    const client = make({ baseUrl: `http://127.0.0.1:${address.port}`, token: "test" })
-    const running = Effect.runPromise(client.getTask(makeTaskId()), { signal: controller.signal })
-    const rejected = expect(running).rejects.toBeDefined()
-    await headersReceived.promise
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    controller.abort()
-    await rejected
-    await vi.waitFor(() => expect(responseClosed).toBe(true))
+    await expect(
+      Effect.runPromise(exchangePairing("http://relay.test", { token: "test" })),
+    ).rejects.toMatchObject({ operation: "RelayClient.exchangePairing", ...error })
   } finally {
-    controller.abort()
-    vi.unstubAllGlobals()
-    server.closeAllConnections()
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+    fetch.mockRestore()
   }
 })
 

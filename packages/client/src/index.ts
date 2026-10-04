@@ -467,35 +467,34 @@ export const exchangePairing = (
 ): Effect.Effect<PairingResult, RelayClientError> =>
   Effect.gen(function* () {
     const operation = "RelayClient.exchangePairing"
-    const response = yield* Effect.tryPromise({
-      try: (signal) =>
-        fetch(`${normalizeBaseUrl(baseUrl)}/api/auth/pair`, {
+    const json = yield* Effect.tryPromise({
+      try: async (signal) => {
+        const response = await fetch(`${normalizeBaseUrl(baseUrl)}/api/auth/pair`, {
           method: "POST",
           signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
           headers: { "content-type": "application/json" },
           body: JSON.stringify(input),
-        }),
+        })
+        if (!response.ok) {
+          throw new RelayRequestError({
+            operation,
+            message: await responseMessage(response, operation),
+            status: response.status,
+          })
+        }
+        return jsonBody(response, operation).catch((cause: unknown) => {
+          throw cause instanceof RelayDecodeError
+            ? cause
+            : new RelayDecodeError({ operation, message: String(cause) })
+        })
+      },
       catch: (cause) =>
-        new RelayRequestError({
-          operation,
-          message: cause instanceof Error ? cause.message : String(cause),
-        }),
-    })
-    if (!response.ok) {
-      return yield* Effect.fail(
-        new RelayRequestError({
-          operation,
-          message: yield* Effect.promise(() => responseMessage(response, operation)),
-          status: response.status,
-        }),
-      )
-    }
-    const json = yield* Effect.tryPromise({
-      try: () => jsonBody(response, operation),
-      catch: (cause) =>
-        cause instanceof RelayDecodeError
+        cause instanceof RelayRequestError || cause instanceof RelayDecodeError
           ? cause
-          : new RelayDecodeError({ operation, message: String(cause) }),
+          : new RelayRequestError({
+              operation,
+              message: cause instanceof Error ? cause.message : String(cause),
+            }),
     })
     return yield* Schema.decodeUnknownEffect(PairingResult)(json).pipe(
       Effect.mapError((cause) => new RelayDecodeError({ operation, message: String(cause) })),
