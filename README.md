@@ -280,8 +280,12 @@ advertise attachment support. Named Grok Bots do not support file attachments.
 If a long result and output files exceed the 1 MiB transfer limit, the task
 completes with its text result and a notice that the files were omitted.
 Provider text results must fit 128 KiB. Codex and OpenCode JSON events are capped
-at 1 MiB each. If an event is discarded at that limit, the provider must return
-a later text answer or the task fails explicitly.
+at 1 MiB each; retained OpenCode message parts use the same bound. If an event
+is discarded at that limit, the provider must return
+a later complete answer or the task fails explicitly. Identified OpenCode
+multipart answers must follow a new message-start event; more parts from the same
+message cannot recover discarded content. Older OpenCode events without part IDs
+keep their last-text behavior.
 
 `--timeout` accepts 5 to 86400 seconds and defaults to 900. It limits how long
 the command waits; the task continues after that. Invalid timeout values are

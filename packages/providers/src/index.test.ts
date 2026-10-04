@@ -59,6 +59,138 @@ const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknow
   return Effect.runPromise(run({ provider, threadId: "test", prompt: "test", cwd: directory }))
 }
 
+const openCodeText = (messageId: string, partId: string, content: string) => ({
+  type: "text",
+  timestamp: 1,
+  sessionID: "ses_fixture",
+  part: {
+    id: partId,
+    messageID: messageId,
+    sessionID: "ses_fixture",
+    type: "text",
+    text: content,
+    time: { start: 1, end: 2 },
+  },
+})
+
+it("keeps distinct OpenCode answer parts from the final message and replaces repeated updates", async () => {
+  await expect(
+    runWithEvents("opencode", [
+      openCodeText("msg_commentary", "prt_commentary", "Checking the request."),
+      openCodeText("msg_final", "prt_first", "The request failed."),
+      openCodeText("msg_final", "prt_removed", "Outdated diagnosis."),
+      openCodeText("msg_final", "prt_second", "Add accountId before retrying."),
+      openCodeText("msg_final", "prt_first", "The request is missing its account ID."),
+      openCodeText("msg_final", "prt_removed", ""),
+      { type: "step_finish", sessionID: "ses_fixture", part: { reason: "stop" } },
+    ]),
+  ).resolves.toEqual({
+    result: "The request is missing its account ID.\nAdd accountId before retrying.",
+    sessionId: "ses_fixture",
+  })
+})
+
+it("keeps the last OpenCode response when legacy text events omit part identities", async () => {
+  await expect(
+    runWithEvents("opencode", [
+      { type: "text", sessionID: "ses_legacy", part: { text: "Checking the request." } },
+      { type: "text", part: { text: "The final answer." } },
+    ]),
+  ).resolves.toEqual({ result: "The final answer.", sessionId: "ses_legacy" })
+})
+
+it.each([
+  { limit: "result", partCharacters: 32_768, laterMessage: false },
+  { limit: "result", partCharacters: 32_768, laterMessage: true },
+  { limit: "buffer", partCharacters: 262_144, laterMessage: false },
+  { limit: "buffer", partCharacters: 262_144, laterMessage: true },
+])(
+  "bounds combined OpenCode $limit bytes, later final message=$laterMessage",
+  async ({ limit, partCharacters, laterMessage }) => {
+    const result = runWithEvents("opencode", [
+      openCodeText("msg_large", "prt_first", "é".repeat(partCharacters)),
+      openCodeText("msg_large", "prt_second", "é".repeat(partCharacters + 1)),
+      ...(laterMessage ? [openCodeText("msg_final", "prt_final", "The final answer.")] : []),
+    ])
+    if (laterMessage) {
+      await expect(result).resolves.toEqual({
+        result: "The final answer.",
+        sessionId: "ses_fixture",
+      })
+      return
+    }
+    await expect(result).rejects.toMatchObject({
+      _tag: "CohallProvider.RunError",
+      message:
+        limit === "buffer" ? "OpenCode message exceeded 1 MiB" : "Provider result exceeded 128 KiB",
+    })
+  },
+)
+
+it("replaces an OpenCode part that brings the final message back within its byte budget", async () => {
+  const first = "é".repeat(32_768)
+  const second = `${"é".repeat(32_767)}x`
+  await expect(
+    runWithEvents("opencode", [
+      openCodeText("msg_final", "prt_first", first),
+      openCodeText("msg_final", "prt_second", `${second}x`),
+      openCodeText("msg_final", "prt_second", second),
+    ]),
+  ).resolves.toEqual({ result: `${first}\n${second}`, sessionId: "ses_fixture" })
+})
+
+it("bounds retained OpenCode part identities after their text is replaced with empty content", async () => {
+  const first = "a".repeat(524_288)
+  const second = "b".repeat(524_288)
+  await expect(
+    runWithEvents("opencode", [
+      openCodeText("msg_final", first, "Obsolete text."),
+      openCodeText("msg_final", first, ""),
+      openCodeText("msg_final", second, "The answer."),
+    ]),
+  ).rejects.toMatchObject({
+    _tag: "CohallProvider.RunError",
+    message: "OpenCode message exceeded 1 MiB",
+  })
+})
+
+it("rejects a partial identified OpenCode answer after a discarded event in its message", async () => {
+  await expect(
+    runWithEvents("opencode", [
+      {
+        type: "step_start",
+        sessionID: "ses_fixture",
+        part: { id: "prt_step", messageID: "msg_final", type: "step-start" },
+      },
+      openCodeText("msg_final", "prt_first", "The request failed."),
+      openCodeText("msg_final", "prt_large", "x".repeat(1_126_400)),
+      openCodeText("msg_final", "prt_last", "Retry it."),
+    ]),
+  ).rejects.toMatchObject({
+    _tag: "CohallProvider.RunError",
+    message: "Provider JSON event exceeded 1 MiB without a later text response",
+  })
+})
+
+it("recovers an identified OpenCode answer when a new message starts after a discarded event", async () => {
+  await expect(
+    runWithEvents("opencode", [
+      openCodeText("msg_commentary", "prt_commentary", "Checking the request."),
+      { type: "tool_use", part: { output: "x".repeat(1_126_400) } },
+      {
+        type: "step_start",
+        sessionID: "ses_fixture",
+        part: { id: "prt_step", messageID: "msg_final", type: "step-start" },
+      },
+      openCodeText("msg_final", "prt_first", "The request failed."),
+      openCodeText("msg_final", "prt_second", "Add accountId before retrying."),
+    ]),
+  ).resolves.toEqual({
+    result: "The request failed.\nAdd accountId before retrying.",
+    sessionId: "ses_fixture",
+  })
+})
+
 for (const provider of ["codex", "opencode"] as const) {
   const response = (text: string) =>
     provider === "codex"
