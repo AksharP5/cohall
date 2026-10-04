@@ -146,11 +146,12 @@ export const guidedSetupInput = async (
   const hasRequiredCredentials =
     credentials.clientToken !== undefined &&
     (options.clientOnly || credentials.deviceToken !== undefined)
-  const workspaces = options.clientOnly
-    ? (existing?.workspaces ?? [])
-    : options.workspaces.length > 0
-      ? options.workspaces
-      : [await prompter.answer("Workspace root", existing?.workspaces[0] ?? options.cwd)]
+  let workspaces = options.clientOnly ? (existing?.workspaces ?? []) : options.workspaces
+  if (!options.clientOnly && workspaces.length === 0) {
+    const root = await prompter.answer("Workspace root", existing?.workspaces[0] ?? options.cwd)
+    workspaces =
+      existing !== undefined && root === existing.workspaces[0] ? existing.workspaces : [root]
+  }
   const deviceName = options.clientOnly
     ? undefined
     : (options.deviceName ??
@@ -158,7 +159,7 @@ export const guidedSetupInput = async (
   const providers =
     options.providers ??
     (options.clientOnly
-      ? "auto"
+      ? (existing?.providers?.join(",") ?? "auto")
       : await prompter.answer("Providers", existing?.providers?.join(",") ?? "auto"))
   const token =
     options.token ?? (hasRequiredCredentials ? undefined : await prompter.secret("Pairing token"))
