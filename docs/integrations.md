@@ -102,6 +102,10 @@ The assigned task, including its prompt, context, and clarification history,
 must fit the 1 MiB transfer limit. Oversized assignments fail with an explicit
 error; retry with a shorter prompt or context.
 
+Each task supports up to ten clarification questions. If a Bot ends its turn
+with another question after that limit, the task fails with a visible error
+and releases the Bot for subsequent work.
+
 Upgrade the relay, requester, and worker before using clarification. Resumed
 tasks and Bot turns using a run ID remain queued while the worker lacks
 clarification support. Inbox checks
