@@ -1,7 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process"
 import { chmod, mkdir, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 import { configurationPath } from "./config.ts"
 import {
   resolvePackageInstallation,
@@ -80,7 +80,12 @@ export const deviceServicePlan = (options: {
     "/bin",
   ].join(":")
   if (options.platform === "linux") {
-    const path = join(options.home, ".config", "systemd", "user", "cohall-device.service")
+    const configured = process.env.XDG_CONFIG_HOME
+    const configHome =
+      configured !== undefined && isAbsolute(configured)
+        ? configured
+        : join(options.home, ".config")
+    const path = join(configHome, "systemd", "user", "cohall-device.service")
     return {
       file: {
         path,
