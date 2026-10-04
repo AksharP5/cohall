@@ -10,7 +10,7 @@ import {
   version,
 } from "../packages/protocol/src/index.ts"
 import { once } from "node:events"
-import { mkdtemp, rm } from "node:fs/promises"
+import { access, mkdtemp, rm } from "node:fs/promises"
 import { createServer, type ServerResponse } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -178,4 +178,58 @@ it("still acknowledges a completed synchronous MCP delegation", async () => {
     })
     expect(acknowledged()).toBe(true)
   })
+})
+
+it("cancels an MCP attachment download before creating its output file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-mcp-download-cancel-"))
+  const outputPath = join(directory, "result.txt")
+  const pending = Promise.withResolvers<ServerResponse>()
+  const relay = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/octet-stream" })
+    response.write("before-cancel:")
+    pending.resolve(response)
+  })
+  relay.listen(0, "127.0.0.1")
+  await once(relay, "listening")
+  const client = new McpClient({ name: "download-cancellation-test", version: "1.0.0" })
+  try {
+    const address = relay.address()
+    if (address === null || typeof address === "string") throw new Error("Expected relay port")
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ["bin/cohall.js", "mcp"],
+        cwd: process.cwd(),
+        env: {
+          PATH: process.env.PATH ?? "",
+          COHALL_CONFIG: join(directory, "client.json"),
+          COHALL_RELAY_URL: `http://127.0.0.1:${address.port}`,
+          COHALL_CLIENT_TOKEN: "mcp-cancellation-test-token",
+        },
+        stderr: "ignore",
+      }),
+    )
+    const controller = new AbortController()
+    const call = client.callTool(
+      {
+        name: "download_task_attachment",
+        arguments: { task_id: makeTaskId(), name: "result.txt", output_path: outputPath },
+      },
+      undefined,
+      { signal: controller.signal },
+    )
+    const rejected = expect(call).rejects.toThrow("Caller cancelled")
+    const response = await pending.promise
+    controller.abort(new Error("Caller cancelled"))
+    await rejected
+    await client.ping()
+    await vi.waitFor(() => expect(response.destroyed).toBe(true))
+    expect(response.writableEnded).toBe(false)
+    await expect(access(outputPath)).rejects.toMatchObject({ code: "ENOENT" })
+  } finally {
+    await client.close()
+    relay.closeAllConnections()
+    await new Promise<void>((resolve) => relay.close(() => resolve()))
+    await rm(directory, { recursive: true, force: true })
+  }
 })
