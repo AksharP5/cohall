@@ -1,5 +1,8 @@
 import { AttachmentName, maxAttachmentBytes, makeTaskId, makeDeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
+import { execFileSync } from "node:child_process"
+import { constants } from "node:fs"
+import Filesystem from "node:fs/promises"
 import { createServer } from "node:http"
 import { type AddressInfo } from "node:net"
 import {
@@ -14,6 +17,7 @@ import {
   type FileHandle,
 } from "node:fs/promises"
 import { tmpdir } from "node:os"
+import { syncBuiltinESMExports } from "node:module"
 import { join } from "node:path"
 import { expect, it, vi } from "vitest"
 import { DeviceConfiguration } from "./config.ts"
@@ -86,6 +90,75 @@ it("reads all bytes when an input read returns short chunks", async () => {
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+it.skipIf(process.platform === "win32").each(["input", "output"] as const)(
+  "rejects an %s file replaced by a FIFO before opening it",
+  async (direction) => {
+    const configuration = DeviceConfiguration.make({
+      relayUrl: "http://127.0.0.1:1",
+      token: "unused-test-token",
+      id: makeDeviceId(),
+      name: "worker",
+      workspaces: [process.cwd()],
+    })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const files = yield* prepareTaskFiles(configuration, makeTaskId(), [])
+          yield* Effect.promise(async () => {
+            const path = join(files[direction], "report.txt")
+            await writeFile(path, "regular file before validation")
+            const originalOpen = Filesystem.open
+            const openSpy = vi
+              .spyOn(Filesystem, "open")
+              .mockImplementation(async (file, flags, mode) => {
+                if (file === path) {
+                  await rm(path)
+                  execFileSync("mkfifo", [path])
+                }
+                return originalOpen(file, flags, mode)
+              })
+            syncBuiltinESMExports()
+            const blocked = Symbol("FIFO open waited for a writer")
+            let timer: ReturnType<typeof setTimeout> | undefined
+            const reading = Promise.resolve()
+              .then(() =>
+                direction === "input" ? readInputAttachments([path]) : files.collectOutputs(),
+              )
+              .then(
+                () => undefined,
+                (cause: unknown) => cause,
+              )
+            const outcome = await Promise.race([
+              reading,
+              new Promise<typeof blocked>((resolve) => {
+                timer = setTimeout(() => resolve(blocked), 1_000)
+              }),
+            ])
+            try {
+              expect(outcome).toEqual(
+                expect.objectContaining({ message: expect.stringContaining("regular file") }),
+              )
+            } finally {
+              clearTimeout(timer)
+              if (outcome === blocked) {
+                // Keep a writer attached until a blocking regression releases its reader.
+                const writer = await originalOpen(path, constants.O_RDWR | constants.O_NONBLOCK)
+                try {
+                  await reading
+                } finally {
+                  await writer.close()
+                }
+              }
+              openSpy.mockRestore()
+              syncBuiltinESMExports()
+            }
+          })
+        }),
+      ),
+    )
+  },
+)
 
 it("stages input bytes and collects selected output before removing temporary files", async () => {
   const server = createServer(async (request, response) => {
