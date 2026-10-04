@@ -6,6 +6,7 @@ import {
   RequestTaskInput,
   TaskRunId,
   makeDeviceId,
+  maxTaskClarifications,
   now,
   version,
 } from "@cohall/protocol"
@@ -30,6 +31,98 @@ const worker = () =>
     version,
     lastSeenAt: now(),
   })
+
+it.each(["running", "queued", "assigned"] as const)(
+  "settles an ended Bot turn at the clarification limit while %s",
+  async (status) => {
+    const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+    try {
+      const store = await runtime.runPromise(RelayStore.Service)
+      const botId = BotId.make("question-limit-bot")
+      const target = Device.make({
+        ...worker(),
+        providers: ["grok-bot"],
+        bots: [{ id: botId, name: "Research" }],
+      })
+      await Effect.runPromise(store.upsertDevice(target))
+      const task = await Effect.runPromise(
+        store.createDelegation({ prompt: "Research", botId }, target.id, "owner"),
+      )
+      for (let index = 0; index < maxTaskClarifications; index += 1) {
+        const assigned = await Effect.runPromise(store.assignTask(task.id))
+        if (assigned.runId === undefined) throw new Error("Missing Bot turn")
+        await Effect.runPromise(store.acceptTask(task.id, target.id, assigned.runId))
+        const input = Schema.decodeUnknownSync(RequestTaskInput)({
+          runId: assigned.runId,
+          question: `Question ${index + 1}?`,
+        })
+        // The final allowed question can already be recorded when its terminal reply arrives.
+        if (index === maxTaskClarifications - 1) {
+          await Effect.runPromise(store.requestTaskInput(task.id, target.id, input))
+        }
+        const paused = await Effect.runPromise(store.pauseTaskForInput(task.id, target.id, input))
+        expect(paused.status).toBe("needs_input")
+        const question = paused.clarifications?.at(-1)
+        if (question === undefined) throw new Error("Missing question")
+        await Effect.runPromise(
+          store.answerTaskInput(
+            task.id,
+            "owner",
+            Schema.decodeUnknownSync(AnswerTaskInput)({ requestId: question.id, answer: "Yes" }),
+          ),
+        )
+      }
+      const assigned = await Effect.runPromise(store.assignTask(task.id))
+      if (assigned.runId === undefined) throw new Error("Missing Bot turn")
+      await Effect.runPromise(store.acceptTask(task.id, target.id, assigned.runId))
+      const input = Schema.decodeUnknownSync(RequestTaskInput)({
+        runId: assigned.runId,
+        question: "One more question?",
+      })
+      const error = `A task supports at most ${maxTaskClarifications} clarifications`
+      await expect(
+        Effect.runPromise(store.requestTaskInput(task.id, target.id, input)),
+      ).rejects.toMatchObject({ status: 409, message: error })
+      if (status !== "running") await Effect.runPromise(store.requeueTasksFor(target.id))
+      if (status === "assigned") await Effect.runPromise(store.assignTask(task.id))
+      await expect(
+        Effect.runPromise(store.pauseTaskForInput(task.id, makeDeviceId(), input)),
+      ).rejects.toMatchObject({ message: `Task ${task.id} belongs to another device` })
+      expect(
+        (
+          await Effect.runPromise(
+            store.pauseTaskForInput(task.id, target.id, {
+              ...input,
+              runId: TaskRunId.make(crypto.randomUUID()),
+            }),
+          )
+        ).status,
+      ).toBe(status)
+      const followup = await Effect.runPromise(
+        store.createDelegation({ prompt: "Next task", botId }, target.id, "owner"),
+      )
+      if (status !== "queued") {
+        expect((await Effect.runPromise(store.assignTask(followup.id))).status).toBe("queued")
+      }
+      const failed = await Effect.runPromise(store.pauseTaskForInput(task.id, target.id, input))
+      expect(failed).toMatchObject({ status: "failed", error })
+      expect(failed.clarifications).toHaveLength(maxTaskClarifications)
+      expect(await Effect.runPromise(store.pauseTaskForInput(task.id, target.id, input))).toEqual(
+        failed,
+      )
+      expect((await Effect.runPromise(store.inboxFor("owner"))).items).toContainEqual(
+        expect.objectContaining({
+          id: task.id,
+          status: "failed",
+          errorPreview: error,
+        }),
+      )
+      expect((await Effect.runPromise(store.assignTask(followup.id))).status).toBe("assigned")
+    } finally {
+      await runtime.dispose()
+    }
+  },
+)
 
 it.each(["queued", "assigned"] as const)(
   "saves an offline Bot question while its replayed turn is %s",

@@ -2275,16 +2275,23 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     )
       return task
     // A terminal reply can arrive before the reconnect assignment is accepted.
-    yield* requestTaskInput(taskId, deviceId, input, true)
-    return yield* terminal(
-      taskId,
-      deviceId,
-      "completed",
-      "",
-      undefined,
-      undefined,
-      undefined,
-      input.runId,
+    return yield* requestTaskInput(taskId, deviceId, input, true).pipe(
+      Effect.andThen(
+        terminal(taskId, deviceId, "completed", "", undefined, undefined, undefined, input.runId),
+      ),
+      // The worker ended this turn; a rejected question must not leave its slot occupied.
+      Effect.catchTag("RelayStore.TaskInputError", (cause) =>
+        terminal(
+          taskId,
+          deviceId,
+          "failed",
+          undefined,
+          cause.message,
+          undefined,
+          undefined,
+          input.runId,
+        ),
+      ),
     )
   })
 
