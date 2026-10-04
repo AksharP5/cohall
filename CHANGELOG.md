@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/AksharP5/cohall/compare/v0.10.2...v0.11.0) (2026-10-04)
+
+
+### Features
+
+* **setup:** guide onboarding and verify agent MCP connections ([b962ce9](https://github.com/AksharP5/cohall/commit/b962ce9e3b8d26e5d33e97e789e7153bdc374f6f))
+
 ## [0.10.2](https://github.com/AksharP5/cohall/compare/v0.10.1...v0.10.2) (2026-10-04)
 
 
