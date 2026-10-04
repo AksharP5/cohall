@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.1](https://github.com/AksharP5/cohall/compare/v0.10.0...v0.10.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **cli:** prevent oversized files from bypassing input limits ([#160](https://github.com/AksharP5/cohall/issues/160)) ([c6ef1d1](https://github.com/AksharP5/cohall/commit/c6ef1d1b31454b3baf755944cd0c6ef7021594c3))
+* **config:** ignore invalid XDG directories ([#157](https://github.com/AksharP5/cohall/issues/157)) ([10e9acb](https://github.com/AksharP5/cohall/commit/10e9acbfdd2839e12b384467b568260c183a88ef))
+* **providers:** preserve multipart OpenCode answers ([#161](https://github.com/AksharP5/cohall/issues/161)) ([219c988](https://github.com/AksharP5/cohall/commit/219c988ccfd5b3725242da5cbcab1ac27da63cf2))
+* **relay:** keep usage available for all retained devices ([#159](https://github.com/AksharP5/cohall/issues/159)) ([a01b960](https://github.com/AksharP5/cohall/commit/a01b960437011148059871fb46d0fa14ab40361d))
+
 ## [0.10.0](https://github.com/AksharP5/cohall/compare/v0.9.0...v0.10.0) (2026-10-04)
 
 
