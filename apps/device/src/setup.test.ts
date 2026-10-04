@@ -1,10 +1,15 @@
 import { DeviceId } from "@cohall/protocol"
 import { createServer, type Server } from "node:http"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { StoredConfiguration, writeStoredConfiguration } from "./config.ts"
+import {
+  StoredConfiguration,
+  makeStoredConfiguration,
+  parseProviders,
+  writeStoredConfiguration,
+} from "./config.ts"
 import { guidedSetupInput, joinRelay, type Prompter } from "./setup.ts"
 
 const directories: Array<string> = []
@@ -42,6 +47,88 @@ const prompter = (
 })
 
 describe("guided setup", () => {
+  it.each(["defaults", "prompt", "explicit"] as const)(
+    "retains existing workspace roots unless replaced through %s",
+    async (mode) => {
+      const workspace = await temporary()
+      const second = join(workspace, "second,root")
+      const replacement = join(workspace, "replacement")
+      await Promise.all([mkdir(second), mkdir(replacement)])
+      await writeStoredConfiguration(
+        StoredConfiguration.make({
+          version: 1,
+          relayUrl: "https://relay.example",
+          deviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+          deviceName: "workstation",
+          workspaces: [workspace, second],
+          clientToken: "client-secret",
+          deviceToken: "device-secret",
+        }),
+      )
+      const input = await guidedSetupInput(
+        {
+          clientOnly: false,
+          workspaces: mode === "explicit" ? [replacement] : [],
+          cwd: workspace,
+        },
+        prompter(mode === "prompt" ? { "Workspace root": replacement } : {}),
+      )
+      expect(input.reusedConfiguration).toBe(true)
+      const configuration = await makeStoredConfiguration({
+        relayUrl: input.relayUrl,
+        workspaces: input.workspaces,
+      })
+      expect(configuration.workspaces).toEqual(
+        mode === "defaults" ? [workspace, second] : [replacement],
+      )
+    },
+  )
+
+  it.each([
+    { override: undefined, expected: ["claude-code"] },
+    { override: "codex", expected: ["codex"] },
+    { override: "auto", expected: undefined },
+  ])(
+    "preserves client-only provider selection unless overridden with $override",
+    async ({ override, expected }) => {
+      const workspace = await temporary()
+      await writeStoredConfiguration(
+        StoredConfiguration.make({
+          version: 1,
+          relayUrl: "https://relay.example",
+          deviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+          deviceName: "workstation",
+          workspaces: [workspace],
+          clientToken: "client-secret",
+          deviceToken: "device-secret",
+          providers: ["claude-code"],
+        }),
+      )
+      const input = await guidedSetupInput(
+        {
+          clientOnly: true,
+          workspaces: [],
+          cwd: workspace,
+          ...(override === undefined ? {} : { providers: override }),
+        },
+        prompter({}),
+      )
+      expect(input.reusedConfiguration).toBe(true)
+      const configuration = await makeStoredConfiguration({
+        relayUrl: input.relayUrl,
+        workspaces: input.workspaces,
+        providers: input.providers === "auto" ? "auto" : parseProviders(input.providers),
+      })
+      expect(configuration.providers).toEqual(expected)
+      expect(configuration).toMatchObject({
+        deviceName: "workstation",
+        workspaces: [workspace],
+        clientToken: "client-secret",
+        deviceToken: "device-secret",
+      })
+    },
+  )
+
   it("turns a first run into complete join input", async () => {
     const workspace = await temporary()
     const input = await guidedSetupInput(

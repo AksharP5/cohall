@@ -90,7 +90,9 @@ unset pairing_token
 When run in a terminal, omitted relay, name, workspace, provider, and token
 values are prompted with useful defaults. Re-running `cohall init` repairs the
 skill installation and reuses credentials when the selected relay has not
-changed. `cohall join` remains the non-guided configuration primitive.
+changed. Keeping the default workspace retains all configured roots;
+`init --client-only` also retains the worker's provider selection unless
+`--providers` overrides it. `cohall join` remains the non-guided configuration primitive.
 
 Workspace roots must be existing directories. Cohall resolves them to canonical paths and
 rejects delegated work outside them.
