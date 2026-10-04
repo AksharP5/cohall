@@ -21,7 +21,7 @@ import { Effect, Schedule, Schema } from "effect"
 import { constants } from "node:fs"
 import { open, realpath, stat } from "node:fs/promises"
 import { arch, hostname, platform } from "node:os"
-import { basename, isAbsolute, relative } from "node:path"
+import { basename, isAbsolute, relative, sep } from "node:path"
 import { WebSocket, type RawData } from "ws"
 import type { DeviceConfiguration } from "./config.ts"
 import { discoverGrokBots, runGrokBot } from "./grok-bot.ts"
@@ -166,7 +166,7 @@ export const allowedWorkspace = async (
   const candidate = await realpath(selected)
   const allowed = configuration.workspaces.some((root) => {
     const child = relative(root, candidate)
-    return child === "" || (!child.startsWith("..") && !isAbsolute(child))
+    return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child)
   })
   if (!allowed) {
     throw new Error(`Workspace ${candidate} is outside this device's configured workspace roots`)

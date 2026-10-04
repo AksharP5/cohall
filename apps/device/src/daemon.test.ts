@@ -22,11 +22,12 @@ import { type AddressInfo } from "node:net"
 import Filesystem from "node:fs/promises"
 import { writeFile } from "node:fs/promises"
 import { syncBuiltinESMExports } from "node:module"
+import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer, type WebSocket } from "ws"
 import { DeviceConfiguration } from "./config.ts"
-import { performDeviceOperation, runDaemon } from "./daemon.ts"
+import { allowedWorkspace, performDeviceOperation, runDaemon } from "./daemon.ts"
 import type { UpgradeOptions, UpgradeResult } from "./upgrade.ts"
 import * as Upgrades from "./upgrade.ts"
 import * as Grok from "./grok-bot.ts"
@@ -85,6 +86,36 @@ afterEach(async () => {
 })
 
 describe("device relay connection", () => {
+  it("allows two-dot child names while rejecting parent directory escapes", async () => {
+    const directory = await Filesystem.mkdtemp(join(tmpdir(), "cohall-workspace-boundary-"))
+    const root = join(directory, "workspace")
+    const child = join(root, "..project")
+    const outside = join(directory, "outside")
+    try {
+      await Filesystem.mkdir(child, { recursive: true })
+      await Filesystem.mkdir(outside)
+      const canonicalRoot = await Filesystem.realpath(root)
+      const canonicalChild = await Filesystem.realpath(child)
+      const configuration = DeviceConfiguration.make({
+        relayUrl: "http://127.0.0.1:1",
+        token: "unused-test-token",
+        id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        name: "worker",
+        workspaces: [canonicalRoot],
+      })
+      await expect(allowedWorkspace(configuration, root)).resolves.toBe(canonicalRoot)
+      await expect(allowedWorkspace(configuration, child)).resolves.toBe(canonicalChild)
+      await expect(allowedWorkspace(configuration, directory)).rejects.toThrow(
+        "outside this device's configured workspace roots",
+      )
+      await expect(allowedWorkspace(configuration, outside)).rejects.toThrow(
+        "outside this device's configured workspace roots",
+      )
+    } finally {
+      await Filesystem.rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it.each(["codex", "grok-bot"] as const)(
     "rejects queued %s work when that provider was disabled before restarting",
     async (provider) => {
