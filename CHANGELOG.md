@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.2](https://github.com/AksharP5/cohall/compare/v0.10.1...v0.10.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* **client:** cancel pairing response body reads ([#165](https://github.com/AksharP5/cohall/issues/165)) ([92702ee](https://github.com/AksharP5/cohall/commit/92702eed5ce582f7086fa12f45bd5acb1cc80a24))
+* **device:** allow workspace names beginning with two dots ([#163](https://github.com/AksharP5/cohall/issues/163)) ([5764e37](https://github.com/AksharP5/cohall/commit/5764e37935502e861316c46b36b0e0db868a66c4))
+* **device:** reject attachment FIFOs without blocking ([#162](https://github.com/AksharP5/cohall/issues/162)) ([7eae2ca](https://github.com/AksharP5/cohall/commit/7eae2ca46d1dfbbb6fa91a0236d137b52dc0f9c3))
+* **mcp:** stop cancelled attachment downloads before writing ([#164](https://github.com/AksharP5/cohall/issues/164)) ([1b91dc4](https://github.com/AksharP5/cohall/commit/1b91dc453e44f72051729fe32787d33b1d275b4e))
+* **relay:** change addresses while workers are connected ([#166](https://github.com/AksharP5/cohall/issues/166)) ([87c3baa](https://github.com/AksharP5/cohall/commit/87c3baa886bd887bb7aaf00d76bcea44e8cbe000))
+
 ## [0.10.1](https://github.com/AksharP5/cohall/compare/v0.10.0...v0.10.1) (2026-10-04)
 
 
