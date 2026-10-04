@@ -35,7 +35,8 @@ export const readInputAttachments = async (
       }
       const handle = await open(
         path,
-        constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW),
+        constants.O_RDONLY |
+          (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK),
       )
       try {
         const metadata = await handle.stat()
@@ -125,7 +126,8 @@ const collectOutputs = async (directory: string): Promise<ReadonlyArray<InputAtt
     names.add(key)
     const handle = await open(
       join(directory, name),
-      constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW),
+      constants.O_RDONLY |
+        (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK),
     )
     try {
       const metadata = await handle.stat()
