@@ -508,7 +508,7 @@ export const UsageSummary = Schema.Struct({
   retainedTasks: count,
   byStatus: TaskStatusCounts,
   byProvider: boundedArray(ProviderUsage, Provider.literals.length),
-  devices: boundedArray(DeviceUsage, 256),
+  devices: Schema.Array(DeviceUsage),
 })
 export interface UsageSummary extends Schema.Schema.Type<typeof UsageSummary> {}
 

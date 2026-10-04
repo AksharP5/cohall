@@ -1123,6 +1123,51 @@ it("keeps input files across relay recovery before completion", async () => {
   }
 })
 
+it("includes more than 256 forgotten devices in retained usage", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const devices = Array.from({ length: 257 }, (_, index) =>
+      Device.make({
+        id: orderedDeviceId(index + 1),
+        name: `former-worker-${String(index).padStart(3, "0")}`,
+        hostname: "localhost",
+        platform: "linux",
+        architecture: "x64",
+        status: "offline",
+        providers: ["codex"],
+        capabilities: [],
+        workspaces: [],
+        version,
+        lastSeenAt: now(),
+      }),
+    )
+    for (const device of devices) {
+      await Effect.runPromise(store.upsertDevice(device))
+      const task = await Effect.runPromise(
+        store.createDelegation({ prompt: "Historical work" }, device.id, "owner"),
+      )
+      await Effect.runPromise(store.requestCancellation(task.id))
+      await Effect.runPromise(store.forgetDevice(device.id))
+    }
+    expect(await Effect.runPromise(store.listDevices())).toEqual([])
+    expect(await Effect.runPromise(store.usage())).toMatchObject({
+      retainedTasks: devices.length,
+      byStatus: { cancelled: devices.length },
+      byProvider: [{ provider: "codex", tasks: devices.length }],
+      devices: devices.map((device) => ({
+        deviceId: device.id,
+        deviceName: device.name,
+        tasks: 1,
+        byStatus: { cancelled: 1 },
+        byProvider: [{ provider: "codex", tasks: 1 }],
+      })),
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("summarizes retained work and runs typed upgrades across registered devices", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-store-operations-"))
   const runtime = ManagedRuntime.make(RelayStore.layer(join(directory, "relay.db")))

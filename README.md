@@ -412,8 +412,9 @@ cohall usage
 It and `cohall devices` include each device's current queue count and the
 creation time of its oldest queued task. Assigned, running, cancelling, and
 terminal tasks do not count as queued. Queue fields are absent with older relays.
-`usage` reports retained Cohall task activity by device, status, and provider;
-provider token counts and billing are not available to the relay.
+`usage` reports retained Cohall task activity by device, status, and provider,
+including forgotten devices whose tasks are still retained. Provider token counts
+and billing are not available to the relay.
 
 From the relay owner account, queue a Cohall upgrade for every registered
 device and inspect progress:
