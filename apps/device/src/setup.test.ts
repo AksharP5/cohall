@@ -1,6 +1,6 @@
 import { DeviceId } from "@cohall/protocol"
 import { createServer, type Server } from "node:http"
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -17,7 +17,7 @@ const servers: Array<Server> = []
 const previousConfig = process.env.COHALL_CONFIG
 
 const temporary = async (): Promise<string> => {
-  const directory = await mkdtemp(join(tmpdir(), "cohall-setup-"))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "cohall-setup-")))
   directories.push(directory)
   process.env.COHALL_CONFIG = join(directory, "config.json")
   return directory
