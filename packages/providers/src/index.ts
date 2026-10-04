@@ -44,6 +44,8 @@ export interface RunResult {
 }
 
 type JsonRecord = Readonly<Record<string, unknown>>
+const maxResultBytes = 131_072
+const maxJsonBytes = 1024 * 1024
 
 const executables = {
   codex: "codex",
@@ -274,7 +276,6 @@ const forEachJsonEvent = async (
   onEvent: (event: JsonRecord) => void,
   onOversized: () => void,
 ): Promise<void> => {
-  const limit = 1024 * 1024
   let chunks: Array<Buffer> = []
   let size = 0
   let oversized = false
@@ -282,7 +283,7 @@ const forEachJsonEvent = async (
     if (oversized) {
       return
     }
-    if (size + chunk.byteLength > limit) {
+    if (size + chunk.byteLength > maxJsonBytes) {
       chunks = []
       size = 0
       oversized = true
@@ -399,6 +400,17 @@ const parseOpenCode = async (stdout: Readable, existingSession?: string): Promis
   let result = ""
   let sessionId = existingSession
   let discardedEvent = false
+  let messageId: string | undefined
+  const parts = new Map<string, string>()
+  let partBytes = 0
+  let oversizedMessage = false
+  const selectMessage = (id: string | undefined): void => {
+    messageId = id
+    parts.clear()
+    partBytes = 0
+    oversizedMessage = false
+    result = ""
+  }
   await forEachJsonEvent(
     stdout,
     (event) => {
@@ -412,12 +424,43 @@ const parseOpenCode = async (stdout: Readable, existingSession?: string): Promis
         text(event.session_id) ??
         text(record(event.info)?.sessionID) ??
         sessionId
-      if (text(event.type) !== "text") return
-      const content = textFromPart(event.part) ?? textFromPart(event) ?? text(event.result)
-      if (content !== undefined && content.length > 0) {
-        result = content
+      const part = record(event.part)
+      const nextMessageId = text(part?.messageID)
+      // After a discarded event, only a visible new-message boundary proves its parts are complete.
+      if (
+        text(event.type) === "step_start" &&
+        nextMessageId !== undefined &&
+        nextMessageId !== messageId
+      ) {
+        selectMessage(nextMessageId)
         discardedEvent = false
+        return
       }
+      if (text(event.type) !== "text") return
+      const content = textFromPart(part) ?? textFromPart(event) ?? text(event.result)
+      if (content === undefined) return
+      const partId = text(part?.id)
+      if (nextMessageId !== undefined && partId !== undefined) {
+        if (nextMessageId !== messageId) selectMessage(nextMessageId)
+        if (oversizedMessage) return
+        const previous = parts.get(partId)
+        if (content.length === 0 && previous === undefined) return
+        partBytes +=
+          byteLength(content) -
+          byteLength(previous ?? "") +
+          (previous === undefined ? byteLength(partId) : 0)
+        if (partBytes > maxJsonBytes) {
+          oversizedMessage = true
+          parts.clear()
+          return
+        }
+        parts.set(partId, content)
+        return
+      }
+      if (content.length === 0) return
+      selectMessage(undefined)
+      result = content
+      discardedEvent = false
     },
     () => {
       discardedEvent = true
@@ -426,6 +469,9 @@ const parseOpenCode = async (stdout: Readable, existingSession?: string): Promis
   if (discardedEvent) {
     throw new Error("Provider JSON event exceeded 1 MiB without a later text response")
   }
+  if (oversizedMessage) throw new Error("OpenCode message exceeded 1 MiB")
+  if (parts.size > 0)
+    result = [...parts.values()].filter((content) => content.length > 0).join("\n")
   if (result.length === 0) {
     throw new Error(
       "OpenCode produced no result; verify its authentication and use a supported project workspace",
@@ -444,7 +490,7 @@ const parse = async (
       case "codex":
         return await parseCodex(stdout, options.sessionId)
       case "claude-code":
-        return parseClaude(await boundedText(stdout, 1024 * 1024, onFailure), options.sessionId)
+        return parseClaude(await boundedText(stdout, maxJsonBytes, onFailure), options.sessionId)
       case "opencode":
         return await parseOpenCode(stdout, options.sessionId)
     }
@@ -582,7 +628,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
               exitCode,
             })
           }
-          if (byteLength(result.result) > 131_072) {
+          if (byteLength(result.result) > maxResultBytes) {
             throw new ProviderRunError({
               provider: options.provider,
               message: "Provider result exceeded 128 KiB",
