@@ -46,7 +46,11 @@ const startServer = async (): Promise<{
   return { server, relayUrl: `http://127.0.0.1:${address.port}` }
 }
 
-const run = (relayUrl: string, grokGateway?: string): Promise<void> => {
+const run = (
+  relayUrl: string,
+  grokGateway?: string,
+  providers?: DeviceConfiguration["providers"],
+): Promise<void> => {
   const controller = new AbortController()
   controllers.push(controller)
   const configuration = DeviceConfiguration.make({
@@ -56,6 +60,7 @@ const run = (relayUrl: string, grokGateway?: string): Promise<void> => {
     name: "test-device",
     workspaces: [process.cwd()],
     ...(grokGateway === undefined ? {} : { grokGateway }),
+    ...(providers === undefined ? {} : { providers }),
   })
   return Effect.runPromise(runDaemon(configuration), { signal: controller.signal }).catch(() => {})
 }
@@ -80,6 +85,81 @@ afterEach(async () => {
 })
 
 describe("device relay connection", () => {
+  it.each(["codex", "grok-bot"] as const)(
+    "rejects queued %s work when that provider was disabled before restarting",
+    async (provider) => {
+      const { server, relayUrl } = await startServer()
+      vi.spyOn(Providers, "availableProviders").mockReturnValue(["codex", "claude-code"])
+      const runner = vi.spyOn(Providers, "run").mockReturnValue(Effect.succeed({ result: "Done" }))
+      const botRunner = vi.spyOn(Grok, "runGrokBot").mockResolvedValue({ result: "Done" })
+      vi.spyOn(Grok, "discoverGrokBots").mockResolvedValue([])
+      const queued = {
+        id: makeTaskId(),
+        threadId: makeThreadId(),
+        targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        prompt: "Queued before the provider configuration changed",
+        status: "assigned" as const,
+        createdAt: now(),
+        updatedAt: now(),
+        runId: TaskRunId.make("11111111-1111-4111-8111-111111111111"),
+      }
+      const task = Task.make({
+        ...queued,
+        provider,
+        ...(provider === "grok-bot" ? { botId: BotId.make("disabled-bot") } : {}),
+      })
+      const enabledTask = Task.make({
+        ...queued,
+        id: makeTaskId(),
+        provider: "claude-code",
+      })
+      const events: Array<SocketEvent> = []
+      server.on("connection", (socket) => {
+        socket.on("message", (message) => {
+          const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
+          events.push(event)
+          if (event._tag === "Authenticate") {
+            socket.send(
+              JSON.stringify({ _tag: "Connected", serverVersion: "test", connectedAt: now() }),
+            )
+          }
+          if (event._tag === "DeviceHello") {
+            socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+          }
+          if (event._tag === "TaskFailed") {
+            socket.send(JSON.stringify({ _tag: "TaskAssigned", task: enabledTask }))
+          }
+        })
+      })
+      void run(relayUrl, "/fake/gateway.json", ["claude-code"])
+      await vi.waitFor(() =>
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            _tag: "TaskFailed",
+            taskId: task.id,
+            runId: task.runId,
+            error: expect.stringContaining(`${provider} is not enabled on this device`),
+          }),
+        ),
+      )
+      expect(runner).not.toHaveBeenCalledWith(expect.objectContaining({ provider }))
+      expect(botRunner).not.toHaveBeenCalled()
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          _tag: "DeviceHello",
+          device: expect.objectContaining({ providers: ["claude-code"] }),
+        }),
+      )
+      await vi.waitFor(() =>
+        expect(events).toContainEqual(
+          expect.objectContaining({ _tag: "TaskFinished", taskId: enabledTask.id, result: "Done" }),
+        ),
+      )
+      expect(runner).toHaveBeenCalledOnce()
+      expect(runner).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude-code" }))
+    },
+  )
+
   it.each(["codex", "grok-bot"] as const)(
     "keeps %s clarification working after reconnecting an active turn",
     async (provider) => {

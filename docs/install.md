@@ -148,6 +148,10 @@ cohall configure --providers codex,claude-code
 cohall configure --providers auto
 ```
 
+Restart the worker after changing its provider selection. Queued work for a
+disabled provider fails with an error instead of starting that provider.
+`auto` enables all detected providers.
+
 ## Configuration
 
 `cohall config` shows stored configuration without tokens. `cohall configure`
