@@ -818,6 +818,18 @@ export const runRelay = async (): Promise<void> => {
         )
     }
 
+    if (url.pathname === "/api/device/credential" && request.method === "GET") {
+      const authorization = request.headers.get("authorization")
+      const token =
+        authorization?.startsWith("Bearer ") === true
+          ? authorization.slice("Bearer ".length)
+          : undefined
+      if (token === undefined || (await authenticate(token, "device")) === undefined) {
+        return json({ error: "Unauthorized" }, 401)
+      }
+      return json({ ok: true })
+    }
+
     const attachmentRoute =
       request.method === "GET" &&
       /^\/api\/tasks\/[^/]+\/attachments(?:\/[^/]+)?$/.test(url.pathname)

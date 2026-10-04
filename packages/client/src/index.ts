@@ -57,6 +57,7 @@ export type RelayClientError = RelayRequestError | RelayDecodeError
 
 export interface Interface {
   readonly devices: () => Effect.Effect<ReadonlyArray<Device>, RelayClientError>
+  readonly verifyDeviceCredential: () => Effect.Effect<void, RelayClientError>
   readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, RelayClientError>
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<Task, RelayClientError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, RelayClientError>
@@ -225,6 +226,12 @@ export const make = (options: RelayClientOptions): Interface => {
     )
 
   return Service.of({
+    verifyDeviceCredential: () =>
+      request(
+        "RelayClient.verifyDeviceCredential",
+        "/api/device/credential",
+        Schema.Struct({ ok: Schema.Literal(true) }),
+      ).pipe(Effect.asVoid),
     devices: () =>
       Effect.gen(function* () {
         const first = yield* devicePage().pipe(
