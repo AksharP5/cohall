@@ -300,7 +300,7 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
         direction: z.enum(["input", "output"]).optional(),
       },
     },
-    async ({ task_id, name, output_path, direction }) => {
+    async ({ task_id, name, output_path, direction }, { signal }) => {
       const safeName = Schema.decodeUnknownSync(AttachmentName)(name)
       const safeDirection =
         direction === undefined
@@ -308,8 +308,10 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
           : Schema.decodeUnknownSync(AttachmentDirection)(direction)
       const data = await Effect.runPromise(
         client.readAttachment(TaskId.make(task_id), safeName, safeDirection),
+        { signal },
       )
-      await writeFile(output_path, data, { flag: "wx", mode: 0o600 })
+      signal.throwIfAborted()
+      await writeFile(output_path, data, { flag: "wx", mode: 0o600, signal })
       return output({ task_id, name: safeName, output_path, bytes: data.length })
     },
   )
