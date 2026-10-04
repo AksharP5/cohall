@@ -176,6 +176,10 @@ Configuration locations:
 Use `COHALL_CONFIG` to override the path. On Unix, Cohall enforces directory mode
 `0700` and file mode `0600`.
 
+On Linux, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` must be absolute paths. Empty or
+relative values use `~/.config` and `~/.local/share` instead. Relay data defaults
+to the `cohall` directory under `XDG_DATA_HOME`; `COHALL_DATA_DIR` overrides it.
+
 Environment variables override stored values:
 
 | Variable                                  | Purpose                                        |

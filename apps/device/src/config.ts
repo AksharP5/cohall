@@ -8,7 +8,7 @@ import {
 import { Effect, Schema } from "effect"
 import { access, chmod, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises"
 import { homedir, hostname, platform } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 
 const WorkspaceList = Schema.Array(Schema.NonEmptyString).check(Schema.isMaxLength(64))
 const ProviderList = Schema.Array(Provider)
@@ -60,7 +60,11 @@ const defaultConfigDirectory = (): string => {
   if (platform() === "darwin") {
     return join(homedir(), "Library", "Application Support", "Cohall")
   }
-  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "cohall")
+  const configHome = process.env.XDG_CONFIG_HOME
+  return join(
+    configHome !== undefined && isAbsolute(configHome) ? configHome : join(homedir(), ".config"),
+    "cohall",
+  )
 }
 
 const defaultRelayDataDirectory = (): string => {
@@ -70,7 +74,11 @@ const defaultRelayDataDirectory = (): string => {
   if (platform() === "darwin") {
     return join(homedir(), "Library", "Application Support", "Cohall", "relay")
   }
-  return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "cohall")
+  const dataHome = process.env.XDG_DATA_HOME
+  return join(
+    dataHome !== undefined && isAbsolute(dataHome) ? dataHome : join(homedir(), ".local", "share"),
+    "cohall",
+  )
 }
 
 export const relayDataDirectory = (): string =>
