@@ -8,35 +8,11 @@ import {
 } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { constants } from "node:fs"
-import {
-  lstat,
-  mkdtemp,
-  mkdir,
-  open,
-  readdir,
-  rm,
-  writeFile,
-  type FileHandle,
-} from "node:fs/promises"
+import { lstat, mkdtemp, mkdir, open, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import type { DeviceConfiguration } from "./config.ts"
-
-const readBoundedFile = async (handle: FileHandle): Promise<Buffer> => {
-  const buffer = Buffer.allocUnsafe(maxAttachmentBytes + 1)
-  let offset = 0
-  while (offset < buffer.length) {
-    const { bytesRead } = await handle.read({
-      buffer,
-      offset,
-      length: buffer.length - offset,
-      position: null,
-    })
-    if (bytesRead === 0) break
-    offset += bytesRead
-  }
-  return buffer.subarray(0, offset)
-}
+import { readBoundedFile } from "./bounded-file.ts"
 
 export const readInputAttachments = async (
   paths: ReadonlyArray<string>,
@@ -74,7 +50,7 @@ export const readInputAttachments = async (
             `Attachment ${name} must be a regular file of 1 to ${maxAttachmentBytes} bytes`,
           )
         }
-        const data = await readBoundedFile(handle)
+        const data = await readBoundedFile(handle, maxAttachmentBytes)
         if (data.length < 1 || data.length > maxAttachmentBytes) {
           throw new Error(`Attachment ${name} changed size while reading`)
         }
@@ -164,7 +140,7 @@ const collectOutputs = async (directory: string): Promise<ReadonlyArray<InputAtt
       ) {
         throw new Error(`Output ${name} must be a regular file of 1 to ${maxAttachmentBytes} bytes`)
       }
-      const data = await readBoundedFile(handle)
+      const data = await readBoundedFile(handle, maxAttachmentBytes)
       if (data.length < 1 || data.length > maxAttachmentBytes) {
         throw new Error(`Output ${name} changed size while reading`)
       }

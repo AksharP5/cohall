@@ -4,6 +4,10 @@ CLI plus skill is the recommended integration. MCP is available for harnesses
 that prefer native tool discovery. Both create the same relay tasks; use one
 entry point per task.
 
+CLI prompt and context files are limited to 128 KiB each. Message files allow
+512 KiB and at most 131072 characters. Cohall enforces these limits while reading,
+including growing files and named pipes.
+
 For queued work, `cohall inbox` or the MCP `completion_inbox` tool lists questions
 awaiting answers and results the sending client has not handled. Fetch a full
 result with `cohall status <task-id>` or `task_status`, then use

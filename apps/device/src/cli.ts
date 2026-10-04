@@ -20,7 +20,7 @@ import {
 } from "@cohall/protocol"
 import * as Providers from "@cohall/providers"
 import { Effect, Schema } from "effect"
-import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises"
+import { access, mkdir, open, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import skill from "../../../skills/cohall/SKILL.md" with { type: "text" }
@@ -56,6 +56,7 @@ import { installDeviceService } from "./service.ts"
 import { deviceVersionWarning, normalizeUpgradeTarget, upgrade } from "./upgrade.ts"
 import { readInputAttachments } from "./task-attachments.ts"
 import { checkMcp } from "./mcp-diagnostics.ts"
+import { readBoundedFile } from "./bounded-file.ts"
 
 interface Arguments {
   readonly options: ReadonlyMap<string, ReadonlyArray<string> | true>
@@ -244,6 +245,18 @@ const identifier = (arguments_: Arguments, label: string): string => {
 const print = (value: unknown): void => console.log(JSON.stringify(value, null, 2))
 const printLine = (value: unknown): void => console.log(JSON.stringify(value))
 
+const readTextFile = async (path: string, limit: number, exceeded: string): Promise<string> => {
+  if ((await stat(path)).size > limit) throw new Error(exceeded)
+  const file = await open(path, "r")
+  try {
+    const data = await readBoundedFile(file, limit)
+    if (data.length > limit) throw new Error(exceeded)
+    return data.toString("utf8")
+  } finally {
+    await file.close()
+  }
+}
+
 const readInput = async (
   arguments_: Arguments,
   name: "prompt" | "context" | "message",
@@ -262,16 +275,13 @@ const readInput = async (
     ) {
       throw new Error(`File does not exist: ${path}`)
     }
-    if ((await stat(path)).size > byteLimit) {
-      throw new Error(`${name} file exceeds ${byteLimit / 1024} KiB`)
-    }
   }
   const result =
     path === undefined
       ? direct === "-"
         ? await readStdin(byteLimit, name)
         : direct
-      : await readFile(path, "utf8")
+      : await readTextFile(path, byteLimit, `${name} file exceeds ${byteLimit / 1024} KiB`)
   if (result !== undefined && result.length > 131_072) {
     throw new Error(`${name} exceeds 131072 characters`)
   }
@@ -310,11 +320,10 @@ const pairingToken = async (arguments_: Arguments): Promise<string> => {
   ) {
     throw new Error(`Pairing token file does not exist: ${path}`)
   }
-  if (path !== undefined && (await stat(path)).size > 512) {
-    throw new Error("Pairing token file exceeds 512 bytes")
-  }
   const token = (
-    path === undefined ? await readStdin(512, "Pairing token") : await readFile(path, "utf8")
+    path === undefined
+      ? await readStdin(512, "Pairing token")
+      : await readTextFile(path, 512, "Pairing token file exceeds 512 bytes")
   ).trim()
   if (token.length === 0 || new TextEncoder().encode(token).byteLength > 256) {
     throw new Error("Provide a pairing token on stdin or with --token-file")
