@@ -1,4 +1,4 @@
-import { RelayClient } from "@cohall/client"
+import { RelayClient, RelayRequestError } from "@cohall/client"
 import { SocketEvent, Timestamp, version } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { createHash } from "node:crypto"
@@ -266,7 +266,7 @@ const verifyClientCredential = async (relayUrl: string, token: string): Promise<
   await Effect.runPromise(RelayClient.make({ baseUrl: relayUrl, token }).devices())
 }
 
-const verifyDeviceCredential = (relayUrl: string, token: string): Promise<void> =>
+const verifyLegacyDeviceCredential = (relayUrl: string, token: string): Promise<void> =>
   new Promise((resolvePromise, reject) => {
     const socket = new WebSocket(websocketUrl(relayUrl), {
       handshakeTimeout: 10_000,
@@ -309,6 +309,17 @@ const verifyDeviceCredential = (relayUrl: string, token: string): Promise<void> 
     socket.once("error", (cause) => finish(cause))
     socket.once("close", () => finish(new Error("New relay rejected the stored device credential")))
   })
+
+const verifyDeviceCredential = (relayUrl: string, token: string): Promise<void> =>
+  Effect.runPromise(RelayClient.make({ baseUrl: relayUrl, token }).verifyDeviceCredential()).catch(
+    (cause: unknown) => {
+      // Older relays can reject device HTTP authentication before checking for a missing route.
+      if (cause instanceof RelayRequestError && (cause.status === 401 || cause.status === 404)) {
+        return verifyLegacyDeviceCredential(relayUrl, token)
+      }
+      throw cause
+    },
+  )
 
 export interface RelaySwitchResult {
   readonly updated: boolean

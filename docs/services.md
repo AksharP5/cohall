@@ -183,6 +183,10 @@ against the new relay. Only then does it save the address. It restarts an
 active managed device service automatically and leaves stopped workers stopped.
 Repeat the command to retry a failed restart or apply a previously saved address;
 credentials are verified again, and an unchanged address is not rewritten.
+Current relays verify device credentials without claiming the running worker's
+connection, so changing an address for the same relay works while it is active.
+Older relays use a WebSocket check; stop that worker first when changing its
+address to the same relay, or upgrade the relay before switching.
 Use `--no-restart` when another supervisor owns the process.
 Environment-based configurations must update
 `COHALL_RELAY_URL` in their service environment instead.

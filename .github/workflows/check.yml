@@ -44,4 +44,5 @@ jobs:
       - run: bun run build:package
       - run: node bin/cohall.js --version
       - run: bunx vitest run --testNamePattern Windows packages/providers/src/index.test.ts apps/device/src/upgrade.test.ts apps/device/src/service.test.ts apps/device/src/cli.test.ts
-      - run: bunx vitest run apps/device/src/daemon-connection.test.ts apps/device/src/relay-migration.test.ts
+      - run: bunx vitest run apps/device/src/daemon-connection.test.ts apps/device/src/relay-migration.test.ts packages/client/src/index.test.ts tests/mcp-cancellation.test.ts
+      - run: bunx vitest run apps/device/src/daemon.test.ts --testNamePattern "two-dot child names"

@@ -1,11 +1,15 @@
-import { DeviceId, SocketEvent, now, version } from "@cohall/protocol"
+import { RelayClient, exchangePairing } from "@cohall/client"
+import { Device, DeviceId, SocketEvent, now, version } from "@cohall/protocol"
+import { Effect } from "effect"
+import { spawn } from "node:child_process"
+import { once } from "node:events"
 import { createServer } from "node:http"
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import { WebSocketServer } from "ws"
-import { afterEach, describe, expect, it } from "vitest"
+import { WebSocket, WebSocketServer } from "ws"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { StoredConfiguration, readStoredConfiguration, writeStoredConfiguration } from "./config.ts"
 import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 
@@ -361,13 +365,16 @@ describe("relay migration", () => {
     }
   })
 
-  it("verifies device credentials on the production WebSocket endpoint", async () => {
+  it.each([401, 404])("verifies legacy device credentials after HTTP %s", async (status) => {
     const root = await temporary()
     const previousConfig = process.env.COHALL_CONFIG
     const previousRelay = process.env.COHALL_RELAY_URL
     process.env.COHALL_CONFIG = join(root, "config.json")
     delete process.env.COHALL_RELAY_URL
-    const server = createServer()
+    const server = createServer((_request, response) => {
+      response.writeHead(status, { "content-type": "application/json" })
+      response.end(JSON.stringify({ error: "Legacy relay has no credential probe" }))
+    })
     const sockets = new WebSocketServer({ noServer: true })
     let requestedPath: string | undefined
     server.on("upgrade", (request, socket, head) => {
@@ -414,6 +421,140 @@ describe("relay migration", () => {
       sockets.close()
       restoreEnvironment("COHALL_CONFIG", previousConfig)
       restoreEnvironment("COHALL_RELAY_URL", previousRelay)
+    }
+  })
+
+  it("switches a connected worker's relay address without taking its credential connection", async () => {
+    const root = await temporary()
+    const reservation = createServer()
+    await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve))
+    const address = reservation.address()
+    if (address === null || typeof address === "string") throw new Error("Expected test port")
+    await new Promise<void>((resolve) => reservation.close(() => resolve()))
+    const relayUrl = `http://127.0.0.1:${address.port}`
+    const alias = `http://localhost:${address.port}`
+    const ownerToken = "relay-switch-test-owner-token".padEnd(64, "0")
+    const relay = spawn(process.execPath, ["bin/cohall.js", "relay"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        COHALL_RELAY_HOST: "127.0.0.1",
+        COHALL_RELAY_PORT: String(address.port),
+        COHALL_DATA_DIR: join(root, "relay"),
+        COHALL_TOKEN: ownerToken,
+      },
+      stdio: "ignore",
+    })
+    const exited = once(relay, "exit")
+    const owner = RelayClient.make({ baseUrl: relayUrl, token: ownerToken })
+    const names = [
+      "COHALL_CONFIG",
+      "COHALL_RELAY_URL",
+      "COHALL_CLIENT_TOKEN",
+      "COHALL_DEVICE_TOKEN",
+    ] as const
+    const previous = new Map(names.map((name) => [name, process.env[name]]))
+    let worker: WebSocket | undefined
+    try {
+      for (const name of names) delete process.env[name]
+      process.env.COHALL_CONFIG = join(root, "config.json")
+      await vi.waitFor(async () => expect((await fetch(`${relayUrl}/api/health`)).ok).toBe(true), {
+        timeout: 10_000,
+      })
+      const invite = await Effect.runPromise(
+        owner.createPairing({ label: "Switching worker", roles: ["client", "device"] }),
+      )
+      const paired = await Effect.runPromise(exchangePairing(relayUrl, { token: invite.token }))
+      const clientCredential = paired.credentials.find((entry) => entry.session.role === "client")
+      const deviceCredential = paired.credentials.find((entry) => entry.session.role === "device")
+      const deviceId = deviceCredential?.session.deviceId
+      if (
+        clientCredential === undefined ||
+        deviceCredential === undefined ||
+        deviceId === undefined
+      )
+        throw new Error("Expected paired worker credentials")
+      const configuration = StoredConfiguration.make({
+        version: 1,
+        relayUrl,
+        deviceId,
+        deviceName: "switching-worker",
+        workspaces: [root],
+        clientToken: clientCredential.token,
+        deviceToken: deviceCredential.token,
+      })
+      await writeStoredConfiguration(configuration)
+      worker = new WebSocket(`${relayUrl.replace("http", "ws")}/ws/device`)
+      await once(worker, "open")
+      const connected = once(worker, "message")
+      worker.send(JSON.stringify({ _tag: "Authenticate", token: deviceCredential.token }))
+      const [message] = await connected
+      expect(JSON.parse(message.toString())._tag).toBe("Connected")
+      worker.send(
+        JSON.stringify({
+          _tag: "DeviceHello",
+          device: Device.make({
+            id: deviceId,
+            name: configuration.deviceName,
+            hostname: "localhost",
+            platform: "linux",
+            architecture: process.arch,
+            providers: ["codex"],
+            capabilities: [],
+            workspaces: [],
+            version,
+            status: "online",
+            lastSeenAt: now(),
+          }),
+        }),
+      )
+      await vi.waitFor(async () => {
+        expect((await Effect.runPromise(owner.devices()))[0]?.status).toBe("online")
+      })
+      await expect(switchRelay({ relayUrl, restart: false })).resolves.toMatchObject({
+        updated: false,
+        verified_roles: ["client", "device"],
+      })
+      await expect(switchRelay({ relayUrl: alias, restart: false })).resolves.toMatchObject({
+        updated: true,
+        relay_url: alias,
+        verified_roles: ["client", "device"],
+      })
+      expect(worker.readyState).toBe(WebSocket.OPEN)
+      expect((await Effect.runPromise(owner.devices()))[0]?.status).toBe("online")
+
+      const probe = (token?: string) =>
+        fetch(`${relayUrl}/api/device/credential`, {
+          headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+        })
+      expect((await probe(ownerToken)).status).toBe(200)
+      expect((await probe()).status).toBe(401)
+      expect((await probe(clientCredential.token)).status).toBe(401)
+      await writeStoredConfiguration(
+        StoredConfiguration.make({
+          ...configuration,
+          relayUrl: alias,
+          deviceToken: clientCredential.token,
+        }),
+      )
+      await expect(switchRelay({ relayUrl, restart: false })).rejects.toThrow()
+      await expect(readStoredConfiguration()).resolves.toMatchObject({ relayUrl: alias })
+      expect(worker.readyState).toBe(WebSocket.OPEN)
+
+      const closed = once(worker, "close")
+      await Effect.runPromise(owner.revokeAuthSession(deviceCredential.session.id))
+      await closed
+      expect((await probe(deviceCredential.token)).status).toBe(401)
+      await writeStoredConfiguration(
+        StoredConfiguration.make({ ...configuration, relayUrl: alias }),
+      )
+      await expect(switchRelay({ relayUrl, restart: false })).rejects.toThrow()
+      await expect(readStoredConfiguration()).resolves.toMatchObject({ relayUrl: alias })
+    } finally {
+      worker?.terminate()
+      if (relay.exitCode === null) relay.kill("SIGKILL")
+      await exited
+      for (const name of names) restoreEnvironment(name, previous.get(name))
     }
   })
 })
