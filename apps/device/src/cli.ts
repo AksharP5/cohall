@@ -24,6 +24,7 @@ import { access, mkdir, open, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import skill from "../../../skills/cohall/SKILL.md" with { type: "text" }
+import onboarding from "../../../docs/onboarding.md" with { type: "text" }
 import {
   StoredConfiguration,
   configurationPath,
@@ -50,12 +51,18 @@ import {
 import { allDeviceHealth, deviceVersions } from "./device-overview.ts"
 import { discoverGrokBots } from "./grok-bot.ts"
 import { writeBotReply } from "./bot-replies.ts"
-import { guidedSetupInput, joinRelay, terminalPrompter, type Prompter } from "./setup.ts"
+import {
+  guidedSetupInput,
+  joinRelay,
+  setupRelayUrl,
+  terminalPrompter,
+  type Prompter,
+} from "./setup.ts"
 import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 import { installDeviceService } from "./service.ts"
 import { deviceVersionWarning, normalizeUpgradeTarget, upgrade } from "./upgrade.ts"
 import { readInputAttachments } from "./task-attachments.ts"
-import { checkMcp } from "./mcp-diagnostics.ts"
+import { checkMcp, readMcpHostDiagnostics } from "./mcp-diagnostics.ts"
 import { readBoundedFile } from "./bounded-file.ts"
 
 interface Arguments {
@@ -115,6 +122,7 @@ const aliases = new Map([
 const help = `Cohall connects agents running on your own devices.
 
 Usage:
+  cohall onboard
   cohall init [--relay url] [--workspace path] [--providers list] [--service]
   cohall join --relay <url> --workspace <path> [--providers list] [--token-file <path>]
   cohall configure [--relay url] [--name name] [--workspace path]
@@ -375,6 +383,13 @@ export const printSkill = (): void => console.log(skill.trimEnd())
 export const runCli = async (command: string, raw: ReadonlyArray<string>): Promise<void> => {
   const arguments_ = parseArguments(raw)
 
+  if (command === "onboard") {
+    allowOptions(arguments_, [])
+    noPositionals(arguments_, command)
+    console.log(onboarding.trimEnd())
+    return
+  }
+
   if (command === "reply") {
     allowOptions(arguments_, ["message", "message-file", "error", "question", "run-id"])
     const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
@@ -419,6 +434,9 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       "workspace",
     ])
     noPositionals(arguments_, command)
+    if (arguments_.options.has("client-only") && arguments_.options.has("service")) {
+      throw new Error("A client-only setup cannot install a device service")
+    }
     const token =
       option(arguments_, "token-file") === undefined ? undefined : await pairingToken(arguments_)
     const interactive = process.stdin.isTTY === true && process.stderr.isTTY === true
@@ -487,8 +505,8 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         ...(service === undefined ? {} : { service }),
         next:
           service === undefined && !arguments_.options.has("client-only")
-            ? "Run `cohall service install` for background availability, or `cohall device` now."
-            : "Run `cohall doctor` to verify this device.",
+            ? "Run `cohall service install` for background availability, or `cohall device` now. Then run `cohall doctor` and the delegation check in `cohall onboard`."
+            : "Run `cohall doctor`, then the delegation check in `cohall onboard`.",
       })
     } finally {
       prompter.close()
@@ -613,9 +631,9 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       "workspace",
     ])
     noPositionals(arguments_, command)
-    const token = await pairingToken(arguments_)
-    const relayUrl = normalizeRelayUrl(option(arguments_, "relay") ?? "http://127.0.0.1:8787")
     const existing = await readStoredConfiguration()
+    const relayUrl = setupRelayUrl(option(arguments_, "relay") ?? existing?.relayUrl)
+    const token = await pairingToken(arguments_)
     const suppliedWorkspaces = values(arguments_, "workspace")
     const workspaces = suppliedWorkspaces.length === 0 ? existing?.workspaces : suppliedWorkspaces
     const deviceName = option(arguments_, "name")
@@ -799,6 +817,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         ? undefined
         : await discoverGrokBots(grokGateway).catch(() => undefined)
     const clientToken = process.env.COHALL_CLIENT_TOKEN ?? storedCredentials.clientToken
+    const mcpHost = await readMcpHostDiagnostics()
     const mcp =
       clientToken === undefined
         ? { status: "not configured" as const }
@@ -842,6 +861,10 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       ...(response?.ok === true ? [] : ["Relay is unreachable"]),
       ...(versionWarning === undefined ? [] : [versionWarning]),
       ...(mcp.status === "error" ? [`MCP check failed: ${mcp.error}`] : []),
+      ...mcpHost.warnings,
+      ...(mcpHost.status === "unavailable"
+        ? [`MCP host diagnostics unavailable: ${mcpHost.error}`]
+        : []),
       ...(clientAuthentication.status === "error" ? [clientAuthentication.error] : []),
       ...(hasDeviceCredential &&
       response?.ok === true &&
@@ -877,7 +900,8 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         storedCredentials.clientToken !== undefined,
       client_authentication:
         clientAuthentication.status === "ok" ? { status: "ok" } : clientAuthentication,
-      mcp,
+      mcp: { ...mcp, scope: "server self-test" },
+      mcp_host: mcpHost,
       device_credential: hasDeviceCredential,
       workspaces: configuration?.workspaces ?? [],
       providers: providerExecutables,
@@ -940,6 +964,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         pairing_token: credential.token,
         expires_at: credential.expiresAt,
         roles,
+        join_instructions: `Join my existing Cohall relay at ${configuration.relayUrl} as ${arguments_.options.has("client-only") ? "a client that submits work only" : "a worker and client"}. Follow https://github.com/AksharP5/cohall/blob/main/docs/onboarding.md, "Join an existing relay". I will provide the one-time pairing token separately; read it through a hidden terminal prompt, stdin, or a token file. ${arguments_.options.has("client-only") ? "Use cohall init --client-only; no device service is needed." : "Choose existing workspace roots and installed providers before running cohall init."} Finish the verification steps and report what passed.`,
       })
       return
     }

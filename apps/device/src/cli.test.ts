@@ -5,10 +5,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, expect, it, vi } from "vitest"
+import * as z from "zod/v4"
 import * as BotReplies from "./bot-replies.ts"
 import { runCli } from "./cli.ts"
 
 vi.mock("../../../skills/cohall/SKILL.md", () => ({ default: "test skill" }))
+vi.mock("../../../docs/onboarding.md", () => ({ default: "test onboarding guide" }))
 
 const directories: Array<string> = []
 const taskId = "11111111-1111-4111-8111-111111111111"
@@ -42,10 +44,76 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
+it("requires a relay for a fresh join before exchanging its token", async () => {
+  const directory = await temporary()
+  const path = join(directory, "token.txt")
+  await writeFile(path, "pairing-secret")
+  const open = vi.spyOn(Filesystem, "open")
+  syncBuiltinESMExports()
+  const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("Pairing started"))
+  vi.stubGlobal("fetch", fetch)
+  await expect(runCli("join", ["--client-only", "--token-file", path])).rejects.toThrow(
+    "Relay URL is required",
+  )
+  expect(fetch).not.toHaveBeenCalled()
+  expect(open).not.toHaveBeenCalled()
+})
+
+it("rejects a client-only device service before changing configuration", async () => {
+  const directory = await temporary()
+  const path = join(directory, "token.txt")
+  await writeFile(path, "pairing-secret")
+  const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("Pairing started"))
+  vi.stubGlobal("fetch", fetch)
+  await expect(
+    runCli("init", [
+      "--relay",
+      "https://relay.example",
+      "--client-only",
+      "--service",
+      "--token-file",
+      path,
+    ]),
+  ).rejects.toThrow("A client-only setup cannot install a device service")
+  expect(fetch).not.toHaveBeenCalled()
+  await expect(Filesystem.access(join(directory, "config.json"))).rejects.toThrow()
+})
+
+it.each([false, true])(
+  "returns a secret-free pairing brief for client-only=%s",
+  async (clientOnly) => {
+    await temporary()
+    vi.stubEnv("COHALL_TOKEN", "test-owner-token".padEnd(64, "0"))
+    const token = "private-one-time-pairing-token"
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ token, expiresAt: "2026-10-04T19:00:00.000Z" }), {
+        headers: { "content-type": "application/json" },
+      }),
+    )
+    vi.stubGlobal("fetch", fetch)
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined)
+    await runCli("pair", clientOnly ? ["--client-only"] : [])
+    const report = z
+      .object({
+        pairing_token: z.string(),
+        roles: z.array(z.enum(["client", "device"])),
+        join_instructions: z.string(),
+      })
+      .parse(JSON.parse(String(output.mock.calls[0]?.[0])))
+    expect(report.pairing_token).toBe(token)
+    expect(report.roles).toEqual(clientOnly ? ["client"] : ["client", "device"])
+    expect(report.join_instructions).toContain("http://127.0.0.1:1")
+    expect(report.join_instructions).toContain(
+      clientOnly ? "init --client-only" : "a worker and client",
+    )
+    expect(report.join_instructions).not.toContain(token)
+  },
+)
+
 it.each([
   {
     command: "join",
-    arguments: ["--client-only", "--token-file"],
+    arguments: ["--relay", "https://relay.example", "--client-only", "--token-file"],
     grown: `${" ".repeat(1024)}fake-token`,
     error: "Pairing token file exceeds 512 bytes",
   },
@@ -133,7 +201,13 @@ it.skipIf(process.platform === "win32")("bounds a finite token stream to 513 byt
   vi.stubGlobal("fetch", fetch)
   await promisify(execFile)("mkfifo", [path])
   const handles = trackInputHandles(path)
-  const input = runCli("join", ["--client-only", "--token-file", path])
+  const input = runCli("join", [
+    "--relay",
+    "https://relay.example",
+    "--client-only",
+    "--token-file",
+    path,
+  ])
   const producer = open(path, "w").then(async (writer) => {
     try {
       await writer.writeFile(`${" ".repeat(1024)}fake-token`)

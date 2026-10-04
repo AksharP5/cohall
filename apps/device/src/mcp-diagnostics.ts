@@ -18,6 +18,7 @@ export const checkMcp = async (
     env: {
       ...getDefaultEnvironment(),
       COHALL_CONFIG: configurationPath(),
+      COHALL_MCP_SELF_TEST: "1",
       COHALL_RELAY_URL: relayUrl,
       COHALL_CLIENT_TOKEN: token,
     },
@@ -35,3 +36,9 @@ export const checkMcp = async (
     await client.close()
   }
 }
+
+export {
+  readMcpHostDiagnostics,
+  type McpHostDiagnostics,
+  type McpHostSession,
+} from "./mcp-host-diagnostics.ts"

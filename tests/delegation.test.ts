@@ -523,6 +523,7 @@ printf '%s\n' '{"type":"text","sessionID":"44444444-4444-4444-8444-444444444444"
       cwd: root,
       env: {
         PATH: process.env.PATH ?? "",
+        COHALL_CONFIG: join(directory, "mcp-client.json"),
         COHALL_RELAY_URL: relayUrl,
         COHALL_CLIENT_TOKEN: clientCredential.token,
       },

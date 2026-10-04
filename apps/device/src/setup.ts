@@ -133,14 +133,22 @@ export interface GuidedSetupInput {
   readonly reusedConfiguration: boolean
 }
 
+export const setupRelayUrl = (input: string | undefined): string => {
+  if (input === undefined || input.trim().length === 0) {
+    throw new Error(
+      "Relay URL is required. Run `cohall onboard` to choose a relay host or join an existing relay.",
+    )
+  }
+  return normalizeRelayUrl(input)
+}
+
 export const guidedSetupInput = async (
   options: GuidedSetupOptions,
   prompter: Prompter,
 ): Promise<GuidedSetupInput> => {
   const existing = await readStoredConfiguration()
-  const relayUrl = normalizeRelayUrl(
-    options.relayUrl ??
-      (await prompter.answer("Relay URL", existing?.relayUrl ?? "http://127.0.0.1:8787")),
+  const relayUrl = setupRelayUrl(
+    options.relayUrl ?? (await prompter.answer("Relay URL", existing?.relayUrl ?? "")),
   )
   const credentials = credentialsForRelay(existing, relayUrl)
   const hasRequiredCredentials =
