@@ -175,8 +175,37 @@ This installs the embedded skill into:
 - `~/.config/opencode/skills/cohall` for OpenCode.
 
 With a client credential, `doctor` starts Cohall's MCP server and verifies that
-it lists tools. This checks the local server; the agent host still needs a
-working MCP configuration to load it.
+it lists tools. The report labels `mcp` as a **server self-test**. This probe
+never counts as an agent host connection and does not call a tool.
+
+### Verify the MCP host
+
+After adding Cohall to your harness, restart or reconnect its MCP server and
+ask the agent to call `list_devices`. Then run `cohall doctor` with the same
+configuration used by that MCP server and inspect `mcp_host`:
+
+- `not_observed`: no retained host initialization was seen. If you expected
+  MCP, check the host's command, arguments, enabled state, and `COHALL_CONFIG`,
+  then restart its Cohall connection. CLI and skill users do not need MCP.
+- `observed`: at least one recorded host completed initialization. Inspect
+  the latest session's stages rather than treating this as current connection
+  status. A launch without initialization points to a startup or handshake
+  problem; initialization without `tools_list` points to tool discovery.
+- `unavailable`: local diagnostic storage could not be read. Follow the report's
+  access or reset guidance before retrying.
+
+Each session records launch time and server version, initialization time and
+the client-reported name/version, the last successfully sent tool list and its
+count, received tool-call count/time, and close time when observed. A received
+tool call can fail or be cancelled; its count does not establish successful
+execution. Historical records cannot prove that a host is connected now.
+
+Evidence is stored locally in `<config_path>.mcp-hosts`, isolated for each
+configuration, with at most eight recent records retained for seven days.
+Records contain no tool names, arguments, results, relay URLs, tokens, or
+conversation content. Metadata write failures leave MCP operational and are
+reported on its stderr. Older Cohall servers create no records; reconnect an
+updated server before expecting evidence.
 
 A running MCP server checks its launched executable at most once per minute
 when returning tool results. If that file changes to a different Cohall version,

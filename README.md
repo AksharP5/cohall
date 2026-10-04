@@ -59,11 +59,13 @@ forward the raw transcript or unrelated private material.
 Paste this into an agent on the device you want to configure:
 
 ```text
-Set up Cohall on this device using https://github.com/AksharP5/cohall. Read the current README and installation/service docs first. Detect this OS, package manager, installed provider CLIs, and suitable workspace roots. If no Cohall relay is configured, ask whether this device should host one or join an existing relay; do not guess a relay URL or token. Keep the relay private through Tailscale or HTTPS, never expose plain HTTP publicly, and keep every token out of command arguments, shell history, and logs. Install Cohall, pair or join this device, install its skill for the detected agent harnesses, configure autostart if this device should remain available, run cohall doctor, and report exactly what is working. Ask before making system-wide changes.
+Set up Cohall on this device. Follow https://github.com/AksharP5/cohall/blob/main/docs/onboarding.md. First determine whether this machine should host a relay or join an existing one. Complete the matching path and its verification steps, including a harmless delegation. Use my existing authorization for installation and autostart; ask before additional system-wide changes. Keep tokens private and report exactly what is working.
 ```
 
 The agent will ask for the relay address and one-time pairing token only when it
 needs them.
+
+You can also read the same guide with `npx -y @akshar5/cohall onboard`.
 
 ## Quick start
 

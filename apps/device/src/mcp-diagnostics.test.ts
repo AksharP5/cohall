@@ -1,11 +1,12 @@
 import { checkMcp } from "./mcp-diagnostics.ts"
 import { execa } from "execa"
 import { randomUUID } from "node:crypto"
+import { mkdtemp, rm } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import * as z from "zod/v4"
 
 const entrypoint = fileURLToPath(new URL("../../../bin/cohall.js", import.meta.url))
@@ -122,7 +123,7 @@ describe("MCP doctor check", () => {
     }
   })
 
-  it("starts the packaged server and lists its tools", async () => {
+  it("lists packaged tools through a self-test without claiming a host connection", async () => {
     const { stdout } = await execa(process.execPath, [entrypoint, "doctor"], {
       env: {
         ...process.env,
@@ -132,19 +133,31 @@ describe("MCP doctor check", () => {
       },
     })
     const report = z
-      .object({ mcp: z.object({ status: z.literal("ok"), tool_count: z.number().positive() }) })
+      .object({
+        mcp: z.object({
+          status: z.literal("ok"),
+          scope: z.literal("server self-test"),
+          tool_count: z.number().positive(),
+        }),
+        mcp_host: z.object({
+          status: z.literal("not_observed"),
+          sessions: z.array(z.unknown()).length(0),
+        }),
+      })
       .parse(JSON.parse(stdout))
 
     expect(report.mcp.tool_count).toBeGreaterThan(0)
   })
 
   it("reports a server that cannot start", async () => {
-    const result = await checkMcp(
-      join(tmpdir(), `missing-cohall-${randomUUID()}.js`),
-      relayUrl,
-      "test-token",
-    )
-
-    expect(result.status).toBe("error")
+    const directory = await mkdtemp(join(tmpdir(), "cohall-doctor-failure-"))
+    vi.stubEnv("COHALL_CONFIG", join(directory, "config.json"))
+    try {
+      const result = await checkMcp(join(directory, "missing.js"), relayUrl, "test-token")
+      expect(result.status).toBe("error")
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 })

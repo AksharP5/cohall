@@ -16,7 +16,6 @@ import {
   version,
 } from "@cohall/protocol"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { Effect, Schema } from "effect"
 import * as z from "zod/v4"
 import { writeFile } from "node:fs/promises"
@@ -32,6 +31,7 @@ import {
 } from "./delegation.ts"
 import { readInputAttachments } from "./task-attachments.ts"
 import { createMcpBuildNotice } from "./mcp-build-notice.ts"
+import { createMcpHostDiagnostics } from "./mcp-host-diagnostics.ts"
 
 export const runMcp = async (configuration: ClientConfiguration): Promise<void> => {
   const buildNotice = await createMcpBuildNotice(process.argv[1], version)
@@ -372,5 +372,5 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
       output(await Effect.runPromise(threadContext(client, ThreadId.make(thread_id)))),
   )
 
-  await server.connect(new StdioServerTransport())
+  await server.connect(createMcpHostDiagnostics(server.server))
 }

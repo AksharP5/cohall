@@ -1,9 +1,9 @@
 import { DeviceId } from "@cohall/protocol"
 import { createServer, type Server } from "node:http"
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   StoredConfiguration,
   makeStoredConfiguration,
@@ -17,7 +17,7 @@ const servers: Array<Server> = []
 const previousConfig = process.env.COHALL_CONFIG
 
 const temporary = async (): Promise<string> => {
-  const directory = await mkdtemp(join(tmpdir(), "cohall-setup-"))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "cohall-setup-")))
   directories.push(directory)
   process.env.COHALL_CONFIG = join(directory, "config.json")
   return directory
@@ -47,6 +47,18 @@ const prompter = (
 })
 
 describe("guided setup", () => {
+  it("requires a relay address before collecting first-run credentials", async () => {
+    const workspace = await temporary()
+    const secret = vi.fn<Prompter["secret"]>().mockResolvedValue("pairing-secret")
+    await expect(
+      guidedSetupInput(
+        { clientOnly: false, workspaces: [], cwd: workspace },
+        { ...prompter({}), secret },
+      ),
+    ).rejects.toThrow("Relay URL is required")
+    expect(secret).not.toHaveBeenCalled()
+  })
+
   it.each(["defaults", "prompt", "explicit"] as const)(
     "retains existing workspace roots unless replaced through %s",
     async (mode) => {

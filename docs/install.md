@@ -3,6 +3,10 @@
 Cohall requires Node.js 24 or newer. It is a standard public npm package with no
 bundled agent harness.
 
+For agent-led setup, follow [onboarding](onboarding.md) or run
+`npx -y @akshar5/cohall onboard`. It separates hosting a relay from joining one
+and ends with a real delegation check.
+
 ## Package runners
 
 Use one command. The documentation uses `npx` in later examples.
@@ -87,12 +91,18 @@ printf '%s' "$pairing_token" | npx -y @akshar5/cohall init \
 unset pairing_token
 ```
 
+Pairing also returns `join_instructions`: a copyable agent setup brief for the
+selected role and relay. It contains no pairing token; transfer that separately.
+
 When run in a terminal, omitted relay, name, workspace, provider, and token
-values are prompted with useful defaults. Re-running `cohall init` repairs the
+values are prompted. A fresh setup requires a confirmed relay address;
+`init` and `join` reuse a saved address but never assume a local relay for a new
+installation. Re-running `cohall init` repairs the
 skill installation and reuses credentials when the selected relay has not
 changed. Keeping the default workspace retains all configured roots;
 `init --client-only` also retains the worker's provider selection unless
 `--providers` overrides it. `cohall join` remains the non-guided configuration primitive.
+`--client-only` and `--service` cannot be combined.
 
 Workspace roots must be existing directories. Cohall resolves them to canonical paths and
 rejects delegated work outside them.
@@ -164,8 +174,10 @@ Non-loopback HTTP is refused unless `--allow-http` explicitly confirms that an
 independent private network such as Tailscale encrypts the connection.
 `cohall doctor` checks the effective configuration, relay connection, provider
 executables, authentication readiness, and versions. With a client credential,
-it also starts the local MCP server, completes a protocol handshake, and checks
-that tools are listed. This check does not call a tool or require the relay.
+it also runs a local MCP server self-test and separately reports observed agent
+host connections. The self-test lists tools without calling one or requiring
+the relay. To verify your harness, ask it to call `list_devices` and inspect
+`mcp_host` using the same config path; see [MCP host verification](integrations.md#verify-the-mcp-host).
 
 Configuration locations:
 
