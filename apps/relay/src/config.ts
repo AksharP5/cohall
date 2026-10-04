@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import { access, chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir, platform } from "node:os"
-import { join, resolve } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 
 export const RelayConfiguration = Schema.Struct({
   host: Schema.NonEmptyString,
@@ -14,14 +14,18 @@ export const RelayConfiguration = Schema.Struct({
 })
 export interface RelayConfiguration extends Schema.Schema.Type<typeof RelayConfiguration> {}
 
-const defaultDataDirectory = (): string => {
+export const defaultDataDirectory = (): string => {
   if (platform() === "win32") {
     return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Cohall")
   }
   if (platform() === "darwin") {
     return join(homedir(), "Library", "Application Support", "Cohall", "relay")
   }
-  return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "cohall")
+  const dataHome = process.env.XDG_DATA_HOME
+  return join(
+    dataHome !== undefined && isAbsolute(dataHome) ? dataHome : join(homedir(), ".local", "share"),
+    "cohall",
+  )
 }
 
 const generatedToken = (): string =>

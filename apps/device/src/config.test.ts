@@ -1,10 +1,12 @@
 import {
   DeviceConfiguration,
   StoredConfiguration,
+  configurationPath,
   credentialsForRelay,
   loadClientConfiguration,
   loadDeviceConfiguration,
   loadOwnerConfiguration,
+  relayDataDirectory,
   writeStoredConfiguration,
 } from "./config.ts"
 import { allowedWorkspace, openAllowedWorkspace, selectProviders } from "./daemon.ts"
@@ -12,10 +14,10 @@ import { DeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
 import { execFile } from "node:child_process"
 import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
-import { platform, tmpdir } from "node:os"
+import { homedir, platform, tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { parseProviders, parseWorkspaces } from "./config.ts"
 
 const directories: Array<string> = []
@@ -27,9 +29,41 @@ const temporary = async (): Promise<string> => {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   )
+})
+
+describe.skipIf(platform() === "win32" || platform() === "darwin")("XDG storage paths", () => {
+  it.each([undefined, "", "relative/config"])(
+    "uses the home defaults when XDG directories are %j",
+    (value) => {
+      vi.stubEnv("COHALL_CONFIG", undefined)
+      vi.stubEnv("COHALL_DATA_DIR", undefined)
+      vi.stubEnv("XDG_CONFIG_HOME", value)
+      vi.stubEnv("XDG_DATA_HOME", value)
+
+      expect(configurationPath()).toBe(join(homedir(), ".config", "cohall", "config.json"))
+      expect(relayDataDirectory()).toBe(join(homedir(), ".local", "share", "cohall"))
+    },
+  )
+
+  it("honors absolute XDG directories and explicit Cohall paths", async () => {
+    const directory = await temporary()
+    vi.stubEnv("COHALL_CONFIG", undefined)
+    vi.stubEnv("COHALL_DATA_DIR", undefined)
+    vi.stubEnv("XDG_CONFIG_HOME", join(directory, "config"))
+    vi.stubEnv("XDG_DATA_HOME", join(directory, "data"))
+
+    expect(configurationPath()).toBe(join(directory, "config", "cohall", "config.json"))
+    expect(relayDataDirectory()).toBe(join(directory, "data", "cohall"))
+
+    vi.stubEnv("COHALL_CONFIG", join(directory, "chosen.json"))
+    vi.stubEnv("COHALL_DATA_DIR", join(directory, "chosen-data"))
+    expect(configurationPath()).toBe(join(directory, "chosen.json"))
+    expect(relayDataDirectory()).toBe(join(directory, "chosen-data"))
+  })
 })
 
 describe("device workspace configuration", () => {

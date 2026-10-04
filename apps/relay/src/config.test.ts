@@ -1,9 +1,9 @@
 import { Effect } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, platform, tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, expect, it } from "vitest"
-import { loadEnvironmentConfiguration } from "./config.ts"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { defaultDataDirectory, loadEnvironmentConfiguration } from "./config.ts"
 
 const directories: Array<string> = []
 const previous = {
@@ -24,6 +24,7 @@ const restore = (name: string, value: string | undefined): void => {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   restore("COHALL_TOKEN", previous.token)
   restore("COHALL_DATA_DIR", previous.dataDirectory)
   restore("COHALL_HISTORY_TASK_LIMIT", previous.historyTaskLimit)
@@ -31,6 +32,22 @@ afterEach(async () => {
   restore("COHALL_RELAY_PORT", previous.port)
   restore("COHALL_RELAY_ALLOW_REMOTE", previous.allowRemote)
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+})
+
+describe.skipIf(platform() === "win32" || platform() === "darwin")("XDG relay data path", () => {
+  it.each([undefined, "", "relative/data"])(
+    "uses the home default when XDG_DATA_HOME is %j",
+    (value) => {
+      vi.stubEnv("XDG_DATA_HOME", value)
+      expect(defaultDataDirectory()).toBe(join(homedir(), ".local", "share", "cohall"))
+    },
+  )
+
+  it("honors an absolute XDG_DATA_HOME", () => {
+    const directory = join(tmpdir(), "cohall-xdg-data")
+    vi.stubEnv("XDG_DATA_HOME", directory)
+    expect(defaultDataDirectory()).toBe(join(directory, "cohall"))
+  })
 })
 
 const configure = async (): Promise<void> => {
