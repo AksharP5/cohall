@@ -218,6 +218,14 @@ the new version, and restarts only active Cohall services. If a service points
 to another global installation, Cohall stops and reports the correct executable
 instead of restarting the wrong job.
 
+Upgrades and device service installation require a verified global installation.
+Project dependencies and package-runner caches are rejected before making changes.
+For npm, the global `cohall` command must still point to this installation.
+For Bun, Cohall checks the selected Bun executable's configured global directory,
+including custom `install.globalDir` or `BUN_INSTALL_GLOBAL_DIR` settings, and pins
+installation to that directory. Use the same Bun configuration when invoking
+Cohall; a different global directory is rejected.
+
 The default target, `latest`, is resolved through that package manager using its
 registry and network settings, then pinned before installation. Bun installations
 require Bun 1.2.15 or newer for this lookup; older Bun versions can still use an

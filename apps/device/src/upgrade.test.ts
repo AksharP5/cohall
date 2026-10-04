@@ -15,6 +15,7 @@ import {
   normalizeUpgradeTarget,
   packageInstallCommand,
   packageInstallation,
+  resolvePackageInstallation,
   pnpmServiceDirectories,
   serviceCandidates,
   trustedExecutable,
@@ -25,6 +26,7 @@ import {
 } from "./upgrade.ts"
 
 const temporaryDirectories: Array<string> = []
+const packageName = "@akshar5/cohall"
 
 it("runs pnpm discovery independently of project dispatch, including Windows cmd shims", async () => {
   const root = await mkdtemp(join(tmpdir(), "cohall-pnpm-dispatch-"))
@@ -57,6 +59,24 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true })))
 })
 
+const npmGlobalCommand = async (
+  entrypoint: string,
+  platform: NodeJS.Platform = process.platform,
+) => {
+  const modules = dirname(dirname(dirname(dirname(entrypoint))))
+  const prefix = platform === "win32" ? dirname(modules) : dirname(dirname(modules))
+  if (platform === "win32") {
+    await writeFile(
+      join(prefix, "cohall.cmd"),
+      '@ECHO off\r\n"%_prog%" "%dp0%\\node_modules\\@akshar5\\cohall\\bin\\cohall.js" %*\r\n',
+    )
+    return
+  }
+  const command = join(prefix, "bin", "cohall")
+  await mkdir(dirname(command), { recursive: true })
+  await symlink(entrypoint, command, "file")
+}
+
 const success = (): CommandResult => ({ exitCode: 0, stdout: "", stderr: "" })
 const resolveExecutable = (command: string): Promise<string> =>
   Promise.resolve(command === "systemctl" ? "/usr/bin/systemctl" : command)
@@ -73,6 +93,7 @@ it.skipIf(process.platform !== "win32")(
     const shim = join(root, "npm.cmd")
     await mkdir(dirname(entrypoint), { recursive: true })
     await writeFile(entrypoint, "")
+    await npmGlobalCommand(entrypoint, "win32")
     await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.2" }))
     await writeFile(shim, `@ECHO off\r\n"${process.execPath}" "%~dp0installer.cjs" %*\r\n`)
     await writeFile(
@@ -148,19 +169,26 @@ describe("upgrade target", () => {
 })
 
 describe("latest upgrades", () => {
-  const installation = async (version: string, manager: PackageManager = "npm") => {
+  const installation = async (
+    version: string,
+    manager: PackageManager = "npm",
+    platform: NodeJS.Platform = process.platform,
+  ) => {
     const root = await temporaryDirectory()
     const prefix =
       manager === "bun"
         ? join(root, ".bun", "install", "global")
         : manager === "pnpm"
           ? join(root, "pnpm", "global", "5")
-          : join(root, "lib")
+          : platform === "win32"
+            ? root
+            : join(root, "lib")
     const entrypoint = join(prefix, "node_modules", "@akshar5", "cohall", "bin", "cohall.js")
     const metadata = join(dirname(dirname(entrypoint)), "package.json")
     await mkdir(dirname(entrypoint), { recursive: true })
     await writeFile(entrypoint, "#!/usr/bin/env node\n")
     await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version }))
+    if (manager === "npm") await npmGlobalCommand(entrypoint, platform)
     return { root, entrypoint, metadata }
   }
 
@@ -174,7 +202,7 @@ describe("latest upgrades", () => {
     ["1.2.3-beta.1", "1.2.3-beta"],
     ["1.2.4-rc.1+build.1", "1.2.3+build.99"],
   ])("leaves %s installed when latest is older (%s)", async (currentVersion, latest) => {
-    const { root, entrypoint, metadata } = await installation(currentVersion)
+    const { root, entrypoint, metadata } = await installation(currentVersion, "npm", "linux")
     const invocations: Array<string> = []
     const runner: CommandRunner = {
       run: async (command, arguments_) => {
@@ -231,6 +259,11 @@ describe("latest upgrades", () => {
         run: async (command, arguments_) => {
           const invocation = [command, ...arguments_].join(" ")
           invocations.push(invocation)
+          if (command === "bun" && arguments_[1] === "ls")
+            return {
+              ...success(),
+              stdout: `${join(root, ".bun", "install", "global")} node_modules (1 installed)\n└── @akshar5/cohall@1.2.3`,
+            }
           if (command === "pnpm" && arguments_[0] === "root")
             return { ...success(), stdout: join(root, "pnpm", "global", "5", "node_modules") }
           if (arguments_[0] === "--version") {
@@ -326,6 +359,11 @@ describe("latest upgrades", () => {
       const runner: CommandRunner = {
         run: async (command, arguments_) => {
           invocations.push([command, ...arguments_].join(" "))
+          if (command === "bun" && arguments_[1] === "ls")
+            return {
+              ...success(),
+              stdout: `${join(root, ".bun", "install", "global")} node_modules (1 installed)`,
+            }
           if (command !== manager) return { exitCode: 3, stdout: "", stderr: "" }
           if (arguments_.includes("view") || arguments_[0] === "--version") {
             throw new Error("Exact versions must not look up latest or check the manager version")
@@ -359,6 +397,11 @@ describe("latest upgrades", () => {
       const runner: CommandRunner = {
         run: async (command, arguments_) => {
           invocations.push([command, ...arguments_].join(" "))
+          if (command === "bun" && arguments_[1] === "ls")
+            return {
+              ...success(),
+              stdout: `${join(root, ".bun", "install", "global")} node_modules (1 installed)`,
+            }
           return command === "bun" && arguments_[0] === "--version"
             ? { exitCode: 0, stdout: bunVersion, stderr: "" }
             : { exitCode: 3, stdout: "", stderr: "" }
@@ -377,6 +420,7 @@ describe("latest upgrades", () => {
         }),
       ).rejects.toThrow("Latest upgrades require Bun 1.2.15 or newer")
       expect(invocations.filter((invocation) => invocation.startsWith("bun "))).toEqual([
+        "bun pm ls --global",
         "bun --version",
       ])
     },
@@ -510,6 +554,214 @@ describe("latest upgrades", () => {
 })
 
 describe("package installation", () => {
+  const platforms = [
+    { platform: "linux", name: "Linux" },
+    { platform: "win32", name: "Windows" },
+  ] as const
+  it.each([
+    { platform: "linux" as const, name: "Linux", localRoot: "project" },
+    { platform: "linux" as const, name: "Linux", localRoot: "project/lib" },
+    { platform: "win32" as const, name: "Windows", localRoot: "project" },
+  ])(
+    "rejects local npm at $localRoot on $name before changing an installation or service",
+    async ({ platform, localRoot }) => {
+      const root = await temporaryDirectory()
+      const entrypoint = join(root, localRoot, "node_modules", packageName, "bin", "cohall.js")
+      await mkdir(dirname(entrypoint), { recursive: true })
+      await writeFile(entrypoint, "")
+      await writeFile(
+        join(dirname(dirname(entrypoint)), "package.json"),
+        JSON.stringify({ name: packageName, version: "1.2.3" }),
+      )
+      const commands: Array<ReadonlyArray<string>> = []
+      const runner: CommandRunner = {
+        run: async (command, args) => {
+          commands.push([command, ...args])
+          return { exitCode: 1, stdout: "", stderr: "not installed" }
+        },
+      }
+      const options = { entrypoint, platform, runner, resolveExecutable }
+      await expect(
+        upgrade({
+          ...options,
+          currentVersion: "1.2.3",
+          target: "1.2.4",
+          restart: true,
+          dryRun: false,
+          statePath: join(root, "receipt.json"),
+        }),
+      ).rejects.toThrow("verified global")
+      await expect(installDeviceService({ ...options, home: root })).rejects.toThrow(
+        "verified global",
+      )
+      expect(commands).toEqual([
+        ["bun", "pm", "ls", "--global"],
+        ["bun", "pm", "ls", "--global"],
+      ])
+    },
+  )
+
+  it.each(platforms)("preserves a verified custom npm prefix on $name", async ({ platform }) => {
+    const root = await temporaryDirectory()
+    const prefix = join(root, "custom global tools", "lib")
+    const entrypoint = join(
+      prefix,
+      ...(platform === "win32" ? [] : ["lib"]),
+      "node_modules",
+      packageName,
+      "bin",
+      "cohall.js",
+    )
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "")
+    const metadata = join(dirname(dirname(entrypoint)), "package.json")
+    await writeFile(metadata, JSON.stringify({ name: packageName, version: "1.2.3" }))
+    await npmGlobalCommand(entrypoint, platform)
+    const commands: Array<ReadonlyArray<string>> = []
+    await expect(
+      upgrade({
+        currentVersion: "1.2.3",
+        target: "1.2.4",
+        restart: false,
+        dryRun: false,
+        platform,
+        entrypoint,
+        statePath: join(root, "receipt.json"),
+        resolveExecutable,
+        runner: {
+          run: async (command, args) => {
+            commands.push([command, ...args])
+            if (command !== "npm") return { ...success(), exitCode: 1 }
+            await writeFile(metadata, JSON.stringify({ name: packageName, version: "1.2.4" }))
+            return success()
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ installed_version: "1.2.4", package_manager: "npm" })
+    expect(commands.filter(([command]) => command === "npm")).toEqual([
+      [
+        "npm",
+        "install",
+        "--global",
+        "--prefix",
+        (await realpath(prefix)).replaceAll("\\", "/"),
+        `${packageName}@1.2.4`,
+      ],
+    ])
+    expect(commands.some(([command]) => command === "bun")).toBe(false)
+  })
+
+  it.each(platforms)(
+    "rejects an npm global command pointing to another installation on $name",
+    async ({ platform }) => {
+      const root = await temporaryDirectory()
+      const entrypoint = join(
+        root,
+        ...(platform === "win32" ? [] : ["lib"]),
+        "node_modules",
+        packageName,
+        "bin",
+        "cohall.js",
+      )
+      await mkdir(dirname(entrypoint), { recursive: true })
+      await writeFile(entrypoint, "")
+      if (platform === "win32") {
+        await writeFile(join(root, "cohall.cmd"), '@node "%dp0%\\other\\cohall.js" %*\r\n')
+      } else {
+        const other = join(root, "other.js")
+        await writeFile(other, "")
+        await mkdir(join(root, "bin"))
+        await symlink(other, join(root, "bin", "cohall"), "file")
+      }
+      await expect(
+        resolvePackageInstallation(entrypoint, {
+          platform,
+          resolveExecutable: async () => {
+            throw new Error("Could not find manager on PATH")
+          },
+        }),
+      ).rejects.toThrow("verified global")
+    },
+  )
+
+  it.each([
+    { version: "1.2.15 and 1.3.13", count: "1" },
+    { version: "1.4.1", count: "1 installed" },
+  ])("identifies custom Bun $version globals and pins the install root", async ({ count }) => {
+    const root = await temporaryDirectory()
+    const global = join(root, "custom Bun packages")
+    const entrypoint = join(global, "node_modules", packageName, "bin", "cohall.js")
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "")
+    const metadata = join(dirname(dirname(entrypoint)), "package.json")
+    await writeFile(metadata, JSON.stringify({ name: packageName, version: "1.2.3" }))
+    const invocations: Array<{
+      command: string
+      args: ReadonlyArray<string>
+      environment?: Readonly<Record<string, string>>
+    }> = []
+    const runner: CommandRunner = {
+      run: async (command, args, _timeout, environment) => {
+        invocations.push({ command, args, ...(environment === undefined ? {} : { environment }) })
+        if (command === "bun" && args[1] === "ls")
+          return {
+            ...success(),
+            stdout: `${global} node_modules (${count})\n\u001b[0m└── @akshar5/cohall@1.2.3\u001b[0m\n`,
+          }
+        if (command === "bun" && args[0] === "add") {
+          expect(environment).toEqual({ BUN_INSTALL_GLOBAL_DIR: global })
+          await writeFile(metadata, JSON.stringify({ name: packageName, version: "1.2.4" }))
+          return success()
+        }
+        return { ...success(), exitCode: 1 }
+      },
+    }
+    await expect(
+      upgrade({
+        currentVersion: "1.2.3",
+        target: "1.2.4",
+        restart: false,
+        dryRun: false,
+        entrypoint,
+        statePath: join(root, "receipt.json"),
+        runner,
+        resolveExecutable,
+      }),
+    ).resolves.toMatchObject({ package_manager: "bun", installed_version: "1.2.4" })
+    expect(invocations.filter(({ args }) => args[0] === "add")).toEqual([
+      {
+        command: "bun",
+        args: ["add", "--global", `${packageName}@1.2.4`],
+        environment: { BUN_INSTALL_GLOBAL_DIR: global },
+      },
+    ])
+    expect(invocations.some(({ command }) => command === "npm")).toBe(false)
+  })
+
+  it("rejects a Bun installation when the selected manager reports a different global root", async () => {
+    const root = await temporaryDirectory()
+    const entrypoint = join(
+      root,
+      "selected",
+      ".bun",
+      "install",
+      "global",
+      "node_modules",
+      packageName,
+      "bin",
+      "cohall.js",
+    )
+    const other = join(root, "other")
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "")
+    const runner: CommandRunner = {
+      run: async () => ({ ...success(), stdout: `${other} node_modules (1 installed)` }),
+    }
+    await expect(
+      resolvePackageInstallation(entrypoint, { runner, resolveExecutable }),
+    ).rejects.toThrow("verified global")
+  })
+
   it.skipIf(process.platform === "win32")(
     "preserves a selected manager symlink while validating both path ancestries",
     async () => {
@@ -616,6 +868,8 @@ describe("package installation", () => {
   it("preserves a custom npm prefix", () => {
     const installation = packageInstallation(
       "/home/user/.local/lib/node_modules/@akshar5/cohall/bin/cohall.js",
+      undefined,
+      "linux",
     )
 
     expect(installation).toEqual({
@@ -674,6 +928,7 @@ describe("Windows service upgrades", () => {
         JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
       )
     }
+    if (manager === "npm") await npmGlobalCommand(entrypoint, "win32")
     const action = (path: string) => ({
       Execute: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       Arguments: `-NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(
@@ -844,6 +1099,7 @@ describe("managed service upgrades", () => {
     const packageRoot = dirname(dirname(entrypoint))
     await mkdir(dirname(entrypoint), { recursive: true })
     await writeFile(entrypoint, "#!/usr/bin/env node\n")
+    await npmGlobalCommand(entrypoint, "linux")
     await writeFile(
       join(packageRoot, "package.json"),
       JSON.stringify({ name: "@akshar5/cohall", version: "1.2.2" }),
@@ -915,6 +1171,7 @@ describe("managed service upgrades", () => {
     const packageRoot = dirname(dirname(entrypoint))
     await mkdir(dirname(entrypoint), { recursive: true })
     await writeFile(entrypoint, "#!/usr/bin/env node\n")
+    await npmGlobalCommand(entrypoint, "linux")
     await writeFile(
       join(packageRoot, "package.json"),
       JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
@@ -993,6 +1250,7 @@ describe("managed service upgrades", () => {
     for (const path of [entrypoint, serviceEntrypoint]) {
       await mkdir(dirname(path), { recursive: true })
       await writeFile(path, "#!/usr/bin/env node\n")
+      await npmGlobalCommand(path, "linux")
       await writeFile(
         join(dirname(dirname(path)), "package.json"),
         JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
@@ -1041,6 +1299,7 @@ describe("managed service upgrades", () => {
       const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
       await mkdir(dirname(entrypoint), { recursive: true })
       await writeFile(entrypoint, "")
+      await npmGlobalCommand(entrypoint, "linux")
       await writeFile(
         join(dirname(dirname(entrypoint)), "package.json"),
         JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
@@ -1122,6 +1381,7 @@ describe("managed service upgrades", () => {
       for (const path of [entrypoint, other]) {
         await mkdir(dirname(path), { recursive: true })
         await writeFile(path, "")
+        await npmGlobalCommand(path, "linux")
         await writeFile(
           join(dirname(dirname(path)), "package.json"),
           JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
@@ -1219,6 +1479,7 @@ describe("managed service upgrades", () => {
       const statePath = join(root, "receipt.json")
       await mkdir(dirname(entrypoint), { recursive: true })
       await writeFile(entrypoint, "")
+      await npmGlobalCommand(entrypoint, "linux")
       await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
       const active = new Set(["cohall-relay.service", "cohall-device.service"])
       const restarts: Array<string> = []
@@ -1317,6 +1578,7 @@ describe("managed service upgrades", () => {
     const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
     await mkdir(dirname(entrypoint), { recursive: true })
     await writeFile(entrypoint, "#!/usr/bin/env node\n")
+    await npmGlobalCommand(entrypoint, "linux")
     await writeFile(
       join(dirname(dirname(entrypoint)), "package.json"),
       JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }),
@@ -1338,6 +1600,7 @@ describe("managed service upgrades", () => {
       },
     }
     const options = {
+      platform: "linux" as const,
       currentVersion: "1.2.3",
       target: "1.2.4",
       restart: true,
@@ -1364,6 +1627,7 @@ describe("managed service upgrades", () => {
       const metadata = join(dirname(dirname(entrypoint)), "package.json")
       await mkdir(dirname(entrypoint), { recursive: true })
       await writeFile(entrypoint, "#!/usr/bin/env node\n")
+      await npmGlobalCommand(entrypoint, "linux")
       if (content !== undefined) await writeFile(metadata, content)
       const runner: CommandRunner = {
         run: async (command) => {
@@ -1374,6 +1638,7 @@ describe("managed service upgrades", () => {
       }
 
       const result = await upgrade({
+        platform: "linux" as const,
         currentVersion: "1.2.3",
         target: "1.2.3",
         restart: false,
@@ -1398,6 +1663,7 @@ describe("managed service upgrades", () => {
     const metadata = join(dirname(dirname(entrypoint)), "package.json")
     await mkdir(dirname(entrypoint), { recursive: true })
     await writeFile(entrypoint, "#!/usr/bin/env node\n")
+    await npmGlobalCommand(entrypoint, "linux")
     await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
     const statePath = join(root, "upgrade-restart.json")
     const receipt = JSON.stringify({
@@ -1418,6 +1684,7 @@ describe("managed service upgrades", () => {
       },
     }
     const options = {
+      platform: "linux" as const,
       currentVersion: "1.2.3",
       restart: true,
       dryRun: false,
