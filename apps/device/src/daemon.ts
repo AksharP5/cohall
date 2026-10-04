@@ -393,6 +393,15 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
     Providers.ProviderError
   > = Effect.scoped(
     Effect.gen(function* () {
+      if (
+        configuration.providers !== undefined &&
+        !configuration.providers.includes(task.provider)
+      ) {
+        return yield* new Providers.ProviderRunError({
+          provider: task.provider,
+          message: `${task.provider} is not enabled on this device. Update its configured providers and restart the worker before retrying.`,
+        })
+      }
       if (task.provider === "grok-bot") {
         return yield* Effect.tryPromise({
           try: (signal) =>
