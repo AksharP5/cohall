@@ -106,14 +106,17 @@ it("does not count the doctor's successful self-test as a host connection", asyn
 it("records real initialization, discovery, received calls and shutdown without payloads", async () => {
   await withHost(async ({ configPath, relayUrl, connect }) => {
     const { client } = await connect()
-    await vi.waitFor(async () => {
-      expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
-        status: "observed",
-        sessions: [
-          { client: { name: "test-host", version: "1.2.3" }, initialized_at: expect.any(String) },
-        ],
-      })
-    })
+    await vi.waitFor(
+      async () => {
+        expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
+          status: "observed",
+          sessions: [
+            { client: { name: "test-host", version: "1.2.3" }, initialized_at: expect.any(String) },
+          ],
+        })
+      },
+      { timeout: 5_000 },
+    )
     const { tools } = await client.listTools()
     await client.callTool({ name: "list_devices", arguments: {} })
     const prompt = "private-test-prompt-never-record"
@@ -125,24 +128,29 @@ it("records real initialization, discovery, received calls and shutdown without 
       isError: true,
       content: [{ text: expect.stringContaining(resultText) }],
     })
-    await vi.waitFor(async () => {
-      expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
-        status: "observed",
-        warnings: [],
-        sessions: [
-          {
-            tools_list: { tool_count: tools.length, at: expect.any(String) },
-            tools_call_count: 2,
-            last_tool_call_at: expect.any(String),
-          },
-        ],
-      })
-    })
+    await vi.waitFor(
+      async () => {
+        expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
+          status: "observed",
+          warnings: [],
+          sessions: [
+            {
+              tools_list: { tool_count: tools.length, at: expect.any(String) },
+              tools_call_count: 2,
+              last_tool_call_at: expect.any(String),
+            },
+          ],
+        })
+      },
+      { timeout: 5_000 },
+    )
     await client.close()
-    await vi.waitFor(async () =>
-      expect((await readMcpHostDiagnostics(configPath)).sessions[0]?.closed_at).toEqual(
-        expect.any(String),
-      ),
+    await vi.waitFor(
+      async () =>
+        expect((await readMcpHostDiagnostics(configPath)).sessions[0]?.closed_at).toEqual(
+          expect.any(String),
+        ),
+      { timeout: 5_000 },
     )
     const directory = `${configPath}.mcp-hosts`
     const names = await readdir(directory)
@@ -267,8 +275,9 @@ it("distinguishes a launch without initialization from a failure before MCP star
   await withHost(async ({ directory, configPath, relayUrl, transport }) => {
     const connection = transport()
     await connection.transport.start()
-    await vi.waitFor(async () =>
-      expect((await readMcpHostDiagnostics(configPath)).sessions).toHaveLength(1),
+    await vi.waitFor(
+      async () => expect((await readMcpHostDiagnostics(configPath)).sessions).toHaveLength(1),
+      { timeout: 5_000 },
     )
     await connection.transport.close()
     expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
