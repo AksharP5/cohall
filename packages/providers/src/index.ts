@@ -1,10 +1,10 @@
 import { Provider, type Provider as ProviderName } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { execa } from "execa"
-import { accessSync, constants } from "node:fs"
+import { accessSync, constants, statSync } from "node:fs"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
-import { delimiter, extname, isAbsolute, join } from "node:path"
+import { delimiter, extname, isAbsolute, join, resolve } from "node:path"
 import { execFile } from "node:child_process"
 import type { Readable } from "node:stream"
 
@@ -109,8 +109,9 @@ export const findExecutable = (command: string): string | undefined => {
       : executableDirectories()
   for (const directory of paths) {
     for (const candidate of executableCandidates(command)) {
-      const path = directory.length === 0 ? candidate : join(directory, candidate)
+      const path = resolve(directory.length === 0 ? candidate : join(directory, candidate))
       try {
+        if (!statSync(path).isFile()) continue
         accessSync(path, platform() === "win32" ? constants.F_OK : constants.X_OK)
         return path
       } catch {

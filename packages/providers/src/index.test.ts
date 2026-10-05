@@ -1,9 +1,9 @@
 import { Effect } from "effect"
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join, relative } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
-import { run, type CliProvider } from "./index.ts"
+import { findExecutable, run, type CliProvider } from "./index.ts"
 
 const directories: Array<string> = []
 const originalPath = process.env.PATH
@@ -58,6 +58,52 @@ const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknow
   process.env.PATH = directory
   return Effect.runPromise(run({ provider, threadId: "test", prompt: "test", cwd: directory }))
 }
+
+it("skips directories shadowing executable files, including Windows shims", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-provider-discovery-"))
+  directories.push(directory)
+  const shadow = join(directory, "shadow")
+  const bin = join(directory, "bin")
+  const name = process.platform === "win32" ? "codex.cmd" : "codex"
+  await mkdir(join(shadow, name), { recursive: true })
+  await mkdir(bin)
+  const executable = join(bin, name)
+  await writeFile(executable, "", { mode: 0o755 })
+  process.env.PATH = `${shadow}${delimiter}${bin}`
+  if (process.platform === "win32") vi.stubEnv("PATHEXT", ".CMD")
+
+  expect(findExecutable(join(shadow, name))).toBeUndefined()
+  expect(findExecutable("codex")).toBe(executable)
+})
+
+it("runs providers from relative PATH entries in another workspace, including Windows shims", async () => {
+  const directory = await mkdtemp(join(process.cwd(), ".cohall-provider-relative-"))
+  directories.push(directory)
+  const bin = join(directory, "bin")
+  const workspace = join(directory, "workspace")
+  await mkdir(bin)
+  await mkdir(workspace)
+  const program = `process.stdin.resume()
+process.stdin.on("end", () => console.log(JSON.stringify({
+  type: "item.completed",
+  item: { type: "agent_message", text: process.cwd() }
+})))`
+  if (process.platform === "win32") {
+    vi.stubEnv("PATHEXT", ".CMD")
+    await writeFile(join(bin, "provider.cjs"), program)
+    await writeFile(
+      join(bin, "codex.cmd"),
+      `@ECHO off\r\n"${process.execPath}" "%~dp0provider.cjs"\r\n`,
+    )
+  } else {
+    await writeFile(join(bin, "codex"), `#!${process.execPath}\n${program}\n`, { mode: 0o755 })
+  }
+  process.env.PATH = relative(process.cwd(), bin)
+
+  await expect(
+    Effect.runPromise(run({ provider: "codex", threadId: "test", prompt: "test", cwd: workspace })),
+  ).resolves.toEqual({ result: workspace })
+})
 
 const openCodeText = (messageId: string, partId: string, content: string) => ({
   type: "text",
