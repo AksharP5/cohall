@@ -9,6 +9,7 @@ import {
   credentialsForRelay,
   makeStoredConfiguration,
   normalizeRelayUrl,
+  parseProviders,
   readStoredConfiguration,
   writeStoredConfiguration,
 } from "./config.ts"
@@ -129,7 +130,7 @@ export interface GuidedSetupInput {
   readonly token?: string
   readonly deviceName?: string
   readonly workspaces: ReadonlyArray<string>
-  readonly providers: string
+  readonly providers: NonNullable<JoinOptions["providers"]>
   readonly reusedConfiguration: boolean
 }
 
@@ -164,11 +165,12 @@ export const guidedSetupInput = async (
     ? undefined
     : (options.deviceName ??
       (await prompter.answer("Device name", existing?.deviceName ?? hostname())))
-  const providers =
+  const providerInput =
     options.providers ??
     (options.clientOnly
       ? (existing?.providers?.join(",") ?? "auto")
       : await prompter.answer("Providers", existing?.providers?.join(",") ?? "auto"))
+  const providers = providerInput === "auto" ? "auto" : parseProviders(providerInput)
   const token =
     options.readToken === undefined
       ? hasRequiredCredentials

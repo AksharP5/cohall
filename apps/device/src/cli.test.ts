@@ -88,6 +88,44 @@ it.each(["init", "join"] as const)(
   },
 )
 
+it.each(["init", "join"] as const)(
+  "rejects invalid providers for %s before reading its token",
+  async (command) => {
+    const directory = await temporary()
+    const path = join(directory, "token.txt")
+    await writeFile(path, "pairing-secret")
+    const open = vi.spyOn(Filesystem, "open")
+    syncBuiltinESMExports()
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("Pairing started"))
+    vi.stubGlobal("fetch", fetch)
+    await expect(
+      runCli(command, [
+        "--client-only",
+        "--relay",
+        "https://relay.example",
+        "--providers",
+        "not-a-provider",
+        "--token-file",
+        path,
+      ]),
+    ).rejects.toThrow("not-a-provider")
+    expect(open).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  },
+)
+
+it("requires a device join workspace before reading its token", async () => {
+  const directory = await temporary()
+  const path = join(directory, "token.txt")
+  await writeFile(path, "pairing-secret")
+  const open = vi.spyOn(Filesystem, "open")
+  syncBuiltinESMExports()
+  await expect(
+    runCli("join", ["--relay", "https://relay.example", "--token-file", path]),
+  ).rejects.toThrow("At least one --workspace is required")
+  expect(open).not.toHaveBeenCalled()
+})
+
 it.each([true, false])(
   "repairs missing workspace settings only for client-only=%s",
   async (clientOnly) => {
