@@ -1,13 +1,16 @@
 import Filesystem, { mkdtemp, open, rm, writeFile, type FileHandle } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import { syncBuiltinESMExports } from "node:module"
+import OperatingSystem from "node:os"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, expect, it, vi } from "vitest"
 import * as z from "zod/v4"
+import { DeviceId } from "@cohall/protocol"
 import * as BotReplies from "./bot-replies.ts"
 import { runCli } from "./cli.ts"
+import { StoredConfiguration, readStoredConfiguration, writeStoredConfiguration } from "./config.ts"
 
 vi.mock("../../../skills/cohall/SKILL.md", () => ({ default: "test skill" }))
 vi.mock("../../../docs/onboarding.md", () => ({ default: "test onboarding guide" }))
@@ -18,10 +21,33 @@ const taskId = "11111111-1111-4111-8111-111111111111"
 const temporary = async (): Promise<string> => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-cli-input-"))
   directories.push(directory)
+  vi.stubEnv("HOME", directory)
+  vi.stubEnv("USERPROFILE", directory)
+  vi.stubEnv("XDG_CONFIG_HOME", join(directory, ".config"))
+  vi.spyOn(OperatingSystem, "homedir").mockReturnValue(directory)
+  syncBuiltinESMExports()
   vi.stubEnv("COHALL_CONFIG", join(directory, "config.json"))
   vi.stubEnv("COHALL_RELAY_URL", "http://127.0.0.1:1")
   vi.stubEnv("COHALL_CLIENT_TOKEN", "test-client-token")
   return directory
+}
+
+const storeWorkerConfiguration = async (directory: string): Promise<StoredConfiguration> => {
+  const configuration = StoredConfiguration.make({
+    version: 1,
+    relayUrl: "https://relay.example",
+    deviceId: DeviceId.make(taskId),
+    deviceName: "workstation",
+    workspaces: [join(directory, "removed-workspace")],
+    clientToken: "client-secret",
+    deviceToken: "device-secret",
+    providers: ["claude-code"],
+    model: "saved-model",
+    sandbox: "read-only",
+    grokGateway: join(directory, "gateway.json"),
+  })
+  await writeStoredConfiguration(configuration)
+  return configuration
 }
 
 const trackInputHandles = (path: string): Array<FileHandle> => {
@@ -44,19 +70,93 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-it("requires a relay for a fresh join before exchanging its token", async () => {
+it.each(["init", "join"] as const)(
+  "requires a relay for a fresh %s before reading its token",
+  async (command) => {
+    const directory = await temporary()
+    const path = join(directory, "token.txt")
+    await writeFile(path, "pairing-secret")
+    const open = vi.spyOn(Filesystem, "open")
+    syncBuiltinESMExports()
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("Pairing started"))
+    vi.stubGlobal("fetch", fetch)
+    await expect(runCli(command, ["--client-only", "--token-file", path])).rejects.toThrow(
+      "Relay URL is required",
+    )
+    expect(fetch).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  },
+)
+
+it.each([true, false])(
+  "repairs missing workspace settings only for client-only=%s",
+  async (clientOnly) => {
+    const directory = await temporary()
+    const configuration = await storeWorkerConfiguration(directory)
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockRejectedValue(new Error("Unexpected pairing"))
+    vi.stubGlobal("fetch", fetch)
+    vi.spyOn(console, "log").mockImplementation(() => undefined)
+    if (clientOnly) {
+      await runCli("init", ["--client-only"])
+      expect(await readStoredConfiguration()).toEqual(configuration)
+      expect(
+        await Filesystem.readFile(
+          join(directory, ".agents", "skills", "cohall", "SKILL.md"),
+          "utf8",
+        ),
+      ).toBe("test skill")
+    } else {
+      await expect(runCli("init", [])).rejects.toThrow(
+        "Workspace roots must be existing directories",
+      )
+    }
+    expect(fetch).not.toHaveBeenCalled()
+  },
+)
+
+it("exchanges an explicit init token file despite existing client credentials and unused roots", async () => {
   const directory = await temporary()
+  const configuration = await storeWorkerConfiguration(directory)
   const path = join(directory, "token.txt")
-  await writeFile(path, "pairing-secret")
-  const open = vi.spyOn(Filesystem, "open")
-  syncBuiltinESMExports()
-  const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("Pairing started"))
-  vi.stubGlobal("fetch", fetch)
-  await expect(runCli("join", ["--client-only", "--token-file", path])).rejects.toThrow(
-    "Relay URL is required",
+  await writeFile(path, "new-pairing-token")
+  const timestamp = "2026-10-04T12:00:00.000Z"
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        credentials: [
+          {
+            token: "new-client-secret",
+            session: {
+              id: taskId,
+              label: "New client",
+              role: "client",
+              createdAt: timestamp,
+              expiresAt: timestamp,
+              lastSeenAt: timestamp,
+            },
+          },
+        ],
+      }),
+    ),
   )
-  expect(fetch).not.toHaveBeenCalled()
-  expect(open).not.toHaveBeenCalled()
+  vi.stubGlobal("fetch", fetch)
+  vi.spyOn(console, "log").mockImplementation(() => undefined)
+  await runCli("init", ["--client-only", "--token-file", path])
+  expect(fetch).toHaveBeenCalledOnce()
+  expect(fetch).toHaveBeenCalledWith(
+    "https://relay.example/api/auth/pair",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ token: "new-pairing-token" }),
+    }),
+  )
+  expect(await readStoredConfiguration()).toMatchObject({
+    clientToken: "new-client-secret",
+    workspaces: configuration.workspaces,
+    providers: configuration.providers,
+  })
 })
 
 it("rejects a client-only device service before changing configuration", async () => {

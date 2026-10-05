@@ -95,16 +95,19 @@ Pairing also returns `join_instructions`: a copyable agent setup brief for the
 selected role and relay. It contains no pairing token; transfer that separately.
 
 When run in a terminal, omitted relay, name, workspace, provider, and token
-values are prompted. A fresh setup requires a confirmed relay address;
+values are prompted. A fresh setup requires a confirmed relay address before
+reading a pairing token;
 `init` and `join` reuse a saved address but never assume a local relay for a new
 installation. Re-running `cohall init` repairs the
 skill installation and reuses credentials when the selected relay has not
 changed. Keeping the default workspace retains all configured roots;
-`init --client-only` also retains the worker's provider selection unless
-`--providers` overrides it. `cohall join` remains the non-guided configuration primitive.
+`init --client-only` retains worker settings without revalidating unused workspace
+directories; `--providers` can override the provider selection. An explicit
+`--token-file` requests a new pairing exchange even when credentials are saved.
+`cohall join` remains the non-guided configuration primitive.
 `--client-only` and `--service` cannot be combined.
 
-Workspace roots must be existing directories. Cohall resolves them to canonical paths and
+Worker setup requires existing workspace directories. Cohall resolves them to canonical paths and
 rejects delegated work outside them.
 
 For a client that submits work but never runs a device worker:
