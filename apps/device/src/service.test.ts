@@ -6,6 +6,7 @@ import { promisify } from "node:util"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { deviceServicePlan, installDeviceService, restartDeviceService } from "./service.ts"
 import { serviceCandidates, type CommandRunner } from "./upgrade.ts"
+import { findExecutable } from "@cohall/providers"
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -191,6 +192,46 @@ Invoke-Expression $Inspection
       } finally {
         if (previousConfig === undefined) delete process.env.COHALL_CONFIG
         else process.env.COHALL_CONFIG = previousConfig
+        await rm(directory, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.skipIf(process.platform === "win32").each(["linux", "darwin"] as const)(
+    "finds providers from a custom npm prefix in an installed %s service",
+    async (platform) => {
+      const directory = await mkdtemp(join(tmpdir(), "cohall-service-npm-prefix-"))
+      const prefix = join(await realpath(directory), "custom npm tools")
+      const bin = join(prefix, "bin")
+      const entrypoint = join(prefix, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+      const provider = join(bin, "codex")
+      vi.stubEnv("XDG_CONFIG_HOME", join(directory, "config"))
+      vi.stubEnv("COHALL_CONFIG", join(directory, "config/cohall/config.json"))
+      vi.stubEnv("PATH", bin)
+      try {
+        await mkdir(dirname(entrypoint), { recursive: true })
+        await mkdir(bin)
+        await writeFile(entrypoint, "#!/usr/bin/env node\n")
+        await symlink(entrypoint, join(bin, "cohall"), "file")
+        await writeFile(provider, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+        expect(findExecutable("codex")).toBe(provider)
+
+        const result = await installDeviceService({
+          platform,
+          entrypoint,
+          home: join(directory, "home"),
+          uid: 501,
+          runner: { run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+        })
+        const content = await readFile(result.installed, "utf8")
+        const servicePath =
+          platform === "linux"
+            ? content.match(/^Environment="PATH=(.+)"$/m)?.[1]
+            : content.match(/<key>PATH<\/key>\s*<string>(.+)<\/string>/)?.[1]
+        expect(servicePath?.split(":")).toContain(bin)
+        vi.stubEnv("PATH", servicePath)
+        expect(findExecutable("codex")).toBe(provider)
+      } finally {
         await rm(directory, { recursive: true, force: true })
       }
     },

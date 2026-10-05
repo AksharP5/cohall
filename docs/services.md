@@ -49,10 +49,12 @@ The user unit is written under `$XDG_CONFIG_HOME/systemd/user` when that variabl
 is an absolute path, or `$HOME/.config/systemd/user` otherwise.
 
 The generated service uses the exact Cohall executable and puts the current
-Node.js directory first on `PATH`. Linux and macOS services include the configured
-pnpm home and its `bin` subdirectory. For pnpm installations, services also save
-the selected pnpm executable, global package directory, global bin directory, and
-store directory.
+Node.js directory first on `PATH`. For npm installations, Linux and macOS services
+also include the verified global prefix's `bin` directory so providers installed
+alongside Cohall remain available, including with a custom prefix. They also
+include the configured pnpm home and its `bin` subdirectory. For pnpm installations,
+services also save the selected pnpm executable, global package directory, global
+bin directory, and store directory.
 This preserves custom paths supplied through shell configuration and prevents a
 Corepack shim on the service PATH from redirecting upgrades. Global pnpm operations
 ignore the current project’s Corepack manager specification.
