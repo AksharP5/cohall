@@ -463,7 +463,6 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         },
         prompter,
       )
-      const providers = input.providers === "auto" ? "auto" : parseProviders(input.providers)
       const existing = await readStoredConfiguration()
       const result = input.reusedConfiguration
         ? {
@@ -471,7 +470,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
               relayUrl: input.relayUrl,
               ...(input.deviceName === undefined ? {} : { deviceName: input.deviceName }),
               ...(clientOnly ? {} : { workspaces: input.workspaces }),
-              providers,
+              providers: input.providers,
             }),
             roles: [
               ...(existing?.clientToken === undefined ? [] : (["client"] as const)),
@@ -484,7 +483,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
             clientOnly,
             ...(input.deviceName === undefined ? {} : { deviceName: input.deviceName }),
             ...(clientOnly ? {} : { workspaces: input.workspaces }),
-            providers,
+            providers: input.providers,
           })
       if (input.reusedConfiguration) {
         await writeStoredConfiguration(result.configuration)
@@ -631,7 +630,6 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     noPositionals(arguments_, command)
     const existing = await readStoredConfiguration()
     const relayUrl = setupRelayUrl(option(arguments_, "relay") ?? existing?.relayUrl)
-    const token = await pairingToken(arguments_)
     const suppliedWorkspaces = values(arguments_, "workspace")
     const workspaces = suppliedWorkspaces.length === 0 ? existing?.workspaces : suppliedWorkspaces
     const deviceName = option(arguments_, "name")
@@ -648,7 +646,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const clientOnly = arguments_.options.has("client-only")
     const { configuration, roles } = await joinRelay({
       relayUrl,
-      token,
+      token: await pairingToken(arguments_),
       clientOnly,
       ...(deviceName === undefined ? {} : { deviceName }),
       ...(workspaces === undefined ? {} : { workspaces }),

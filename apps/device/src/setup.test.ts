@@ -4,12 +4,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import {
-  StoredConfiguration,
-  makeStoredConfiguration,
-  parseProviders,
-  writeStoredConfiguration,
-} from "./config.ts"
+import { StoredConfiguration, makeStoredConfiguration, writeStoredConfiguration } from "./config.ts"
 import { guidedSetupInput, joinRelay, type Prompter } from "./setup.ts"
 
 const directories: Array<string> = []
@@ -56,6 +51,21 @@ describe("guided setup", () => {
         { ...prompter({}), secret },
       ),
     ).rejects.toThrow("Relay URL is required")
+    expect(secret).not.toHaveBeenCalled()
+  })
+
+  it("rejects a prompted provider selection before collecting credentials", async () => {
+    const workspace = await temporary()
+    const secret = vi.fn<Prompter["secret"]>().mockResolvedValue("pairing-secret")
+    await expect(
+      guidedSetupInput(
+        { clientOnly: false, workspaces: [], cwd: workspace },
+        {
+          ...prompter({ "Relay URL": "https://relay.example", Providers: "not-a-provider" }),
+          secret,
+        },
+      ),
+    ).rejects.toThrow("not-a-provider")
     expect(secret).not.toHaveBeenCalled()
   })
 
@@ -129,7 +139,7 @@ describe("guided setup", () => {
       const configuration = await makeStoredConfiguration({
         relayUrl: input.relayUrl,
         workspaces: input.workspaces,
-        providers: input.providers === "auto" ? "auto" : parseProviders(input.providers),
+        providers: input.providers,
       })
       expect(configuration.providers).toEqual(expected)
       expect(configuration).toMatchObject({
@@ -158,7 +168,7 @@ describe("guided setup", () => {
       token: "pairing-secret",
       deviceName: "workstation",
       workspaces: [workspace],
-      providers: "codex,opencode",
+      providers: ["codex", "opencode"],
       reusedConfiguration: false,
     })
   })
