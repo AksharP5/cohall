@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.2](https://github.com/AksharP5/cohall/compare/v0.11.1...v0.11.2) (2026-10-05)
+
+
+### Bug Fixes
+
+* **mcp:** keep recording after temporary storage errors ([#181](https://github.com/AksharP5/cohall/issues/181)) ([49d4229](https://github.com/AksharP5/cohall/commit/49d422906c9bfb0ef9b6dc3b100c4dfa0d7dea20))
+* **providers:** resolve runnable executables before changing workspaces ([#179](https://github.com/AksharP5/cohall/issues/179)) ([b62e806](https://github.com/AksharP5/cohall/commit/b62e8064868026c0958a9069e84cbf01d0f33131))
+* **service:** find providers under custom npm prefixes ([#178](https://github.com/AksharP5/cohall/issues/178)) ([fc71fe9](https://github.com/AksharP5/cohall/commit/fc71fe97bfbb2dd9ada54a01549d4f97a87f632b))
+* **setup:** allow client joins with removed worker directories ([#176](https://github.com/AksharP5/cohall/issues/176)) ([c76e142](https://github.com/AksharP5/cohall/commit/c76e142a7e67755c5644043a229a1adc7ae3fbd1))
+* **setup:** fail fast on bad providers and missing join workspaces ([#174](https://github.com/AksharP5/cohall/issues/174)) ([30e870a](https://github.com/AksharP5/cohall/commit/30e870afa8a90f1f94917d75545dd1bae291cd29))
+* **upgrade:** check latest releases with pending manual restarts ([#177](https://github.com/AksharP5/cohall/issues/177)) ([b7d98b0](https://github.com/AksharP5/cohall/commit/b7d98b0c7efa765824433e54588fb7da2d719e8e))
+
 ## [0.11.1](https://github.com/AksharP5/cohall/compare/v0.11.0...v0.11.1) (2026-10-05)
 
 
