@@ -51,6 +51,7 @@ export const deviceServicePlan = (options: {
   readonly entrypoint: string
   readonly home: string
   readonly nodeExecutable: string
+  readonly npmPrefix?: string
   readonly pnpm?: {
     readonly home: string
     readonly executable: string
@@ -68,6 +69,7 @@ export const deviceServicePlan = (options: {
       : join(options.home, ".local", "share", "pnpm"))
   const servicePath = [
     dirname(options.nodeExecutable),
+    ...(options.npmPrefix === undefined ? [] : [join(options.npmPrefix, "bin")]),
     join(options.home, ".local", "bin"),
     join(options.home, ".npm-global", "bin"),
     join(options.home, ".bun", "bin"),
@@ -165,14 +167,17 @@ export const installDeviceService = async (
     readonly resolveExecutable?: (command: string) => Promise<string>
   } = {},
 ): Promise<{ readonly installed: string; readonly note?: string }> => {
-  const { entrypoint, canonicalEntrypoint, pnpmExecutable, globalDir, globalRoot } =
-    await resolvePackageInstallation(options.entrypoint ?? process.argv[1] ?? "", {
+  const installation = await resolvePackageInstallation(
+    options.entrypoint ?? process.argv[1] ?? "",
+    {
       ...(options.platform === undefined ? {} : { platform: options.platform }),
       ...(options.runner === undefined ? {} : { runner: options.runner }),
       ...(options.resolveExecutable === undefined
         ? {}
         : { resolveExecutable: options.resolveExecutable }),
-    })
+    },
+  )
+  const { entrypoint, canonicalEntrypoint, pnpmExecutable, globalDir, globalRoot } = installation
   const platform = options.platform ?? process.platform
   const home = options.home ?? homedir()
   const pnpm =
@@ -228,6 +233,9 @@ export const installDeviceService = async (
     home,
     nodeExecutable: process.execPath,
     configPath: configurationPath(),
+    ...(installation.manager === "npm" && installation.prefix !== undefined
+      ? { npmPrefix: installation.prefix }
+      : {}),
     ...(pnpm === undefined ? {} : { pnpm }),
     ...(uid === undefined ? {} : { uid }),
   })
