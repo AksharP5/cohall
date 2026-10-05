@@ -42,6 +42,28 @@ export type McpHostDiagnostics = {
 
 const storagePath = (configPath: string): string => `${configPath}.mcp-hosts`
 
+const replaceRecord = async (source: string, target: string): Promise<void> => {
+  // Windows can briefly block replacement while another program holds the file.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(source, target)
+      return
+    } catch (cause) {
+      if (
+        attempt === 5 ||
+        !(
+          cause instanceof Error &&
+          "code" in cause &&
+          (cause.code === "EPERM" || cause.code === "EACCES" || cause.code === "EBUSY")
+        )
+      ) {
+        throw cause
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 50))
+    }
+  }
+}
+
 const recordsIn = async (directory: string) => {
   const records: Array<{ path: string; modified: number }> = []
   let entries = 0
@@ -183,7 +205,7 @@ export const createMcpHostDiagnostics = (server: Server): StdioServerTransport =
         const json = `${JSON.stringify(snapshot)}\n`
         if (Buffer.byteLength(json) > maxRecordBytes) throw new Error("Record exceeded its limit")
         await writeFile(temporary, json, { flag: "wx", mode: 0o600 })
-        await rename(temporary, path)
+        await replaceRecord(temporary, path)
       } finally {
         await rm(temporary, { force: true })
       }
