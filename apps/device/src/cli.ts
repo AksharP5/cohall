@@ -630,8 +630,14 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     noPositionals(arguments_, command)
     const existing = await readStoredConfiguration()
     const relayUrl = setupRelayUrl(option(arguments_, "relay") ?? existing?.relayUrl)
+    const clientOnly = arguments_.options.has("client-only")
     const suppliedWorkspaces = values(arguments_, "workspace")
-    const workspaces = suppliedWorkspaces.length === 0 ? existing?.workspaces : suppliedWorkspaces
+    const workspaces =
+      suppliedWorkspaces.length > 0
+        ? suppliedWorkspaces
+        : clientOnly
+          ? undefined
+          : existing?.workspaces
     const deviceName = option(arguments_, "name")
     const providerInput = option(arguments_, "providers")
     const providers =
@@ -640,10 +646,9 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         : providerInput === "auto"
           ? "auto"
           : parseProviders(providerInput)
-    if (!arguments_.options.has("client-only") && (workspaces?.length ?? 0) === 0) {
+    if (!clientOnly && (workspaces?.length ?? 0) === 0) {
       throw new Error("At least one --workspace is required when joining a device")
     }
-    const clientOnly = arguments_.options.has("client-only")
     const { configuration, roles } = await joinRelay({
       relayUrl,
       token: await pairingToken(arguments_),

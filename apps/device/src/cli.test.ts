@@ -154,47 +154,70 @@ it.each([true, false])(
   },
 )
 
-it("exchanges an explicit init token file despite existing client credentials and unused roots", async () => {
+it.each(["init", "join"] as const)(
+  "exchanges an explicit %s token file despite existing client credentials and unused roots",
+  async (command) => {
+    const directory = await temporary()
+    const configuration = await storeWorkerConfiguration(directory)
+    const path = join(directory, "token.txt")
+    await writeFile(path, "new-pairing-token")
+    const timestamp = "2026-10-04T12:00:00.000Z"
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          credentials: [
+            {
+              token: "new-client-secret",
+              session: {
+                id: taskId,
+                label: "New client",
+                role: "client",
+                createdAt: timestamp,
+                expiresAt: timestamp,
+                lastSeenAt: timestamp,
+              },
+            },
+          ],
+        }),
+      ),
+    )
+    vi.stubGlobal("fetch", fetch)
+    vi.spyOn(console, "log").mockImplementation(() => undefined)
+    await runCli(command, ["--client-only", "--token-file", path])
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(fetch).toHaveBeenCalledWith(
+      "https://relay.example/api/auth/pair",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ token: "new-pairing-token" }),
+      }),
+    )
+    expect(await readStoredConfiguration()).toMatchObject({
+      clientToken: "new-client-secret",
+      workspaces: configuration.workspaces,
+      providers: configuration.providers,
+    })
+  },
+)
+
+it("validates explicit client-only join workspace changes before pairing", async () => {
   const directory = await temporary()
   const configuration = await storeWorkerConfiguration(directory)
   const path = join(directory, "token.txt")
-  await writeFile(path, "new-pairing-token")
-  const timestamp = "2026-10-04T12:00:00.000Z"
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
-    new Response(
-      JSON.stringify({
-        credentials: [
-          {
-            token: "new-client-secret",
-            session: {
-              id: taskId,
-              label: "New client",
-              role: "client",
-              createdAt: timestamp,
-              expiresAt: timestamp,
-              lastSeenAt: timestamp,
-            },
-          },
-        ],
-      }),
-    ),
-  )
+  await writeFile(path, "pairing-secret")
+  const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("Pairing started"))
   vi.stubGlobal("fetch", fetch)
-  vi.spyOn(console, "log").mockImplementation(() => undefined)
-  await runCli("init", ["--client-only", "--token-file", path])
-  expect(fetch).toHaveBeenCalledOnce()
-  expect(fetch).toHaveBeenCalledWith(
-    "https://relay.example/api/auth/pair",
-    expect.objectContaining({
-      method: "POST",
-      body: JSON.stringify({ token: "new-pairing-token" }),
-    }),
-  )
-  expect(await readStoredConfiguration()).toMatchObject({
-    clientToken: "new-client-secret",
-    workspaces: configuration.workspaces,
-    providers: configuration.providers,
-  })
+  await expect(
+    runCli("join", [
+      "--client-only",
+      "--workspace",
+      join(directory, "new-missing-workspace"),
+      "--token-file",
+      path,
+    ]),
+  ).rejects.toThrow("Workspace roots must be existing directories")
+  expect(fetch).not.toHaveBeenCalled()
+  expect(await readStoredConfiguration()).toEqual(configuration)
 })
 
 it("rejects a client-only device service before changing configuration", async () => {

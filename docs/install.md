@@ -102,8 +102,9 @@ workspace first.
 installation. Re-running `cohall init` repairs the
 skill installation and reuses credentials when the selected relay has not
 changed. Keeping the default workspace retains all configured roots;
-`init --client-only` retains worker settings without revalidating unused workspace
-directories; `--providers` can override the provider selection. An explicit
+`init --client-only` and `join --client-only` retain worker settings without
+revalidating unused workspace directories. Explicit `join --workspace` changes
+still require existing directories; `--providers` can override the provider selection. An explicit
 `--token-file` requests a new pairing exchange even when credentials are saved.
 `cohall join` remains the non-guided configuration primitive.
 `--client-only` and `--service` cannot be combined.
