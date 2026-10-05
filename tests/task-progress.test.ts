@@ -32,20 +32,32 @@ it("reports progress through CLI and MCP only for the authenticated target worke
       COHALL_RELAY_PORT: String(address.port),
       COHALL_TOKEN: token,
     },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "pipe"],
+  })
+  let startupError = ""
+  relay.stderr?.on("data", (chunk: Buffer) => {
+    startupError = `${startupError}${chunk.toString("utf8")}`.slice(-4_096)
   })
   const exited = once(relay, "exit")
   const owner = RelayClient.make({ baseUrl: relayUrl, token })
   const mcp = new Client({ name: "progress-test", version: "1.0.0" })
   let socket: WebSocket | undefined
   try {
-    await vi.waitFor(
-      async () => {
-        expect(relay.exitCode).toBeNull()
-        expect((await fetch(`${relayUrl}/api/health`)).ok).toBe(true)
-      },
-      { timeout: 5_000 },
-    )
+    await vi
+      .waitFor(
+        async () => {
+          expect(relay.exitCode).toBeNull()
+          expect(
+            (await fetch(`${relayUrl}/api/health`, { signal: AbortSignal.timeout(1_000) })).ok,
+          ).toBe(true)
+        },
+        { timeout: 5_000 },
+      )
+      .catch((cause: unknown) => {
+        throw new Error(`Relay startup failed${startupError === "" ? "" : `: ${startupError}`}`, {
+          cause,
+        })
+      })
     const pairing = await Effect.runPromise(
       owner.createPairing({ label: "Progress worker", roles: ["client", "device"] }),
     )
