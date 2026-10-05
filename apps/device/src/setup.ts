@@ -116,7 +116,7 @@ export const terminalPrompter = (): Prompter => {
 
 export interface GuidedSetupOptions {
   readonly relayUrl?: string
-  readonly token?: string
+  readonly readToken?: () => Promise<string>
   readonly clientOnly: boolean
   readonly deviceName?: string
   readonly workspaces: ReadonlyArray<string>
@@ -170,7 +170,11 @@ export const guidedSetupInput = async (
       ? (existing?.providers?.join(",") ?? "auto")
       : await prompter.answer("Providers", existing?.providers?.join(",") ?? "auto"))
   const token =
-    options.token ?? (hasRequiredCredentials ? undefined : await prompter.secret("Pairing token"))
+    options.readToken === undefined
+      ? hasRequiredCredentials
+        ? undefined
+        : await prompter.secret("Pairing token")
+      : await options.readToken()
   if (!hasRequiredCredentials && (token === undefined || token.length === 0)) {
     throw new Error("A pairing token is required")
   }

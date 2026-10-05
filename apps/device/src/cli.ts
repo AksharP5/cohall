@@ -434,11 +434,11 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       "workspace",
     ])
     noPositionals(arguments_, command)
-    if (arguments_.options.has("client-only") && arguments_.options.has("service")) {
+    const clientOnly = arguments_.options.has("client-only")
+    if (clientOnly && arguments_.options.has("service")) {
       throw new Error("A client-only setup cannot install a device service")
     }
-    const token =
-      option(arguments_, "token-file") === undefined ? undefined : await pairingToken(arguments_)
+    const tokenFile = option(arguments_, "token-file")
     const interactive = process.stdin.isTTY === true && process.stderr.isTTY === true
     const relayUrl = option(arguments_, "relay")
     const deviceName = option(arguments_, "name")
@@ -453,11 +453,11 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     try {
       const input = await guidedSetupInput(
         {
-          clientOnly: arguments_.options.has("client-only"),
+          clientOnly,
           workspaces: values(arguments_, "workspace"),
           cwd: process.cwd(),
           ...(relayUrl === undefined ? {} : { relayUrl }),
-          ...(token === undefined ? {} : { token }),
+          ...(tokenFile === undefined ? {} : { readToken: () => pairingToken(arguments_) }),
           ...(deviceName === undefined ? {} : { deviceName }),
           ...(providerInput === undefined ? {} : { providers: providerInput }),
         },
@@ -470,22 +470,20 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
             configuration: await makeStoredConfiguration({
               relayUrl: input.relayUrl,
               ...(input.deviceName === undefined ? {} : { deviceName: input.deviceName }),
-              workspaces: input.workspaces,
+              ...(clientOnly ? {} : { workspaces: input.workspaces }),
               providers,
             }),
             roles: [
               ...(existing?.clientToken === undefined ? [] : (["client"] as const)),
-              ...(arguments_.options.has("client-only") || existing?.deviceToken === undefined
-                ? []
-                : (["device"] as const)),
+              ...(clientOnly || existing?.deviceToken === undefined ? [] : (["device"] as const)),
             ],
           }
         : await joinRelay({
             relayUrl: input.relayUrl,
             token: input.token ?? "",
-            clientOnly: arguments_.options.has("client-only"),
+            clientOnly,
             ...(input.deviceName === undefined ? {} : { deviceName: input.deviceName }),
-            workspaces: input.workspaces,
+            ...(clientOnly ? {} : { workspaces: input.workspaces }),
             providers,
           })
       if (input.reusedConfiguration) {
@@ -504,7 +502,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         skills: installedSkills,
         ...(service === undefined ? {} : { service }),
         next:
-          service === undefined && !arguments_.options.has("client-only")
+          service === undefined && !clientOnly
             ? "Run `cohall service install` for background availability, or `cohall device` now. Then run `cohall doctor` and the delegation check in `cohall onboard`."
             : "Run `cohall doctor`, then the delegation check in `cohall onboard`.",
       })
