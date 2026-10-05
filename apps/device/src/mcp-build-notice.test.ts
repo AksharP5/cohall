@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
-import { copyFile, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { copyFile, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -137,10 +137,11 @@ else setInterval(() => {}, 1000)`,
       await client.connect(transport, { timeout: 5_000 })
       const runningVersion = client.getServerVersion()?.version
       expect(runningVersion).toBeDefined()
-      const source = await readFile(entrypoint, "utf8")
-      const updated = source.replace(/var version = "[^"\n]+"/, 'var version = "99.0.0"')
-      expect(updated).not.toBe(source)
-      await writeFile(join(directory, "replacement.js"), updated)
+      // Keep the version probe independent of full CLI startup under parallel test load.
+      await writeFile(
+        join(directory, "replacement.js"),
+        'if (process.argv[2] === "--version") console.log("99.0.0")',
+      )
       await rename(join(directory, "replacement.js"), entrypoint)
 
       const output = z
