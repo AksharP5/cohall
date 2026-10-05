@@ -202,6 +202,9 @@ execution. Historical records cannot prove that a host is connected now.
 
 Evidence is stored locally in `<config_path>.mcp-hosts`, isolated for each
 configuration, with at most eight recent records retained for seven days.
+Brief file replacement conflicts get a short, bounded retry. Persistent storage
+failures produce one server warning and stop recording for that launch; MCP tools
+continue working.
 Records contain no tool names, arguments, results, relay URLs, tokens, or
 conversation content. Metadata write failures leave MCP operational and are
 reported on its stderr. Older Cohall servers create no records; reconnect an

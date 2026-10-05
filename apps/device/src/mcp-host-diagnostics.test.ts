@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from "
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { expect, it, vi } from "vitest"
 import { checkMcp, readMcpHostDiagnostics } from "./mcp-diagnostics.ts"
 
@@ -25,6 +25,7 @@ const withHost = async (
       identity?: { name: string; version: string },
     ) => Promise<{ client: Client; stderr: () => string }>
   }) => Promise<void>,
+  preload?: string,
 ) => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-mcp-host-test-"))
   const configPath = join(directory, "config.json")
@@ -47,7 +48,11 @@ const withHost = async (
   const transport = (selected = configPath) => {
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [entrypoint, "mcp"],
+      args: [
+        ...(preload === undefined ? [] : ["--import", pathToFileURL(preload).href]),
+        entrypoint,
+        "mcp",
+      ],
       env: {
         PATH: process.env.PATH ?? "",
         COHALL_CONFIG: selected,
@@ -105,10 +110,10 @@ it("does not count the doctor's successful self-test as a host connection", asyn
 
 it("records real initialization, discovery, received calls and shutdown without payloads", async () => {
   await withHost(async ({ configPath, relayUrl, connect }) => {
-    const { client } = await connect()
+    const { client, stderr } = await connect()
     await vi.waitFor(
       async () => {
-        expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
+        expect(await readMcpHostDiagnostics(configPath), stderr()).toMatchObject({
           status: "observed",
           sessions: [
             { client: { name: "test-host", version: "1.2.3" }, initialized_at: expect.any(String) },
@@ -130,7 +135,7 @@ it("records real initialization, discovery, received calls and shutdown without 
     })
     await vi.waitFor(
       async () => {
-        expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
+        expect(await readMcpHostDiagnostics(configPath), stderr()).toMatchObject({
           status: "observed",
           warnings: [],
           sessions: [
@@ -172,6 +177,70 @@ it("records real initialization, discovery, received calls and shutdown without 
     expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(4_096)
   })
 })
+
+it.each(["transient", "persistent"] as const)(
+  "handles %s Windows-style storage contention while serving MCP tools",
+  async (failure) => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall-mcp-storage-fault-"))
+    const preload = join(directory, "storage-fault.mjs")
+    await writeFile(
+      preload,
+      `import filesystem from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+const rename = filesystem.rename;
+let rejected = false;
+filesystem.rename = async (source, target) => {
+  if (String(source).includes(".mcp-hosts")) {
+    const snapshot = JSON.parse(await filesystem.readFile(source, "utf8"));
+    if (snapshot.tools_call_count > 0 && (${JSON.stringify(failure)} === "persistent" || !rejected)) {
+      rejected = true;
+      throw Object.assign(new Error("Synthetic file contention"), { code: "EPERM" });
+    }
+  }
+  return rename(source, target);
+};
+syncBuiltinESMExports();`,
+    )
+    try {
+      await withHost(async ({ configPath, connect }) => {
+        const { client, stderr } = await connect()
+        await client.listTools()
+        await vi.waitFor(
+          async () =>
+            expect((await readMcpHostDiagnostics(configPath)).sessions[0]?.initialized_at).toEqual(
+              expect.any(String),
+            ),
+          { timeout: 5_000 },
+        )
+        await client.callTool({ name: "list_devices", arguments: {} })
+        if (failure === "transient") {
+          await vi.waitFor(
+            async () =>
+              expect(
+                (await readMcpHostDiagnostics(configPath)).sessions[0]?.tools_call_count,
+                stderr(),
+              ).toBe(1),
+            { timeout: 5_000 },
+          )
+          expect(stderr()).not.toContain("Cohall MCP host diagnostics are unavailable")
+        } else {
+          await vi.waitFor(
+            () => expect(stderr()).toContain("Cohall MCP host diagnostics are unavailable (EPERM)"),
+            { timeout: 5_000 },
+          )
+          await client.callTool({ name: "list_devices", arguments: {} })
+          expect((await readMcpHostDiagnostics(configPath)).sessions[0]?.tools_call_count).toBe(0)
+          expect(
+            (stderr().match(/Cohall MCP host diagnostics are unavailable/g) ?? []).length,
+          ).toBe(1)
+        }
+        await client.close()
+      }, preload)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  },
+)
 
 it("keeps concurrent host launches and selected configurations separate", async () => {
   await withHost(async ({ directory, configPath, connect }) => {
