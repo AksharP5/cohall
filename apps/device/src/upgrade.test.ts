@@ -250,6 +250,46 @@ describe("latest upgrades", () => {
     expect(JSON.parse(await readFile(metadata, "utf8"))).toMatchObject({ version: currentVersion })
   })
 
+  it("reports retained pending restarts when latest is older", async () => {
+    const { root, entrypoint } = await installation("1.2.3", "npm", "linux")
+    const statePath = join(root, "receipt.json")
+    const pendingServices = ["systemd-user:cohall-device.service"]
+    const receipt = JSON.stringify({
+      version: "1.2.3",
+      fromVersion: "1.2.2",
+      packageManager: "npm",
+      pendingServices,
+      restartedServices: [],
+    })
+    await writeFile(statePath, receipt)
+    const invocations: Array<string> = []
+    const result = await upgrade({
+      currentVersion: "1.2.3",
+      restart: false,
+      dryRun: false,
+      entrypoint,
+      platform: "linux",
+      statePath,
+      resolveExecutable,
+      runner: {
+        run: async (command, arguments_) => {
+          invocations.push([command, ...arguments_].join(" "))
+          return arguments_[0] === "view"
+            ? { ...success(), stdout: JSON.stringify("1.2.2") }
+            : { exitCode: 3, stdout: "", stderr: "" }
+        },
+      },
+    })
+    expect(result).toMatchObject({
+      upgraded: false,
+      installed_version: "1.2.3",
+      services_pending_restart: pendingServices,
+    })
+    expect(await readFile(statePath, "utf8")).toBe(receipt)
+    expect(invocations.some((invocation) => invocation.includes(" install "))).toBe(false)
+    expect(invocations.some((invocation) => invocation.includes(" restart "))).toBe(false)
+  })
+
   it.each(["npm", "bun", "pnpm"] as const)(
     "pins a newer latest version before installing with %s",
     async (manager) => {
@@ -1658,70 +1698,75 @@ describe("managed service upgrades", () => {
   )
 
   it.each([
-    { target: "1.2.4", restart: true },
-    { target: "latest", restart: false },
-  ])("honors $target with pending restarts and restart=$restart", async ({ target, restart }) => {
-    const root = await temporaryDirectory()
-    const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
-    const metadata = join(dirname(dirname(entrypoint)), "package.json")
-    await mkdir(dirname(entrypoint), { recursive: true })
-    await writeFile(entrypoint, "#!/usr/bin/env node\n")
-    await npmGlobalCommand(entrypoint, "linux")
-    await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
-    const statePath = join(root, "upgrade-restart.json")
-    const receipt = JSON.stringify({
-      version: "1.2.3",
-      fromVersion: "1.2.2",
-      packageManager: "npm",
-      pendingServices: ["systemd-user:cohall-device.service"],
-      restartedServices: [],
-    })
-    await writeFile(statePath, receipt)
-    const invocations: Array<string> = []
-    const runner: CommandRunner = {
-      run: async (command, arguments_) => {
-        invocations.push([command, ...arguments_].join(" "))
-        if (command !== "npm") return { exitCode: 3, stdout: "", stderr: "" }
-        if (arguments_.includes("view")) return { ...success(), stdout: JSON.stringify("1.2.4") }
-        await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }))
-        return success()
-      },
-    }
-    const options = {
-      platform: "linux" as const,
-      currentVersion: "1.2.3",
-      restart,
-      dryRun: false,
-      entrypoint,
-      statePath,
-      runner,
-      resolveExecutable,
-    }
+    { target: "1.2.4", restart: true, delegated: false },
+    { target: "latest", restart: false, delegated: false },
+    { target: "latest", restart: false, delegated: true },
+  ])(
+    "upgrades $target with restart=$restart, delegated=$delegated",
+    async ({ target, restart, delegated }) => {
+      const root = await temporaryDirectory()
+      const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+      const metadata = join(dirname(dirname(entrypoint)), "package.json")
+      await mkdir(dirname(entrypoint), { recursive: true })
+      await writeFile(entrypoint, "#!/usr/bin/env node\n")
+      await npmGlobalCommand(entrypoint, "linux")
+      await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
+      const statePath = join(root, "upgrade-restart.json")
+      const receipt = JSON.stringify({
+        version: "1.2.3",
+        fromVersion: "1.2.2",
+        packageManager: "npm",
+        pendingServices: ["systemd-user:cohall-device.service"],
+        restartedServices: [],
+      })
+      await writeFile(statePath, receipt)
+      const invocations: Array<string> = []
+      const runner: CommandRunner = {
+        run: async (command, arguments_) => {
+          invocations.push([command, ...arguments_].join(" "))
+          if (command !== "npm") return { exitCode: 3, stdout: "", stderr: "" }
+          if (arguments_.includes("view")) return { ...success(), stdout: JSON.stringify("1.2.4") }
+          await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }))
+          return success()
+        },
+      }
+      const options = {
+        platform: "linux" as const,
+        currentVersion: "1.2.3",
+        restart,
+        delegated,
+        dryRun: false,
+        entrypoint,
+        statePath,
+        runner,
+        resolveExecutable,
+      }
 
-    await expect(upgrade({ ...options, target: "invalid" })).rejects.toThrow(
-      "exact semantic version",
-    )
-    expect(invocations).toEqual([])
-    expect(await readFile(statePath, "utf8")).toBe(receipt)
+      await expect(upgrade({ ...options, target: "invalid" })).rejects.toThrow(
+        "exact semantic version",
+      )
+      expect(invocations).toEqual([])
+      expect(await readFile(statePath, "utf8")).toBe(receipt)
 
-    await expect(upgrade({ ...options, target, dryRun: true })).resolves.toMatchObject({
-      requested_version: target,
-      services_pending_restart: ["systemd-user:cohall-device.service"],
-    })
-    expect(await readFile(statePath, "utf8")).toBe(receipt)
-    expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
+      await expect(upgrade({ ...options, target, dryRun: true })).resolves.toMatchObject({
+        requested_version: target,
+        services_pending_restart: ["systemd-user:cohall-device.service"],
+      })
+      expect(await readFile(statePath, "utf8")).toBe(receipt)
+      expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
 
-    const result = await upgrade({ ...options, target })
-    expect(result.requested_version).toBe(target)
-    expect(result.installed_version).toBe("1.2.4")
-    expect(result.resumed_after_restart).toBe(false)
-    expect(invocations).toContain(`npm install --global --prefix ${root} @akshar5/cohall@1.2.4`)
-    expect(result.services_pending_restart).toEqual(["systemd-user:cohall-device.service"])
-    expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({
-      version: "1.2.4",
-      pendingServices: ["systemd-user:cohall-device.service"],
-    })
-  })
+      const result = await upgrade({ ...options, target })
+      expect(result.requested_version).toBe(target)
+      expect(result.installed_version).toBe("1.2.4")
+      expect(result.resumed_after_restart).toBe(false)
+      expect(invocations).toContain(`npm install --global --prefix ${root} @akshar5/cohall@1.2.4`)
+      expect(result.services_pending_restart).toEqual(["systemd-user:cohall-device.service"])
+      expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({
+        version: "1.2.4",
+        pendingServices: ["systemd-user:cohall-device.service"],
+      })
+    },
+  )
 })
 
 describe("pnpm service upgrades", () => {
