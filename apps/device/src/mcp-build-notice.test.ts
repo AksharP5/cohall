@@ -67,7 +67,6 @@ describe("MCP build notices", () => {
       await writeFile(entrypoint, 'console.log("0.8.0")')
       const notice = await createMcpBuildNotice(entrypoint, "0.8.0", {
         now: () => now,
-        probeTimeoutMs: 300,
       })
       await writeFile(
         entrypoint,
