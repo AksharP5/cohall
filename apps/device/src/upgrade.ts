@@ -949,7 +949,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
 
   if (
     previous?.version === options.currentVersion &&
-    (target === "latest" || target === previous.version)
+    (target === previous.version || (target === "latest" && options.restart))
   ) {
     const pending = candidates.filter((service) => previous.pendingServices.includes(service.id))
     const active = await activeServices(runner, pending)
@@ -1093,7 +1093,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
       requested_version: target,
       package_manager: installation.manager,
       services_restarted: [],
-      services_pending_restart: [],
+      services_pending_restart: previous?.pendingServices ?? [],
       resumed_after_restart: false,
       dry_run: options.dryRun,
     }
