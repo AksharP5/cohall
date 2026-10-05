@@ -103,14 +103,15 @@ it("does not count the doctor's successful self-test as a host connection", asyn
   })
 })
 
-it.each([1, 2, 3, 4, 5])(
+it.each(Array.from({ length: 15 }, (_, index) => index))(
   "records real initialization, discovery, received calls and shutdown without payloads (%s)",
   async () => {
     await withHost(async ({ configPath, relayUrl, connect }) => {
       const { client, stderr } = await connect()
       await vi.waitFor(
         async () => {
-          expect(await readMcpHostDiagnostics(configPath), stderr()).toMatchObject({
+          const report = await readMcpHostDiagnostics(configPath)
+          expect(report, JSON.stringify({ report, stderr: stderr() })).toMatchObject({
             status: "observed",
             sessions: [
               {
@@ -135,7 +136,8 @@ it.each([1, 2, 3, 4, 5])(
       })
       await vi.waitFor(
         async () => {
-          expect(await readMcpHostDiagnostics(configPath), stderr()).toMatchObject({
+          const report = await readMcpHostDiagnostics(configPath)
+          expect(report, JSON.stringify({ report, stderr: stderr() })).toMatchObject({
             status: "observed",
             warnings: [],
             sessions: [
