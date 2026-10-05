@@ -1657,7 +1657,10 @@ describe("managed service upgrades", () => {
     },
   )
 
-  it("validates and honors a new target when an older restart receipt exists", async () => {
+  it.each([
+    { target: "1.2.4", restart: true },
+    { target: "latest", restart: false },
+  ])("honors $target with pending restarts and restart=$restart", async ({ target, restart }) => {
     const root = await temporaryDirectory()
     const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
     const metadata = join(dirname(dirname(entrypoint)), "package.json")
@@ -1679,6 +1682,7 @@ describe("managed service upgrades", () => {
       run: async (command, arguments_) => {
         invocations.push([command, ...arguments_].join(" "))
         if (command !== "npm") return { exitCode: 3, stdout: "", stderr: "" }
+        if (arguments_.includes("view")) return { ...success(), stdout: JSON.stringify("1.2.4") }
         await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.4" }))
         return success()
       },
@@ -1686,7 +1690,7 @@ describe("managed service upgrades", () => {
     const options = {
       platform: "linux" as const,
       currentVersion: "1.2.3",
-      restart: true,
+      restart,
       dryRun: false,
       entrypoint,
       statePath,
@@ -1700,8 +1704,15 @@ describe("managed service upgrades", () => {
     expect(invocations).toEqual([])
     expect(await readFile(statePath, "utf8")).toBe(receipt)
 
-    const result = await upgrade({ ...options, target: "1.2.4" })
-    expect(result.requested_version).toBe("1.2.4")
+    await expect(upgrade({ ...options, target, dryRun: true })).resolves.toMatchObject({
+      requested_version: target,
+      services_pending_restart: ["systemd-user:cohall-device.service"],
+    })
+    expect(await readFile(statePath, "utf8")).toBe(receipt)
+    expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
+
+    const result = await upgrade({ ...options, target })
+    expect(result.requested_version).toBe(target)
     expect(result.installed_version).toBe("1.2.4")
     expect(result.resumed_after_restart).toBe(false)
     expect(invocations).toContain(`npm install --global --prefix ${root} @akshar5/cohall@1.2.4`)
