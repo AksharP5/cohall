@@ -103,75 +103,81 @@ it("does not count the doctor's successful self-test as a host connection", asyn
   })
 })
 
-it("records real initialization, discovery, received calls and shutdown without payloads", async () => {
-  await withHost(async ({ configPath, relayUrl, connect }) => {
-    const { client } = await connect()
-    await vi.waitFor(
-      async () => {
-        expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
-          status: "observed",
-          sessions: [
-            { client: { name: "test-host", version: "1.2.3" }, initialized_at: expect.any(String) },
-          ],
-        })
-      },
-      { timeout: 5_000 },
-    )
-    const { tools } = await client.listTools()
-    await client.callTool({ name: "list_devices", arguments: {} })
-    const prompt = "private-test-prompt-never-record"
-    const failed = await client.callTool({
-      name: "task_progress",
-      arguments: { task_id: "11111111-1111-4111-8111-111111111111", note: prompt },
+it.each([1, 2, 3, 4, 5])(
+  "records real initialization, discovery, received calls and shutdown without payloads (%s)",
+  async () => {
+    await withHost(async ({ configPath, relayUrl, connect }) => {
+      const { client, stderr } = await connect()
+      await vi.waitFor(
+        async () => {
+          expect(await readMcpHostDiagnostics(configPath), stderr()).toMatchObject({
+            status: "observed",
+            sessions: [
+              {
+                client: { name: "test-host", version: "1.2.3" },
+                initialized_at: expect.any(String),
+              },
+            ],
+          })
+        },
+        { timeout: 5_000 },
+      )
+      const { tools } = await client.listTools()
+      await client.callTool({ name: "list_devices", arguments: {} })
+      const prompt = "private-test-prompt-never-record"
+      const failed = await client.callTool({
+        name: "task_progress",
+        arguments: { task_id: "11111111-1111-4111-8111-111111111111", note: prompt },
+      })
+      expect(failed).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining(resultText) }],
+      })
+      await vi.waitFor(
+        async () => {
+          expect(await readMcpHostDiagnostics(configPath), stderr()).toMatchObject({
+            status: "observed",
+            warnings: [],
+            sessions: [
+              {
+                tools_list: { tool_count: tools.length, at: expect.any(String) },
+                tools_call_count: 2,
+                last_tool_call_at: expect.any(String),
+              },
+            ],
+          })
+        },
+        { timeout: 5_000 },
+      )
+      await client.close()
+      await vi.waitFor(
+        async () =>
+          expect((await readMcpHostDiagnostics(configPath)).sessions[0]?.closed_at).toEqual(
+            expect.any(String),
+          ),
+        { timeout: 5_000 },
+      )
+      const directory = `${configPath}.mcp-hosts`
+      const names = await readdir(directory)
+      expect(names).toHaveLength(1)
+      const name = names[0]
+      if (name === undefined) throw new Error("Missing launch record")
+      const raw = await readFile(join(directory, name), "utf8")
+      for (const privateValue of [
+        prompt,
+        resultText,
+        token,
+        relayUrl,
+        "task_progress",
+        "arguments",
+        "content",
+        "environment",
+      ])
+        expect(raw).not.toContain(privateValue)
+      expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(4_096)
     })
-    expect(failed).toMatchObject({
-      isError: true,
-      content: [{ text: expect.stringContaining(resultText) }],
-    })
-    await vi.waitFor(
-      async () => {
-        expect(await readMcpHostDiagnostics(configPath)).toMatchObject({
-          status: "observed",
-          warnings: [],
-          sessions: [
-            {
-              tools_list: { tool_count: tools.length, at: expect.any(String) },
-              tools_call_count: 2,
-              last_tool_call_at: expect.any(String),
-            },
-          ],
-        })
-      },
-      { timeout: 5_000 },
-    )
-    await client.close()
-    await vi.waitFor(
-      async () =>
-        expect((await readMcpHostDiagnostics(configPath)).sessions[0]?.closed_at).toEqual(
-          expect.any(String),
-        ),
-      { timeout: 5_000 },
-    )
-    const directory = `${configPath}.mcp-hosts`
-    const names = await readdir(directory)
-    expect(names).toHaveLength(1)
-    const name = names[0]
-    if (name === undefined) throw new Error("Missing launch record")
-    const raw = await readFile(join(directory, name), "utf8")
-    for (const privateValue of [
-      prompt,
-      resultText,
-      token,
-      relayUrl,
-      "task_progress",
-      "arguments",
-      "content",
-      "environment",
-    ])
-      expect(raw).not.toContain(privateValue)
-    expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(4_096)
-  })
-})
+  },
+)
 
 it("keeps concurrent host launches and selected configurations separate", async () => {
   await withHost(async ({ directory, configPath, connect }) => {
