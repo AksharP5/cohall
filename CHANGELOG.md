@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/AksharP5/cohall/compare/v0.11.0...v0.11.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **setup:** unblock client repair and reject missing relays early ([#171](https://github.com/AksharP5/cohall/issues/171)) ([dbf2d0d](https://github.com/AksharP5/cohall/commit/dbf2d0d1c94297335325fe3657835cccf7f4bc3c))
+
 ## [0.11.0](https://github.com/AksharP5/cohall/compare/v0.10.2...v0.11.0) (2026-10-04)
 
 
