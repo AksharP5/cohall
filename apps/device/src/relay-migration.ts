@@ -19,6 +19,7 @@ import {
 } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { backup as sqliteBackup, DatabaseSync } from "node:sqlite"
+import { isDeepStrictEqual } from "node:util"
 import { WebSocket } from "ws"
 import {
   StoredConfiguration,
@@ -376,6 +377,9 @@ export const switchRelay = async (options: {
       await (options.verifyDevice ?? verifyDeviceCredential)(relayUrl, token)
     }
     roles.push("device")
+  }
+  if (!isDeepStrictEqual(await readStoredConfiguration(), configuration)) {
+    throw new Error("Cohall configuration changed during relay verification. Retry the command.")
   }
   const updated = configuration.relayUrl !== relayUrl
   if (updated) {
