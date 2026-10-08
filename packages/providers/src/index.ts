@@ -99,7 +99,11 @@ const executableDirectories = (): ReadonlyArray<string> => {
           "/opt/homebrew/bin",
           "/usr/local/bin",
         ]
-  return [...new Set([...configured, ...common.filter((path) => path !== undefined)])]
+  return [
+    ...new Set(
+      [...configured, ...common.filter((path) => path !== undefined)].map((path) => resolve(path)),
+    ),
+  ]
 }
 
 export const findExecutable = (command: string): string | undefined => {
