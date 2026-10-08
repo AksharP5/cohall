@@ -1,4 +1,5 @@
 import {
+  Device,
   DeviceId,
   Provider,
   TaskRunId,
@@ -20,7 +21,7 @@ export const StoredConfiguration = Schema.Struct({
   version: Schema.Literal(1),
   relayUrl: Schema.NonEmptyString,
   deviceId: DeviceId,
-  deviceName: Schema.NonEmptyString,
+  deviceName: Device.fields.name,
   workspaces: WorkspaceList,
   clientToken: Schema.optionalKey(Schema.NonEmptyString),
   deviceToken: Schema.optionalKey(Schema.NonEmptyString),
@@ -30,6 +31,12 @@ export const StoredConfiguration = Schema.Struct({
   grokGateway: Schema.optionalKey(Schema.NonEmptyString),
 })
 export interface StoredConfiguration extends Schema.Schema.Type<typeof StoredConfiguration> {}
+
+// Older version-1 files allowed longer names; keep them readable for client access and repair.
+const ReadableConfiguration = Schema.Struct({
+  ...StoredConfiguration.fields,
+  deviceName: Schema.NonEmptyString,
+})
 
 export const ClientConfiguration = Schema.Struct({
   relayUrl: Schema.NonEmptyString,
@@ -44,7 +51,7 @@ export const DeviceConfiguration = Schema.Struct({
   relayUrl: Schema.NonEmptyString,
   token: Schema.NonEmptyString,
   id: DeviceId,
-  name: Schema.NonEmptyString,
+  name: Device.fields.name,
   workspaces: WorkspaceList,
   providers: Schema.optionalKey(ProviderList),
   model: Schema.optionalKey(Schema.NonEmptyString),
@@ -160,7 +167,7 @@ export const readStoredConfiguration = async (): Promise<StoredConfiguration | u
     await chmod(path, 0o600)
   }
   try {
-    return Schema.decodeUnknownSync(StoredConfiguration)(JSON.parse(await readFile(path, "utf8")))
+    return Schema.decodeUnknownSync(ReadableConfiguration)(JSON.parse(await readFile(path, "utf8")))
   } catch (cause) {
     throw new Error(`Invalid Cohall configuration at ${path}: ${String(cause)}`)
   }
@@ -264,7 +271,7 @@ const storedOrDefaults = async (): Promise<StoredConfiguration> => {
   const stored = await readStoredConfiguration()
   return (
     stored ??
-    StoredConfiguration.make({
+    ReadableConfiguration.make({
       version: 1,
       relayUrl: "http://127.0.0.1:8787",
       deviceId: makeDeviceId(),

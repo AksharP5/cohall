@@ -1,6 +1,6 @@
 import { exchangePairing } from "@cohall/client"
-import { type Provider as ProviderName } from "@cohall/protocol"
-import { Effect } from "effect"
+import { Device, type Provider as ProviderName } from "@cohall/protocol"
+import { Effect, Schema } from "effect"
 import { hostname } from "node:os"
 import { Writable } from "node:stream"
 import { createInterface } from "node:readline/promises"
@@ -163,8 +163,10 @@ export const guidedSetupInput = async (
   }
   const deviceName = options.clientOnly
     ? undefined
-    : (options.deviceName ??
-      (await prompter.answer("Device name", existing?.deviceName ?? hostname())))
+    : Schema.decodeUnknownSync(Device.fields.name)(
+        options.deviceName ??
+          (await prompter.answer("Device name", existing?.deviceName ?? hostname())),
+      )
   const providerInput =
     options.providers ??
     (options.clientOnly

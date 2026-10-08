@@ -1,6 +1,6 @@
 import { DeviceId } from "@cohall/protocol"
 import { createServer, type Server } from "node:http"
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -42,6 +42,29 @@ const prompter = (
 })
 
 describe("guided setup", () => {
+  it.each([false, true])(
+    "rejects an invalid device name before collecting credentials with token reader=%s",
+    async (withTokenReader) => {
+      const workspace = await temporary()
+      const secret = vi.fn<Prompter["secret"]>().mockResolvedValue("pairing-secret")
+      const readToken = vi.fn<() => Promise<string>>().mockResolvedValue("pairing-secret")
+      await expect(
+        guidedSetupInput(
+          {
+            relayUrl: "https://relay.example",
+            clientOnly: false,
+            workspaces: [workspace],
+            cwd: workspace,
+            ...(withTokenReader ? { readToken, deviceName: "n".repeat(129) } : {}),
+          },
+          { ...prompter({ "Device name": "n".repeat(129) }), secret },
+        ),
+      ).rejects.toThrow("128")
+      expect(secret).not.toHaveBeenCalled()
+      expect(readToken).not.toHaveBeenCalled()
+    },
+  )
+
   it("requires a relay address before collecting first-run credentials", async () => {
     const workspace = await temporary()
     const secret = vi.fn<Prompter["secret"]>().mockResolvedValue("pairing-secret")
@@ -207,7 +230,37 @@ describe("guided setup", () => {
   })
 })
 
-it("joins once and stores both scoped credentials", async () => {
+it("rejects an invalid device name before exchanging credentials or replacing configuration", async () => {
+  const workspace = await temporary()
+  const configuration = await makeStoredConfiguration({
+    relayUrl: "https://relay.example",
+    deviceName: "workstation",
+    workspaces: [workspace],
+    clientToken: "existing-client-token",
+    deviceToken: "existing-device-token",
+  })
+  await writeStoredConfiguration(configuration)
+  const path = join(workspace, "config.json")
+  const saved = await readFile(path, "utf8")
+  const exchange = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected exchange"))
+  try {
+    await expect(
+      joinRelay({
+        relayUrl: configuration.relayUrl,
+        token: "pairing-secret",
+        clientOnly: false,
+        deviceName: "n".repeat(129),
+        workspaces: [workspace],
+      }),
+    ).rejects.toThrow("128")
+    expect(exchange).not.toHaveBeenCalled()
+    expect(await readFile(path, "utf8")).toBe(saved)
+  } finally {
+    exchange.mockRestore()
+  }
+})
+
+it("joins with a 128-character device name and stores both scoped credentials", async () => {
   const workspace = await temporary()
   const deviceId = "22222222-2222-4222-8222-222222222222"
   const timestamp = "2026-08-09T12:00:00.000Z"
@@ -255,7 +308,7 @@ it("joins once and stores both scoped credentials", async () => {
     relayUrl: `http://127.0.0.1:${address.port}`,
     token: "pairing-secret",
     clientOnly: false,
-    deviceName: "workstation",
+    deviceName: "n".repeat(128),
     workspaces: [workspace],
     providers: ["codex"],
   })
@@ -263,6 +316,7 @@ it("joins once and stores both scoped credentials", async () => {
   expect(result.roles).toEqual(["client", "device"])
   expect(result.configuration).toMatchObject({
     deviceId,
+    deviceName: "n".repeat(128),
     clientToken: "client-secret",
     deviceToken: "device-secret",
   })

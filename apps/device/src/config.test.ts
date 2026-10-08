@@ -6,6 +6,7 @@ import {
   loadClientConfiguration,
   loadDeviceConfiguration,
   loadOwnerConfiguration,
+  makeStoredConfiguration,
   relayDataDirectory,
   writeStoredConfiguration,
 } from "./config.ts"
@@ -13,8 +14,10 @@ import { allowedWorkspace, openAllowedWorkspace, selectProviders } from "./daemo
 import { DeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { syncBuiltinESMExports } from "node:module"
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
+import OperatingSystem from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -29,6 +32,8 @@ const temporary = async (): Promise<string> => {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
+  syncBuiltinESMExports()
   vi.unstubAllEnvs()
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
@@ -67,6 +72,96 @@ describe.skipIf(platform() === "win32" || platform() === "darwin")("XDG storage 
 })
 
 describe("device workspace configuration", () => {
+  it("applies environment credentials and a name override before validating unsaved defaults", async () => {
+    const directory = await temporary()
+    vi.stubEnv("COHALL_CONFIG", join(directory, "missing.json"))
+    vi.stubEnv("COHALL_RELAY_URL", "https://relay.example")
+    vi.stubEnv("COHALL_CLIENT_TOKEN", "client-token")
+    vi.stubEnv("COHALL_DEVICE_TOKEN", "device-token")
+    vi.stubEnv("COHALL_DEVICE_WORKSPACES_JSON", JSON.stringify([directory]))
+    vi.stubEnv("COHALL_DEVICE_NAME", "worker")
+    vi.spyOn(OperatingSystem, "hostname").mockReturnValue("n".repeat(129))
+    syncBuiltinESMExports()
+
+    await expect(Effect.runPromise(loadClientConfiguration)).resolves.toMatchObject({
+      token: "client-token",
+    })
+    await expect(Effect.runPromise(loadDeviceConfiguration)).resolves.toMatchObject({
+      name: "worker",
+    })
+    vi.stubEnv("COHALL_DEVICE_NAME", undefined)
+    await expect(Effect.runPromise(loadDeviceConfiguration)).rejects.toThrow("128")
+  })
+
+  it("keeps older device names readable for client access and name repair", async () => {
+    const directory = await temporary()
+    const path = join(directory, "config.json")
+    vi.stubEnv("COHALL_CONFIG", path)
+    vi.stubEnv("COHALL_RELAY_URL", undefined)
+    vi.stubEnv("COHALL_CLIENT_TOKEN", undefined)
+    vi.stubEnv("COHALL_DEVICE_TOKEN", undefined)
+    vi.stubEnv("COHALL_DEVICE_NAME", undefined)
+    const legacy = {
+      version: 1,
+      relayUrl: "https://relay.example",
+      deviceId: "11111111-1111-4111-8111-111111111111",
+      deviceName: "n".repeat(129),
+      workspaces: [directory],
+      clientToken: "client-token",
+      deviceToken: "device-token",
+    }
+    await writeFile(path, JSON.stringify(legacy))
+
+    await expect(Effect.runPromise(loadClientConfiguration)).resolves.toMatchObject({
+      token: legacy.clientToken,
+    })
+    await expect(Effect.runPromise(loadDeviceConfiguration)).rejects.toThrow("128")
+    vi.stubEnv("COHALL_DEVICE_NAME", "worker")
+    await expect(Effect.runPromise(loadDeviceConfiguration)).resolves.toMatchObject({
+      name: "worker",
+    })
+    const repaired = await makeStoredConfiguration({
+      relayUrl: legacy.relayUrl,
+      deviceName: "worker",
+    })
+    await writeStoredConfiguration(repaired)
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      ...legacy,
+      deviceName: "worker",
+    })
+  })
+
+  it.each([128, 129])(
+    "validates %i-character stored and environment device names",
+    async (length) => {
+      const directory = await temporary()
+      const path = join(directory, "config.json")
+      vi.stubEnv("COHALL_CONFIG", path)
+      vi.stubEnv("COHALL_RELAY_URL", undefined)
+      const configuration = StoredConfiguration.make({
+        version: 1,
+        relayUrl: "https://relay.example",
+        deviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        deviceName: "workstation",
+        workspaces: [directory],
+        deviceToken: "device-token",
+      })
+      await writeStoredConfiguration(configuration)
+      const saved = await readFile(path, "utf8")
+      const name = "n".repeat(length)
+      vi.stubEnv("COHALL_DEVICE_NAME", name)
+      const draft = makeStoredConfiguration({ relayUrl: configuration.relayUrl, deviceName: name })
+      if (length === 128) {
+        await expect(draft).resolves.toMatchObject({ deviceName: name })
+        await expect(Effect.runPromise(loadDeviceConfiguration)).resolves.toMatchObject({ name })
+      } else {
+        await expect(draft).rejects.toThrow("128")
+        await expect(Effect.runPromise(loadDeviceConfiguration)).rejects.toThrow("128")
+      }
+      expect(await readFile(path, "utf8")).toBe(saved)
+    },
+  )
+
   it("retains credentials only for their issuing relay", () => {
     const configuration = StoredConfiguration.make({
       version: 1,
