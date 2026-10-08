@@ -181,8 +181,9 @@ cohall doctor
 ```
 
 `relay use` first proves that every stored client and device credential works
-against the new relay. Only then does it save the address. It restarts an
-active managed device service automatically and leaves stopped workers stopped.
+against the new relay. If configuration changes during verification, it asks you
+to retry without overwriting those changes. Only then does it save the address.
+It restarts an active managed device service automatically and leaves stopped workers stopped.
 Repeat the command to retry a failed restart or apply a previously saved address;
 credentials are verified again, and an unchanged address is not rewritten.
 Current relays verify device credentials without claiming the running worker's

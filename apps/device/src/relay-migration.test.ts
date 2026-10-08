@@ -279,6 +279,56 @@ describe("relay migration", () => {
     },
   )
 
+  it.each(["settings", "credentials"] as const)(
+    "rejects a relay switch when %s change during verification",
+    async (change) => {
+      const root = await temporary()
+      const names = [
+        "COHALL_CONFIG",
+        "COHALL_RELAY_URL",
+        "COHALL_CLIENT_TOKEN",
+        "COHALL_DEVICE_TOKEN",
+      ] as const
+      const previous = new Map(names.map((name) => [name, process.env[name]]))
+      for (const name of names) delete process.env[name]
+      process.env.COHALL_CONFIG = join(root, "config.json")
+      const configuration = StoredConfiguration.make({
+        version: 1,
+        relayUrl: "https://old.example",
+        deviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        deviceName: "workstation",
+        workspaces: [root],
+        providers: ["codex"],
+        clientToken: "client-token",
+        deviceToken: "device-token",
+      })
+      const changed = StoredConfiguration.make({
+        ...configuration,
+        ...(change === "settings"
+          ? { deviceName: "renamed", providers: ["claude-code"] }
+          : { clientToken: "new-client-token", deviceToken: "new-device-token" }),
+      })
+      const restartService = vi.fn().mockResolvedValue({ running: true, restarted: true })
+
+      try {
+        await writeStoredConfiguration(configuration)
+        await expect(
+          switchRelay({
+            relayUrl: "https://new.example",
+            restart: true,
+            verifyClient: async () => undefined,
+            verifyDevice: async () => writeStoredConfiguration(changed),
+            restartService,
+          }),
+        ).rejects.toThrow("configuration changed")
+        await expect(readStoredConfiguration()).resolves.toEqual(changed)
+        expect(restartService).not.toHaveBeenCalled()
+      } finally {
+        for (const name of names) restoreEnvironment(name, previous.get(name))
+      }
+    },
+  )
+
   it("leaves the current relay untouched when verification fails", async () => {
     const root = await temporary()
     const previousConfig = process.env.COHALL_CONFIG
