@@ -1,8 +1,10 @@
 import { Bot, type RequestTaskInput, type Task } from "@cohall/protocol"
 import { Effect, Schedule, Schema } from "effect"
+import { constants } from "node:fs"
 import { open } from "node:fs/promises"
 import { isIP } from "node:net"
 import { claimBotDispatch, prepareBotReply, readBotReply } from "./bot-replies.ts"
+import { readBoundedFile } from "./bounded-file.ts"
 
 const maxResponseBytes = 4 * 1024 * 1024
 const maxDiscoveryBytes = 64 * 1024
@@ -44,16 +46,17 @@ const decode = <S extends Schema.ConstraintDecoder<unknown>>(
 
 const readConnection = async (path: string) => {
   const value = await (async () => {
-    const file = await open(path, "r")
+    const file = await open(
+      path,
+      constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NONBLOCK),
+    )
     try {
-      const buffer = Buffer.alloc(maxDiscoveryBytes + 1)
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
-      if (bytesRead > maxDiscoveryBytes) throw new Error("Discovery file exceeds its size limit")
-      return decode(
-        Discovery,
-        JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")),
-        "discovery file",
-      )
+      const metadata = await file.stat()
+      if (!metadata.isFile()) throw new Error("Discovery must be a regular file")
+      const buffer = await readBoundedFile(file, maxDiscoveryBytes)
+      if (buffer.length > maxDiscoveryBytes)
+        throw new Error("Discovery file exceeds its size limit")
+      return decode(Discovery, JSON.parse(buffer.toString("utf8")), "discovery file")
     } finally {
       await file.close()
     }

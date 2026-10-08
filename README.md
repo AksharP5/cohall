@@ -328,7 +328,7 @@ On an already paired Grok Bot computer, configure its actual gateway file and
 restart the Cohall worker:
 
 ```bash
-test -r "$HOME/agent-data/gateway.json" &&
+test -f "$HOME/agent-data/gateway.json" && test -r "$HOME/agent-data/gateway.json" &&
   cohall configure --grok-gateway "$HOME/agent-data/gateway.json" --providers grok-bot
 ```
 
