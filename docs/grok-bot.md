@@ -103,11 +103,12 @@ root, but Codex tasks need a valid root.
 
 Find the gateway discovery file on **that computer**. On current Grok Bot
 computers it may be at `$HOME/agent-data/gateway.json`; use the actual path if
-different. The file contains a local gateway credential, so check that it is
-readable without printing or copying its contents:
+different. The file contains a local gateway credential, so check that it is a
+readable regular file without printing or copying its contents:
 
 ```bash
-test -r "$HOME/agent-data/gateway.json" && "$HOME/.local/bin/cohall" configure \
+test -f "$HOME/agent-data/gateway.json" && test -r "$HOME/agent-data/gateway.json" &&
+  "$HOME/.local/bin/cohall" configure \
   --grok-gateway "$HOME/agent-data/gateway.json" \
   --providers grok-bot
 ```

@@ -1,6 +1,8 @@
 import { BotId, Task, makeDeviceId, makeTaskId, makeThreadId, now } from "@cohall/protocol"
 import { Schema } from "effect"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
+import { constants } from "node:fs"
+import { mkdtemp, open, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer, type Server, type ServerResponse } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -105,6 +107,55 @@ afterEach(async () => {
 })
 
 describe("Grok Bot gateway", () => {
+  it.skipIf(process.platform === "win32")(
+    "rejects a discovery FIFO without waiting for a writer",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "cohall-grok-fifo-"))
+      directories.push(directory)
+      const path = join(directory, "gateway.json")
+      execFileSync("mkfifo", [path])
+      const blocked = Symbol("Discovery waited for a FIFO writer")
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const reading = discoverGrokBots(path).then(
+        () => undefined,
+        (cause: unknown) => cause,
+      )
+      const outcome = await Promise.race([
+        reading,
+        new Promise<typeof blocked>((resolve) => {
+          timer = setTimeout(() => resolve(blocked), 5_000)
+        }),
+      ])
+      try {
+        expect(outcome).toEqual(
+          expect.objectContaining({
+            message: expect.stringContaining("Cannot read Grok Bot gateway discovery"),
+          }),
+        )
+      } finally {
+        clearTimeout(timer)
+        if (outcome === blocked) {
+          const writer = await open(path, constants.O_RDWR | constants.O_NONBLOCK)
+          try {
+            await reading
+          } finally {
+            await writer.close()
+          }
+        }
+      }
+    },
+  )
+
+  it.skipIf(process.platform === "win32")(
+    "reads a discovery symlink to a regular file",
+    async () => {
+      const fixture = await gateway(() => [bot])
+      const path = `${fixture.path}.link`
+      await symlink(fixture.path, path)
+      await expect(discoverGrokBots(path)).resolves.toEqual([{ id: bot.id, name: bot.name }])
+    },
+  )
+
   it("discovers all named bots, including hidden bots, without credentials or groups", async () => {
     const fixture = await gateway(() => [
       bot,
