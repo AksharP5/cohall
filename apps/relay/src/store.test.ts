@@ -10,6 +10,8 @@ import {
   maxAttachmentBytes,
   maxDevicePageResponseBytes,
   maxSocketPayloadBytes,
+  AnswerTaskInput,
+  RequestTaskInput,
   TaskProgressInput,
 } from "@cohall/protocol"
 import { Effect, ManagedRuntime, Schema } from "effect"
@@ -254,6 +256,106 @@ it.each([
       expect(
         (await Effect.runPromise(store.inboxFor("owner"))).items.map((item) => item.id),
       ).toEqual([task.id])
+    } finally {
+      await runtime.dispose()
+      database.close()
+    }
+  },
+)
+
+it.each(["disconnect", "restart"] as const)(
+  "replays running work before an older answered clarification after %s",
+  async (interruption) => {
+    const database = new Database(":memory:")
+    const runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+    try {
+      const store = await runtime.runPromise(RelayStore.Service)
+      const device = Device.make({
+        id: makeDeviceId(),
+        name: "replay-target",
+        hostname: "localhost",
+        platform: "linux",
+        architecture: "x64",
+        status: "online",
+        providers: ["codex"],
+        capabilities: [{ id: "task-clarification", label: "Clarification" }],
+        workspaces: [],
+        version,
+        lastSeenAt: now(),
+      })
+      await Effect.runPromise(store.upsertDevice(device))
+      const older = await Effect.runPromise(
+        store.createDelegation({ prompt: "Ask before continuing" }, device.id, "owner"),
+      )
+      const firstTurn = await Effect.runPromise(store.assignTask(older.id))
+      if (firstTurn.runId === undefined) throw new Error("Missing questioning turn")
+      await Effect.runPromise(store.acceptTask(older.id, device.id, firstTurn.runId))
+      database
+        .query("UPDATE tasks SET created_at = ?, started_at = ? WHERE id = ?")
+        .run("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.000Z", older.id)
+      const question = await Effect.runPromise(
+        store.requestTaskInput(
+          older.id,
+          device.id,
+          Schema.decodeUnknownSync(RequestTaskInput)({
+            runId: firstTurn.runId,
+            question: "Which branch?",
+          }),
+        ),
+      )
+      await Effect.runPromise(
+        store.finishTask(older.id, device.id, "Asked", undefined, undefined, firstTurn.runId),
+      )
+      const newer = await Effect.runPromise(
+        store.createDelegation({ prompt: "Keep working" }, device.id, "owner"),
+      )
+      const active = await Effect.runPromise(store.assignTask(newer.id))
+      if (active.runId === undefined) throw new Error("Missing active turn")
+      await Effect.runPromise(store.acceptTask(newer.id, device.id, active.runId))
+      const answered = await Effect.runPromise(
+        store.answerTaskInput(
+          older.id,
+          "owner",
+          Schema.decodeUnknownSync(AnswerTaskInput)({ requestId: question.id, answer: "main" }),
+        ),
+      )
+      expect(answered.startedAt).toBe("2026-01-01T00:00:01.000Z")
+      expect((await Effect.runPromise(store.assignTask(older.id))).status).toBe("queued")
+      await Effect.runPromise(
+        interruption === "restart" ? store.recover() : store.requeueTasksFor(device.id),
+      )
+      const pending = await Effect.runPromise(store.pendingTasksFor(device.id))
+      expect(pending.map((task) => task.id)).toEqual([newer.id, older.id])
+      for (const task of pending) await Effect.runPromise(store.assignTask(task.id))
+      expect(
+        await Effect.runPromise(store.acceptTask(newer.id, device.id, active.runId)),
+      ).toMatchObject({
+        status: "running",
+        runId: active.runId,
+      })
+      expect(await Effect.runPromise(store.getTask(older.id))).toMatchObject({
+        status: "queued",
+        runId: answered.runId,
+      })
+      await Effect.runPromise(
+        store.reportTaskProgress(
+          newer.id,
+          device.id,
+          Schema.decodeUnknownSync(TaskProgressInput)({ note: "Still working" }).note,
+        ),
+      )
+      expect(
+        await Effect.runPromise(
+          store.requestTaskInput(
+            newer.id,
+            device.id,
+            Schema.decodeUnknownSync(RequestTaskInput)({
+              runId: active.runId,
+              question: "Which tests?",
+            }),
+          ),
+        ),
+      ).toMatchObject({ question: "Which tests?" })
     } finally {
       await runtime.dispose()
       database.close()

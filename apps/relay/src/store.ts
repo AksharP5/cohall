@@ -622,8 +622,9 @@ const derivedTraceEvents = (task: Task): ReadonlyArray<TaskTraceEvent> => {
   return events
 }
 
+// A coding provider may still be running after its connection drops.
 const interruptedTaskStatus = `CASE
-  WHEN json_array_length(clarifications_json) > 0
+  WHEN provider = 'grok-bot' AND json_array_length(clarifications_json) > 0
     AND json_extract(clarifications_json, '$[#-1].answer') IS NULL THEN 'needs_input'
   ELSE 'queued' END`
 
@@ -1707,7 +1708,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         db
           .query<TaskRow, [string]>(
             `SELECT * FROM tasks WHERE target_device_id = ?
-           AND status IN ('queued', 'cancelling') ORDER BY created_at, id LIMIT 100`,
+           AND status IN ('queued', 'cancelling')
+           ORDER BY dispatched_at IS NULL, created_at, id LIMIT 100`,
           )
           .all(deviceId),
       catch: operationError("RelayStore.pendingTasksFor"),

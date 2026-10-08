@@ -293,9 +293,14 @@ it("cancels a resumed Bot turn that has not been dispatched", async () => {
   }
 })
 
-it.each(["disconnect", "restart"] as const)(
-  "keeps a matching paused run's late session across a %s and later worker restart",
-  async (interruption) => {
+it.each([
+  ["disconnect", "queued"],
+  ["disconnect", "assigned"],
+  ["restart", "queued"],
+  ["restart", "assigned"],
+] as const)(
+  "waits for the interrupted turn's terminal reply after %s while %s, then saves its session",
+  async (interruption, status) => {
     const directory = await mkdtemp(join(tmpdir(), "cohall-input-session-"))
     const database = join(directory, "relay.db")
     let runtime = ManagedRuntime.make(RelayStore.layer(database))
@@ -320,6 +325,23 @@ it.each(["disconnect", "restart"] as const)(
       await Effect.runPromise(
         interruption === "disconnect" ? store.requeueTasksFor(target.id) : store.recover(),
       )
+      const interrupted = await Effect.runPromise(store.getTask(task.id))
+      expect(interrupted).toMatchObject({ status: "queued", runId, clarifications: [question] })
+      if (status === "assigned") {
+        expect(await Effect.runPromise(store.assignTask(task.id))).toMatchObject({
+          status,
+          runId,
+        })
+      }
+      await expect(
+        Effect.runPromise(
+          store.answerTaskInput(
+            task.id,
+            "owner",
+            Schema.decodeUnknownSync(AnswerTaskInput)({ requestId: question.id, answer: "main" }),
+          ),
+        ),
+      ).rejects.toMatchObject({ status: 409 })
       const stale = await Effect.runPromise(
         store.finishTask(
           task.id,
@@ -476,7 +498,7 @@ it("pauses, frees the worker, and resumes only the current question for its requ
   }
 })
 
-it("preserves an unanswered question across disconnect and relay restart, and cancels paused work", async () => {
+it("preserves an interrupted questioning turn across disconnect and restart until cancellation acknowledgement", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-input-"))
   const database = join(directory, "relay.db")
   const original = ManagedRuntime.make(RelayStore.layer(database))
@@ -502,14 +524,32 @@ it("preserves an unanswered question across disconnect and relay restart, and ca
       ),
     )
     await Effect.runPromise(store.requeueTasksFor(target.id))
-    expect((await Effect.runPromise(store.getTask(task.id))).status).toBe("needs_input")
+    expect((await Effect.runPromise(store.getTask(task.id))).status).toBe("queued")
     await original.dispose()
     restored = ManagedRuntime.make(RelayStore.layer(database))
     const recovered = await restored.runPromise(RelayStore.Service)
     await Effect.runPromise(recovered.recover())
     expect((await Effect.runPromise(recovered.getTask(task.id))).clarifications).toEqual([question])
-    expect((await Effect.runPromise(recovered.pendingTasksFor(target.id))).length).toBe(0)
-    expect((await Effect.runPromise(recovered.usage())).byStatus.needs_input).toBe(1)
+    expect(await Effect.runPromise(recovered.pendingTasksFor(target.id))).toMatchObject([
+      { id: task.id, status: "queued", runId: assigned.runId },
+    ])
+    expect((await Effect.runPromise(recovered.usage())).byStatus.queued).toBe(1)
+    await expect(
+      Effect.runPromise(
+        recovered.answerTaskInput(
+          task.id,
+          "owner",
+          Schema.decodeUnknownSync(AnswerTaskInput)({
+            requestId: question.id,
+            answer: "Production",
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 409 })
+    expect(await Effect.runPromise(recovered.assignTask(task.id))).toMatchObject({
+      status: "assigned",
+      runId: assigned.runId,
+    })
     expect((await Effect.runPromise(recovered.requestCancellation(task.id))).status).toBe(
       "cancelling",
     )

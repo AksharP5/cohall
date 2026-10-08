@@ -245,9 +245,9 @@ Tasks created before the inbox was added have no inbox entry.
 
 If essential information is missing, a worker can run
 `cohall request-input --question 'Which branch should I use?'` and end its turn.
-The task becomes `needs_input`, frees the worker slot, and returns the question
-as `input_request` in `status` or a waiting command. The original requester or
-relay owner answers using its question ID:
+After the worker ends its turn, the task becomes `needs_input`, frees the worker
+slot, and returns the question as `input_request` in `status` or a waiting command.
+The original requester or relay owner answers using its question ID:
 
 ```bash
 cohall answer <task-id> --request-id <question-id> --message 'Use main.'

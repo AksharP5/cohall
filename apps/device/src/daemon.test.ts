@@ -9,6 +9,7 @@ import {
   TaskRunId,
   TaskProgressInput,
   RequestTaskInput,
+  AnswerTaskInput,
   SocketEvent,
   makeTaskId,
   makeThreadId,
@@ -398,6 +399,134 @@ describe("device relay connection", () => {
       }
     },
   )
+
+  it("aborts the original questioning provider before confirming cancellation after disconnect", async () => {
+    const { server, relayUrl } = await startServer()
+    const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+    const store = await runtime.runPromise(RelayStore.Service)
+    const target = Device.make({
+      id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      name: "test-device",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [{ id: "task-clarification", label: "Clarification" }],
+      workspaces: [],
+      version: "test",
+      lastSeenAt: now(),
+    })
+    let aborted = false
+    const provider = vi.spyOn(Providers, "run").mockImplementation(() =>
+      Effect.promise(
+        (signal) =>
+          new Promise((resolve) => {
+            signal.addEventListener(
+              "abort",
+              () => {
+                aborted = true
+                resolve({ result: "Stopped" })
+              },
+              { once: true },
+            )
+          }),
+      ),
+    )
+    await Effect.runPromise(store.upsertDevice(target))
+    const task = await Effect.runPromise(
+      store.createDelegation({ prompt: "Ask before continuing" }, target.id, "owner"),
+    )
+    const assigned = await Effect.runPromise(store.assignTask(task.id))
+    if (assigned.runId === undefined) throw new Error("Missing original turn")
+    const sockets: Array<WebSocket> = []
+    const cancelled = Promise.withResolvers<Task>()
+    let processing = Promise.resolve()
+    server.on("connection", (socket) => {
+      sockets.push(socket)
+      socket.on("message", (message) => {
+        processing = processing
+          .then(async () => {
+            const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
+            if (event._tag === "Authenticate") {
+              socket.send(
+                JSON.stringify({
+                  _tag: "Connected",
+                  serverVersion: "test",
+                  connectedAt: now(),
+                  taskClarification: true,
+                }),
+              )
+            }
+            if (event._tag === "DeviceHello") {
+              const current = await Effect.runPromise(store.getTask(task.id))
+              socket.send(
+                JSON.stringify(
+                  current.status === "cancelling"
+                    ? { _tag: "CancelTask", taskId: task.id, runId: current.runId }
+                    : { _tag: "TaskAssigned", task: assigned },
+                ),
+              )
+            }
+            if (event._tag === "TaskAccepted") {
+              await Effect.runPromise(store.acceptTask(task.id, target.id, event.runId))
+            }
+            if (event._tag === "TaskCancelled") {
+              expect(aborted).toBe(true)
+              expect(event.runId).toBe(assigned.runId)
+              cancelled.resolve(
+                await Effect.runPromise(
+                  store.acknowledgeCancellation(task.id, target.id, event.runId),
+                ),
+              )
+            }
+          })
+          .catch((cause: unknown) => cancelled.reject(cause))
+      })
+    })
+    const daemon = run(relayUrl)
+    try {
+      await vi.waitFor(() => expect(provider).toHaveBeenCalledOnce())
+      await processing
+      const question = await Effect.runPromise(
+        store.requestTaskInput(
+          task.id,
+          target.id,
+          Schema.decodeUnknownSync(RequestTaskInput)({
+            runId: assigned.runId,
+            question: "Which branch?",
+          }),
+        ),
+      )
+      const first = sockets[0]
+      if (first === undefined) throw new Error("Missing initial connection")
+      const closed = new Promise<void>((resolve) => first.once("close", resolve))
+      first.close()
+      await closed
+      await Effect.runPromise(store.requeueTasksFor(target.id))
+      await expect(
+        Effect.runPromise(
+          store.answerTaskInput(
+            task.id,
+            "owner",
+            Schema.decodeUnknownSync(AnswerTaskInput)({ requestId: question.id, answer: "main" }),
+          ),
+        ),
+      ).rejects.toMatchObject({ status: 409 })
+      expect(aborted).toBe(false)
+      expect(await Effect.runPromise(store.requestCancellation(task.id))).toMatchObject({
+        status: "cancelling",
+        runId: assigned.runId,
+      })
+      await expect(cancelled.promise).resolves.toMatchObject({ status: "cancelled" })
+      expect(provider).toHaveBeenCalledOnce()
+    } finally {
+      controllers.at(-1)?.abort()
+      await daemon
+      await processing
+      await runtime.dispose()
+    }
+  })
 
   it.each([
     { phase: "mkdir", stopping: "cancel" },

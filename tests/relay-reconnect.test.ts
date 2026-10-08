@@ -1,8 +1,11 @@
 import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
 import {
+  AnswerTaskInput,
   BotId,
   Device,
+  RequestTaskInput,
   SocketEvent,
+  TaskProgressInput,
   Timestamp,
   makeDeviceId,
   now,
@@ -111,6 +114,7 @@ it("expires undispatched offline work and delivers interrupted-task cancellation
     const coding = await Effect.runPromise(
       client.createTask({ targetDeviceId: device.id, provider: "codex", prompt: "Keep working" }),
     )
+    if (coding.runId === undefined) throw new Error("Expected coding turn")
     original.send({ _tag: "TaskAccepted", taskId: coding.id, runId: coding.runId })
     await vi.waitFor(async () => {
       expect((await Effect.runPromise(client.getTask(coding.id))).status).toBe("running")
@@ -232,11 +236,26 @@ it("expires undispatched offline work and delivers interrupted-task cancellation
       expect((await Effect.runPromise(client.getTask(questionTask.id))).status).toBe("running")
     })
     const workerClient = RelayClient.make({ baseUrl, token: credential.token })
-    await Effect.runPromise(
-      workerClient.requestTaskInput(questionTask.id, { runId, question: "Which branch?" }),
+    const question = await Effect.runPromise(
+      workerClient.requestTaskInput(
+        questionTask.id,
+        Schema.decodeUnknownSync(RequestTaskInput)({ runId, question: "Which branch?" }),
+      ),
     )
     await disconnect(interrupted.socket)
-    expect((await Effect.runPromise(client.getTask(questionTask.id))).status).toBe("needs_input")
+    await expect(
+      Effect.runPromise(
+        client.answerTaskInput(
+          questionTask.id,
+          Schema.decodeUnknownSync(AnswerTaskInput)({ requestId: question.id, answer: "main" }),
+        ),
+      ),
+    ).rejects.toMatchObject({ status: 409 })
+    expect(await Effect.runPromise(client.getTask(questionTask.id))).toMatchObject({
+      status: "queued",
+      runId,
+      clarifications: [question],
+    })
     expect((await Effect.runPromise(client.cancelTask(questionTask.id))).status).toBe("cancelling")
     const reconnected = await connect(credential.token)
     await vi.waitFor(() => {
@@ -281,12 +300,15 @@ it("expires undispatched offline work and delivers interrupted-task cancellation
       expect((await Effect.runPromise(client.getTask(offlineQuestion.id))).status).toBe("running")
     })
     await disconnect(reconnected.socket)
-    const replayed = await connect(credential.token, {
-      _tag: "TaskInputRequested",
-      taskId: offlineQuestion.id,
-      runId: offlineQuestion.runId,
-      question: "Which branch?",
-    })
+    const replayed = await connect(
+      credential.token,
+      Schema.decodeUnknownSync(SocketEvent)({
+        _tag: "TaskInputRequested",
+        taskId: offlineQuestion.id,
+        runId: offlineQuestion.runId,
+        question: "Which branch?",
+      }),
+    )
     await vi.waitFor(() => {
       expect(replayed.events).toContainEqual({
         _tag: "TaskSettled",
@@ -304,6 +326,153 @@ it("expires undispatched offline work and delivers interrupted-task cancellation
         inputRequest: expect.objectContaining({ question: "Which branch?" }),
       }),
     )
+  } finally {
+    for (const socket of sockets) socket.terminate()
+    const exited = once(relay, "exit", { signal: AbortSignal.timeout(2_000) })
+    relay.kill("SIGTERM")
+    await exited.catch(() => relay.kill("SIGKILL"))
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+it("replays the active coding turn before an older answered task on reconnect", async () => {
+  const reservation = createServer()
+  reservation.listen(0, "127.0.0.1")
+  await once(reservation, "listening")
+  const address = reservation.address()
+  if (address === null || typeof address === "string") throw new Error("Expected test port")
+  await new Promise<void>((resolve) => reservation.close(() => resolve()))
+  const directory = await mkdtemp(join(tmpdir(), "cohall-replay-order-"))
+  const token = "replay-order-test-owner-token".padEnd(64, "0")
+  const baseUrl = `http://127.0.0.1:${address.port}`
+  const relay = spawn(process.execPath, ["bin/cohall.js", "relay"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      COHALL_RELAY_HOST: "127.0.0.1",
+      COHALL_RELAY_PORT: String(address.port),
+      COHALL_DATA_DIR: directory,
+      COHALL_TOKEN: token,
+    },
+    stdio: "ignore",
+  })
+  const sockets: Array<WebSocket> = []
+  const device = Device.make({
+    id: makeDeviceId(),
+    name: "replay-order-device",
+    hostname: "localhost",
+    platform: "linux",
+    architecture: "x64",
+    providers: ["codex"],
+    capabilities: [{ id: "task-clarification", label: "Clarification" }],
+    workspaces: [],
+    version,
+    status: "online",
+    lastSeenAt: now(),
+  })
+  const client = RelayClient.make({ baseUrl, token })
+  const connect = async () => {
+    const socket = new WebSocket(`${baseUrl.replace("http", "ws")}/ws/device`)
+    sockets.push(socket)
+    const events: Array<SocketEvent> = []
+    const send = (event: SocketEvent) => socket.send(JSON.stringify(event))
+    socket.on("message", (data) => {
+      const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(data.toString()))
+      events.push(event)
+      if (event._tag === "Connected") send({ _tag: "DeviceHello", device })
+      if (event._tag === "TaskAssigned") {
+        send({
+          _tag: "TaskAccepted",
+          taskId: event.task.id,
+          ...(event.task.runId === undefined ? {} : { runId: event.task.runId }),
+        })
+      }
+    })
+    await once(socket, "open")
+    send({ _tag: "Authenticate", token })
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("online")
+    })
+    return { socket, events, send }
+  }
+  try {
+    await vi.waitFor(async () => expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true), {
+      timeout: 10_000,
+    })
+    const original = await connect()
+    const older = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, provider: "codex", prompt: "Ask first" }),
+    )
+    if (older.runId === undefined) throw new Error("Expected questioning turn")
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(older.id))).status).toBe("running")
+    })
+    const question = await Effect.runPromise(
+      client.requestTaskInput(
+        older.id,
+        Schema.decodeUnknownSync(RequestTaskInput)({
+          runId: older.runId,
+          question: "Which branch?",
+        }),
+      ),
+    )
+    original.send({ _tag: "TaskFinished", taskId: older.id, runId: older.runId, result: "Asked" })
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(older.id))).status).toBe("needs_input")
+    })
+    const newer = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, provider: "codex", prompt: "Keep working" }),
+    )
+    if (newer.runId === undefined) throw new Error("Expected active turn")
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.getTask(newer.id))).status).toBe("running")
+    })
+    const answered = await Effect.runPromise(
+      client.answerTaskInput(
+        older.id,
+        Schema.decodeUnknownSync(AnswerTaskInput)({ requestId: question.id, answer: "main" }),
+      ),
+    )
+    expect(answered.status).toBe("queued")
+    const closed = once(original.socket, "close")
+    original.socket.close()
+    await closed
+    await vi.waitFor(async () => {
+      expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("offline")
+    })
+    const reconnected = await connect()
+    await vi.waitFor(async () => {
+      expect(await Effect.runPromise(client.getTask(newer.id))).toMatchObject({
+        status: "running",
+        runId: newer.runId,
+      })
+    })
+    expect(
+      reconnected.events
+        .filter((event) => event._tag === "TaskAssigned")
+        .map((event) => event.task.id),
+    ).toEqual([newer.id])
+    expect(await Effect.runPromise(client.getTask(older.id))).toMatchObject({
+      status: "queued",
+      runId: answered.runId,
+    })
+    await Effect.runPromise(
+      client.reportTaskProgress(
+        newer.id,
+        Schema.decodeUnknownSync(TaskProgressInput)({ note: "Still working" }),
+      ),
+    )
+    expect(
+      await Effect.runPromise(
+        client.requestTaskInput(
+          newer.id,
+          Schema.decodeUnknownSync(RequestTaskInput)({
+            runId: newer.runId,
+            question: "Which tests?",
+          }),
+        ),
+      ),
+    ).toMatchObject({ question: "Which tests?" })
   } finally {
     for (const socket of sockets) socket.terminate()
     const exited = once(relay, "exit", { signal: AbortSignal.timeout(2_000) })
