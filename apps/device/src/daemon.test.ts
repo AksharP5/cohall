@@ -92,6 +92,41 @@ afterEach(async () => {
 })
 
 describe("device relay connection", () => {
+  it("advertises the configured device description to the relay", async () => {
+    const { server, relayUrl } = await startServer()
+    const hello = Promise.withResolvers<SocketEvent>()
+    server.on("connection", (socket) => {
+      socket.on("message", (raw) => {
+        const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(String(raw)))
+        if (event._tag === "Authenticate") {
+          socket.send(
+            JSON.stringify({ _tag: "Connected", serverVersion: "test", connectedAt: now() }),
+          )
+        }
+        if (event._tag === "DeviceHello") hello.resolve(event)
+      })
+    })
+    const controller = new AbortController()
+    controllers.push(controller)
+    const configuration = DeviceConfiguration.make({
+      relayUrl,
+      token: "device-token",
+      id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      name: "mac",
+      description: "iOS builds and simulator testing",
+      workspaces: [process.cwd()],
+    })
+    const running = Effect.runPromise(runDaemon(configuration), {
+      signal: controller.signal,
+    }).catch(() => undefined)
+    expect(await hello.promise).toMatchObject({
+      _tag: "DeviceHello",
+      device: { description: configuration.description },
+    })
+    controller.abort()
+    await running
+  })
+
   it("allows two-dot child names while rejecting parent directory escapes", async () => {
     const directory = await Filesystem.mkdtemp(join(tmpdir(), "cohall-workspace-boundary-"))
     const root = join(directory, "workspace")

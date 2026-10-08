@@ -406,6 +406,19 @@ Cohall cannot keep a suspended computer awake or survive erased state by itself.
 
 ## Manage all devices
 
+Describe what a worker is useful for so agents can choose the right device:
+
+```bash
+cohall configure --description 'iOS builds and simulator testing'
+cohall service restart
+```
+
+Descriptions appear in `cohall devices`, `doctor --all`, and MCP `list_devices`.
+They help with target selection alongside detected providers, capabilities, and
+allowed workspaces. Clear a description with `cohall configure --description ''`.
+Restart a foreground worker yourself after changing its description. Upgrade
+the relay and worker before using descriptions.
+
 Inspect the whole installation from any paired client:
 
 ```bash

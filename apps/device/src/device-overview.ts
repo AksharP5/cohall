@@ -25,6 +25,7 @@ export const allDeviceHealth = (devices: ReadonlyArray<Device>, localVersion: st
     return {
       id: device.id,
       name: device.name,
+      ...(device.description === undefined ? {} : { description: device.description }),
       hostname: device.hostname,
       platform: device.platform,
       architecture: device.architecture,

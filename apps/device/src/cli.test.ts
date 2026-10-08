@@ -70,6 +70,28 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
+it("sets, reports, retains, and clears device specialties without changing other settings", async () => {
+  const directory = await temporary()
+  const original = await storeWorkerConfiguration(directory)
+  const output = vi.spyOn(console, "log").mockImplementation(() => undefined)
+  await runCli("configure", ["--description", "  iOS builds and simulator testing  "])
+  expect(await readStoredConfiguration()).toEqual({
+    ...original,
+    deviceDescription: "iOS builds and simulator testing",
+  })
+  await runCli("config", [])
+  expect(JSON.parse(String(output.mock.lastCall?.[0]))).toMatchObject({
+    device_description: "iOS builds and simulator testing",
+  })
+  await runCli("configure", ["--model", "another-model"])
+  expect(await readStoredConfiguration()).toMatchObject({
+    deviceDescription: "iOS builds and simulator testing",
+  })
+  await expect(runCli("configure", ["--description", "x".repeat(513)])).rejects.toThrow("512")
+  await runCli("configure", ["--description", ""])
+  expect(await readStoredConfiguration()).toEqual({ ...original, model: "another-model" })
+})
+
 it.each(["init", "join"] as const)(
   "requires a relay for a fresh %s before reading its token",
   async (command) => {

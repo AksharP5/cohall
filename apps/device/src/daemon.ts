@@ -139,6 +139,7 @@ const describeDevice = (
   return Device.make({
     id: configuration.id,
     name: configuration.name,
+    ...(configuration.description === undefined ? {} : { description: configuration.description }),
     hostname: hostname(),
     platform: platformName,
     architecture: arch(),

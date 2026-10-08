@@ -72,6 +72,29 @@ describe.skipIf(platform() === "win32" || platform() === "darwin")("XDG storage 
 })
 
 describe("device workspace configuration", () => {
+  it("preserves descriptions through reconfiguration and applies validated worker overrides", async () => {
+    const directory = await temporary()
+    vi.stubEnv("COHALL_CONFIG", join(directory, "config.json"))
+    vi.stubEnv("COHALL_DEVICE_DESCRIPTION", undefined)
+    const original = await makeStoredConfiguration({
+      relayUrl: "https://relay.example",
+      workspaces: [directory],
+      deviceToken: "device-token",
+    })
+    await writeStoredConfiguration({ ...original, deviceDescription: "GPU experiments" })
+    const updated = await makeStoredConfiguration({ relayUrl: original.relayUrl })
+    expect(updated.deviceDescription).toBe("GPU experiments")
+    await expect(Effect.runPromise(loadDeviceConfiguration)).resolves.toMatchObject({
+      description: "GPU experiments",
+    })
+    vi.stubEnv("COHALL_DEVICE_DESCRIPTION", "iOS builds")
+    await expect(Effect.runPromise(loadDeviceConfiguration)).resolves.toMatchObject({
+      description: "iOS builds",
+    })
+    vi.stubEnv("COHALL_DEVICE_DESCRIPTION", "x".repeat(513))
+    await expect(Effect.runPromise(loadDeviceConfiguration)).rejects.toThrow("512")
+  })
+
   it("applies environment credentials and a name override before validating unsaved defaults", async () => {
     const directory = await temporary()
     vi.stubEnv("COHALL_CONFIG", join(directory, "missing.json"))

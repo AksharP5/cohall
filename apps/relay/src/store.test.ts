@@ -23,6 +23,56 @@ import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
+it("migrates old device records and retains editable descriptions across relay restarts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-device-description-"))
+  const path = join(directory, "relay.db")
+  const legacy = new Database(path)
+  legacy.exec(`CREATE TABLE devices (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, hostname TEXT NOT NULL,
+    platform TEXT NOT NULL, architecture TEXT NOT NULL, status TEXT NOT NULL,
+    providers_json TEXT NOT NULL, capabilities_json TEXT NOT NULL,
+    workspaces_json TEXT NOT NULL, version TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+    connected_at TEXT
+  )`)
+  legacy.close()
+  const runtime = ManagedRuntime.make(RelayStore.layer(path))
+  let restored: typeof runtime | undefined
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "mac",
+      hostname: "localhost",
+      platform: "darwin",
+      architecture: "arm64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    expect((await Effect.runPromise(store.listDevices()))[0]).not.toHaveProperty("description")
+    await Effect.runPromise(store.upsertDevice({ ...device, description: "iOS builds" }))
+    expect((await Effect.runPromise(store.listDevicePage())).devices[0]).toMatchObject({
+      description: "iOS builds",
+    })
+    await runtime.dispose()
+    restored = ManagedRuntime.make(RelayStore.layer(path))
+    const recovered = await restored.runPromise(RelayStore.Service)
+    expect((await Effect.runPromise(recovered.listDevices()))[0]).toMatchObject({
+      description: "iOS builds",
+    })
+    await Effect.runPromise(recovered.upsertDevice(device))
+    expect((await Effect.runPromise(recovered.listDevices()))[0]).not.toHaveProperty("description")
+  } finally {
+    await runtime.dispose()
+    await restored?.dispose()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 const orderedDeviceId = (index: number) =>
   DeviceId.make(`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`)
 

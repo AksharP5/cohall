@@ -160,6 +160,7 @@ export interface Workspace extends Schema.Schema.Type<typeof Workspace> {}
 export const Device = Schema.Struct({
   id: DeviceId,
   name: bounded(128),
+  description: Schema.optionalKey(optionalText(512)),
   hostname: bounded(256),
   platform: Platform,
   architecture: bounded(64),
