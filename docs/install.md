@@ -172,9 +172,14 @@ disabled provider fails with an error instead of starting that provider.
 ## Configuration
 
 `cohall config` shows stored configuration without tokens. `cohall configure`
-changes the device name, workspace roots, providers, Grok gateway path, model, sandbox, or relay
+changes the device name, description, workspace roots, providers, Grok gateway path, model, sandbox, or relay
 for a fresh pairing. Use `cohall relay use <url>` when moving an existing relay;
 it preserves credentials only after verifying them at the restored address.
+Use `cohall configure --description 'iOS builds and simulator testing'` to
+advertise a device's specialties, or `--description ''` to clear them. Descriptions
+allow up to 512 characters and appear after restarting the worker on an updated
+relay. They describe the device; advertised providers and workspace roots still
+determine what work it can accept.
 Non-loopback HTTP is refused unless `--allow-http` explicitly confirms that an
 independent private network such as Tailscale encrypts the connection.
 `cohall doctor` checks the effective configuration, relay connection, provider
@@ -208,6 +213,7 @@ Environment variables override stored values:
 | `COHALL_TOKEN`                            | Relay owner credential                         |
 | `COHALL_DEVICE_ID`                        | Stable device ID override                      |
 | `COHALL_DEVICE_NAME`                      | Advertised device name                         |
+| `COHALL_DEVICE_DESCRIPTION`               | Advertised device specialties                  |
 | `COHALL_DEVICE_PROVIDERS`                 | Provider allowlist or `auto`                   |
 | `COHALL_DEVICE_WORKSPACES`                | Comma-separated workspace roots                |
 | `COHALL_DEVICE_WORKSPACES_JSON`           | JSON workspace roots; supports commas in paths |

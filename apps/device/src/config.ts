@@ -22,6 +22,7 @@ export const StoredConfiguration = Schema.Struct({
   relayUrl: Schema.NonEmptyString,
   deviceId: DeviceId,
   deviceName: Device.fields.name,
+  deviceDescription: Device.fields.description,
   workspaces: WorkspaceList,
   clientToken: Schema.optionalKey(Schema.NonEmptyString),
   deviceToken: Schema.optionalKey(Schema.NonEmptyString),
@@ -52,6 +53,7 @@ export const DeviceConfiguration = Schema.Struct({
   token: Schema.NonEmptyString,
   id: DeviceId,
   name: Device.fields.name,
+  description: Device.fields.description,
   workspaces: WorkspaceList,
   providers: Schema.optionalKey(ProviderList),
   model: Schema.optionalKey(Schema.NonEmptyString),
@@ -227,6 +229,9 @@ export const makeStoredConfiguration = async (input: {
     relayUrl,
     deviceId: existing?.deviceId ?? makeDeviceId(),
     deviceName: input.deviceName ?? existing?.deviceName ?? hostname(),
+    ...(existing?.deviceDescription === undefined
+      ? {}
+      : { deviceDescription: existing.deviceDescription }),
     workspaces: canonicalWorkspaces,
     ...(clientToken === undefined ? {} : { clientToken }),
     ...(deviceToken === undefined ? {} : { deviceToken }),
@@ -353,6 +358,7 @@ export const loadDeviceConfiguration = Effect.tryPromise({
     const sandbox = environmentSandbox() ?? stored.sandbox
     const providers = environmentProviders(stored)
     const grokGateway = process.env.COHALL_GROK_GATEWAY ?? stored.grokGateway
+    const description = process.env.COHALL_DEVICE_DESCRIPTION ?? stored.deviceDescription
     return DeviceConfiguration.make({
       relayUrl,
       token,
@@ -361,6 +367,7 @@ export const loadDeviceConfiguration = Effect.tryPromise({
           ? stored.deviceId
           : DeviceId.make(process.env.COHALL_DEVICE_ID),
       name: process.env.COHALL_DEVICE_NAME ?? stored.deviceName,
+      ...(description === undefined ? {} : { description }),
       workspaces,
       ...(providers === undefined ? {} : { providers }),
       ...(model === undefined ? {} : { model }),

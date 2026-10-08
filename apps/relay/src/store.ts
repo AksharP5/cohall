@@ -114,6 +114,7 @@ interface MessageRow {
 interface DeviceRow {
   readonly id: string
   readonly name: string
+  readonly description: string | null
   readonly hostname: string
   readonly platform: string
   readonly architecture: string
@@ -416,6 +417,7 @@ const deviceFromRow = (row: DeviceRow): Effect.Effect<Device, PersistenceError> 
   decode("RelayStore.decodeDevice", Device, {
     id: row.id,
     name: row.name,
+    ...(row.description === null ? {} : { description: row.description }),
     hostname: row.hostname,
     platform: row.platform,
     architecture: row.architecture,
@@ -1408,10 +1410,11 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           .query(
             `INSERT INTO devices (
             id, name, hostname, platform, architecture, status, providers_json,
-            capabilities_json, workspaces_json, version, last_seen_at, connected_at, bots_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            capabilities_json, workspaces_json, version, last_seen_at, connected_at, bots_json, description
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name, hostname = excluded.hostname, platform = excluded.platform,
+            name = excluded.name, description = excluded.description,
+            hostname = excluded.hostname, platform = excluded.platform,
             architecture = excluded.architecture, status = excluded.status,
             providers_json = excluded.providers_json, bots_json = excluded.bots_json,
             capabilities_json = excluded.capabilities_json,
@@ -1433,6 +1436,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             device.lastSeenAt,
             device.connectedAt ?? null,
             device.bots === undefined ? null : JSON.stringify(device.bots),
+            device.description ?? null,
           ),
       catch: operationError("RelayStore.upsertDevice"),
     })
@@ -2662,7 +2666,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           platform TEXT NOT NULL, architecture TEXT NOT NULL, status TEXT NOT NULL,
           providers_json TEXT NOT NULL, bots_json TEXT, capabilities_json TEXT NOT NULL,
           workspaces_json TEXT NOT NULL, version TEXT NOT NULL, last_seen_at TEXT NOT NULL,
-          connected_at TEXT, forgotten_at TEXT
+          connected_at TEXT, forgotten_at TEXT, description TEXT
         );
         CREATE TABLE IF NOT EXISTS threads (
           id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -2743,6 +2747,9 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
       }
       if (!deviceColumns.some((column) => column.name === "bots_json")) {
         db.exec("ALTER TABLE devices ADD COLUMN bots_json TEXT")
+      }
+      if (!deviceColumns.some((column) => column.name === "description")) {
+        db.exec("ALTER TABLE devices ADD COLUMN description TEXT")
       }
       const taskColumns = db.query<{ readonly name: string }, []>("PRAGMA table_info(tasks)").all()
       if (!taskColumns.some((column) => column.name === "expires_at"))

@@ -75,6 +75,7 @@ const valueOptions = new Set([
   "context",
   "context-file",
   "deadline",
+  "description",
   "direction",
   "grok-gateway",
   "error",
@@ -125,7 +126,7 @@ Usage:
   cohall onboard
   cohall init [--relay url] [--workspace path] [--providers list] [--service]
   cohall join --relay <url> --workspace <path> [--providers list] [--token-file <path>]
-  cohall configure [--relay url] [--name name] [--workspace path]
+  cohall configure [--relay url] [--name name] [--description text] [--workspace path]
                    [--providers codex,opencode|auto] [--model id]
                    [--grok-gateway path]
   cohall config
@@ -681,6 +682,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
             relay_url: configuration.relayUrl,
             device_id: configuration.deviceId,
             device_name: configuration.deviceName,
+            device_description: configuration.deviceDescription,
             workspaces: configuration.workspaces,
             client_credential: configuration.clientToken !== undefined,
             device_credential: configuration.deviceToken !== undefined,
@@ -695,6 +697,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
 
   if (command === "configure") {
     allowOptions(arguments_, [
+      "description",
       "grok-gateway",
       "model",
       "name",
@@ -714,6 +717,9 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         ? (existing?.workspaces ?? [])
         : await Effect.runPromise(parseWorkspaces("", JSON.stringify(supplied)))
     const sandbox = option(arguments_, "sandbox")
+    const deviceDescription = (
+      option(arguments_, "description") ?? existing?.deviceDescription
+    )?.trim()
     const model = option(arguments_, "model") ?? existing?.model
     const gatewayInput = option(arguments_, "grok-gateway") ?? existing?.grokGateway
     const grokGateway = gatewayInput === undefined ? undefined : resolve(gatewayInput)
@@ -729,6 +735,9 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       relayUrl,
       deviceId: existing?.deviceId ?? makeDeviceId(),
       deviceName: option(arguments_, "name") ?? existing?.deviceName ?? "cohall-device",
+      ...(deviceDescription === undefined || deviceDescription.length === 0
+        ? {}
+        : { deviceDescription }),
       workspaces,
       ...credentialsForRelay(existing, relayUrl),
       ...(providers === undefined ? {} : { providers }),
