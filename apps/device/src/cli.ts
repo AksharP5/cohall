@@ -64,6 +64,7 @@ import { deviceVersionWarning, normalizeUpgradeTarget, upgrade } from "./upgrade
 import { readInputAttachments } from "./task-attachments.ts"
 import { checkMcp, readMcpHostDiagnostics } from "./mcp-diagnostics.ts"
 import { readBoundedFile } from "./bounded-file.ts"
+import { renderDeviceWatch, watchDevices } from "./device-watch.ts"
 
 interface Arguments {
   readonly options: ReadonlyMap<string, ReadonlyArray<string> | true>
@@ -78,6 +79,7 @@ const valueOptions = new Set([
   "description",
   "direction",
   "grok-gateway",
+  "interval",
   "error",
   "label",
   "model",
@@ -111,6 +113,7 @@ const flagOptions = new Set([
   "no-restart",
   "no-wait",
   "service",
+  "watch",
 ])
 const aliases = new Map([
   ["-c", "context"],
@@ -130,7 +133,7 @@ Usage:
                    [--providers codex,opencode|auto] [--model id]
                    [--grok-gateway path]
   cohall config
-  cohall devices
+  cohall devices [--watch [--interval seconds]]
   cohall progress [task-id] --message <note>
   cohall request-input [task-id] --question <text> [--run-id uuid]
   cohall answer <task-id> --request-id uuid --message <text>
@@ -1052,9 +1055,37 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     return
   }
   if (command === "devices") {
-    allowOptions(arguments_, [])
+    allowOptions(arguments_, ["watch", "interval"])
     noPositionals(arguments_, command)
-    print(await Effect.runPromise(relay.devices()))
+    if (!arguments_.options.has("watch")) {
+      if (arguments_.options.has("interval")) throw new Error("--interval requires --watch")
+      print(await Effect.runPromise(relay.devices()))
+      return
+    }
+    const interval = Number(option(arguments_, "interval") ?? "5")
+    if (!Number.isInteger(interval) || interval < 1 || interval > 300)
+      throw new Error("--interval must be a whole number from 1 to 300 seconds")
+    if (process.stdout.isTTY !== true) {
+      print(await Effect.runPromise(relay.deviceOverview()))
+      return
+    }
+    const controller = new AbortController()
+    const stop = () => controller.abort()
+    process.on("SIGINT", stop)
+    process.on("SIGTERM", stop)
+    try {
+      await Effect.runPromise(
+        watchDevices(relay, interval, (update) => {
+          process.stdout.write(`\u001b[H\u001b[2J${renderDeviceWatch(update, version)}`)
+        }),
+        { signal: controller.signal },
+      ).catch((cause: unknown) => {
+        if (!controller.signal.aborted) throw cause
+      })
+    } finally {
+      process.off("SIGINT", stop)
+      process.off("SIGTERM", stop)
+    }
     return
   }
   if (command === "bots") {

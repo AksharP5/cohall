@@ -181,6 +181,21 @@ export const Device = Schema.Struct({
 })
 export interface Device extends Schema.Schema.Type<typeof Device> {}
 
+export const DeviceOverview = Schema.Struct({
+  id: Device.fields.id,
+  name: Device.fields.name,
+  description: Device.fields.description,
+  status: Device.fields.status,
+  version: Device.fields.version,
+  lastSeenAt: Device.fields.lastSeenAt,
+  queued: count,
+  active: count,
+  needsInput: count,
+  cancelling: count,
+  oldestQueuedAt: Schema.optionalKey(Timestamp),
+})
+export interface DeviceOverview extends Schema.Schema.Type<typeof DeviceOverview> {}
+
 export const maxDevicePageDevices = 16
 export const maxDevicePageResponseBytes = 3 * 1024 * 1024
 export const DevicePage = Schema.Struct({

@@ -5,6 +5,7 @@ import {
   CreateUpgradeOperationsInput,
   Device,
   DevicePage,
+  DeviceOverview,
   DeviceOperation,
   ErrorResponse,
   ExchangePairingInput,
@@ -57,6 +58,7 @@ export type RelayClientError = RelayRequestError | RelayDecodeError
 
 export interface Interface {
   readonly devices: () => Effect.Effect<ReadonlyArray<Device>, RelayClientError>
+  readonly deviceOverview: () => Effect.Effect<ReadonlyArray<DeviceOverview>, RelayClientError>
   readonly verifyDeviceCredential: () => Effect.Effect<void, RelayClientError>
   readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, RelayClientError>
   readonly createTask: (input: CreateTaskInput) => Effect.Effect<Task, RelayClientError>
@@ -226,6 +228,22 @@ export const make = (options: RelayClientOptions): Interface => {
     )
 
   return Service.of({
+    deviceOverview: () =>
+      request(
+        "RelayClient.deviceOverview",
+        "/api/devices/overview",
+        Schema.Array(DeviceOverview),
+      ).pipe(
+        Effect.mapError((cause) =>
+          cause instanceof RelayRequestError && cause.status === 404
+            ? new RelayRequestError({
+                ...cause,
+                message:
+                  "This relay does not support the live device view; upgrade the relay first",
+              })
+            : cause,
+        ),
+      ),
     verifyDeviceCredential: () =>
       request(
         "RelayClient.verifyDeviceCredential",

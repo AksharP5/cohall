@@ -2,6 +2,7 @@ import {
   AuthSession,
   ConnectionRole,
   Device,
+  DeviceOverview,
   DevicePage,
   DeviceId,
   DeviceOperation,
@@ -233,6 +234,7 @@ export interface TaskUpdate {
 export interface Interface {
   readonly recover: () => Effect.Effect<void, PersistenceError>
   readonly listDevices: () => Effect.Effect<ReadonlyArray<Device>, PersistenceError>
+  readonly deviceOverview: () => Effect.Effect<ReadonlyArray<DeviceOverview>, PersistenceError>
   readonly listDevicePage: (after?: DeviceId) => Effect.Effect<DevicePage, PersistenceError>
   readonly usage: () => Effect.Effect<UsageSummary, PersistenceError>
   readonly forgetDevice: (deviceId: DeviceId) => Effect.Effect<Device, PersistenceError>
@@ -952,6 +954,35 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       catch: operationError("RelayStore.listDevices"),
     })
     return yield* Effect.forEach(rows, deviceFromRow)
+  })
+
+  const deviceOverview = Effect.fn("RelayStore.deviceOverview")(function* () {
+    const rows = yield* Effect.try({
+      try: () =>
+        db
+          .query<Record<string, unknown>, []>(
+            `SELECT devices.id, devices.name, devices.description, devices.status, devices.version,
+                  devices.last_seen_at AS lastSeenAt,
+                  COUNT(CASE WHEN tasks.status = 'queued' THEN 1 END) AS queued,
+                  COUNT(CASE WHEN tasks.status IN ('assigned', 'running') THEN 1 END) AS active,
+                  COUNT(CASE WHEN tasks.status = 'needs_input' THEN 1 END) AS needsInput,
+                  COUNT(CASE WHEN tasks.status = 'cancelling' THEN 1 END) AS cancelling,
+                  MIN(CASE WHEN tasks.status = 'queued' THEN tasks.created_at END) AS oldestQueuedAt
+           FROM devices LEFT JOIN tasks ON tasks.target_device_id = devices.id
+             AND tasks.status IN ('queued', 'assigned', 'running', 'needs_input', 'cancelling')
+           WHERE devices.forgotten_at IS NULL
+           GROUP BY devices.id ORDER BY devices.name COLLATE NOCASE, devices.id`,
+          )
+          .all(),
+      catch: operationError("RelayStore.deviceOverview"),
+    })
+    return yield* Effect.forEach(rows, ({ description, oldestQueuedAt, ...row }) =>
+      decode("RelayStore.decodeDeviceOverview", DeviceOverview, {
+        ...row,
+        ...(description === null ? {} : { description }),
+        ...(oldestQueuedAt === null ? {} : { oldestQueuedAt }),
+      }),
+    )
   })
 
   const listDevicePage = Effect.fn("RelayStore.listDevicePage")(function* (after?: DeviceId) {
@@ -2561,6 +2592,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
   return Service.of({
     recover,
     listDevices,
+    deviceOverview,
     listDevicePage,
     usage,
     forgetDevice,

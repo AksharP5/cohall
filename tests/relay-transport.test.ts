@@ -93,6 +93,16 @@ it("isolates invalid connections and requeues work when a device connection fail
     await vi.waitFor(async () => {
       expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("online")
     })
+    expect((await fetch(`${baseUrl}/api/devices/overview`)).status).toBe(401)
+    expect(await Effect.runPromise(client.deviceOverview())).toEqual([
+      expect.objectContaining({
+        id: device.id,
+        queued: 0,
+        active: 0,
+        needsInput: 0,
+        cancelling: 0,
+      }),
+    ])
     const task = await Effect.runPromise(
       client.createTask({ targetDeviceId: device.id, prompt: "Connection recovery" }),
     )
