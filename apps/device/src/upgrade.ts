@@ -949,7 +949,8 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
 
   if (
     previous?.version === options.currentVersion &&
-    (target === previous.version || (target === "latest" && options.restart))
+    (target === previous.version || (target === "latest" && options.restart)) &&
+    (await installedVersion(installation.entrypoint).catch(() => undefined)) === previous.version
   ) {
     const pending = candidates.filter((service) => previous.pendingServices.includes(service.id))
     const active = await activeServices(runner, pending)

@@ -290,6 +290,76 @@ describe("latest upgrades", () => {
     expect(invocations.some((invocation) => invocation.includes(" restart "))).toBe(false)
   })
 
+  it.each([
+    { target: "1.2.3", latest: "1.2.4", installed: "1.2.3", installs: 1, restarts: 1 },
+    { target: "latest", latest: "1.2.4", installed: "1.2.4", installs: 0, restarts: 1 },
+    { target: "latest", latest: "1.2.3", installed: "1.2.4", installs: 0, restarts: 0 },
+  ])(
+    "checks disk before recovering a stale $target receipt with latest=$latest",
+    async ({ target, latest, installed, installs, restarts }) => {
+      const { root, entrypoint, metadata } = await installation("1.2.4", "npm", "linux")
+      const statePath = join(root, "receipt.json")
+      const pendingServices = ["systemd-user:cohall-device.service"]
+      const receipt = JSON.stringify({
+        version: "1.2.3",
+        fromVersion: "1.2.2",
+        packageManager: "npm",
+        pendingServices,
+        restartedServices: [],
+      })
+      await writeFile(statePath, receipt)
+      const installedTargets: Array<string | undefined> = []
+      const restartedVersions: Array<string> = []
+      const result = await upgrade({
+        currentVersion: "1.2.3",
+        target,
+        restart: true,
+        dryRun: false,
+        entrypoint,
+        platform: "linux",
+        uid: 1000,
+        statePath,
+        resolveExecutable,
+        runner: {
+          run: async (command, arguments_) => {
+            if (arguments_.includes("is-active"))
+              return {
+                ...success(),
+                exitCode:
+                  arguments_.includes("--user") && arguments_.at(-1) === "cohall-device.service"
+                    ? 0
+                    : 3,
+              }
+            if (arguments_.includes("show"))
+              return {
+                ...success(),
+                stdout: `{ path=${entrypoint} ; argv[]=${entrypoint} device ; }`,
+              }
+            if (arguments_[0] === "view") return { ...success(), stdout: JSON.stringify(latest) }
+            if (command === "npm" && arguments_[0] === "install") {
+              installedTargets.push(arguments_.at(-1))
+              await writeFile(metadata, JSON.stringify({ name: packageName, version: installed }))
+            }
+            if (arguments_.includes("restart"))
+              restartedVersions.push(JSON.parse(await readFile(metadata, "utf8")).version)
+            return success()
+          },
+        },
+      })
+
+      expect(result).toMatchObject({
+        installed_version: installed,
+        requested_version: target,
+        resumed_after_restart: false,
+        services_pending_restart: restarts === 0 ? pendingServices : [],
+      })
+      expect(installedTargets).toEqual(installs === 0 ? [] : [`${packageName}@${installed}`])
+      expect(restartedVersions).toEqual(restarts === 0 ? [] : [installed])
+      expect(JSON.parse(await readFile(metadata, "utf8"))).toMatchObject({ version: installed })
+      if (restarts === 0) expect(await readFile(statePath, "utf8")).toBe(receipt)
+    },
+  )
+
   it.each(["npm", "bun", "pnpm"] as const)(
     "pins a newer latest version before installing with %s",
     async (manager) => {
