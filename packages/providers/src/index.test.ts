@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { delimiter, join, relative } from "node:path"
+import { delimiter, dirname, join, relative } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
 import { findExecutable, run, type CliProvider } from "./index.ts"
 
@@ -77,17 +77,28 @@ it("skips directories shadowing executable files, including Windows shims", asyn
 })
 
 it("runs providers from relative PATH entries in another workspace, including Windows shims", async () => {
-  const directory = await mkdtemp(join(process.cwd(), ".cohall-provider-relative-"))
+  const directory = await mkdtemp(join(dirname(process.cwd()), ".cohall-provider-relative-"))
   directories.push(directory)
   const bin = join(directory, "bin")
   const workspace = join(directory, "workspace")
   await mkdir(bin)
   await mkdir(workspace)
+  const helper = `process.stdout.write("helper-ok")`
   const program = `process.stdin.resume()
-process.stdin.on("end", () => console.log(JSON.stringify({
-  type: "item.completed",
-  item: { type: "agent_message", text: process.cwd() }
-})))`
+process.stdin.on("end", () => {
+  const result = require("node:child_process").spawnSync("cohall-provider-helper", [], {
+    encoding: "utf8",
+    shell: process.platform === "win32"
+  })
+  if (result.error || result.status !== 0) {
+    console.error(result.error?.message || result.stderr)
+    process.exit(1)
+  }
+  console.log(JSON.stringify({
+    type: "item.completed",
+    item: { type: "agent_message", text: JSON.stringify({ cwd: process.cwd(), helper: result.stdout }) }
+  }))
+})`
   if (process.platform === "win32") {
     vi.stubEnv("PATHEXT", ".CMD")
     await writeFile(join(bin, "provider.cjs"), program)
@@ -95,14 +106,22 @@ process.stdin.on("end", () => console.log(JSON.stringify({
       join(bin, "codex.cmd"),
       `@ECHO off\r\n"${process.execPath}" "%~dp0provider.cjs"\r\n`,
     )
+    await writeFile(join(bin, "helper.cjs"), helper)
+    await writeFile(
+      join(bin, "cohall-provider-helper.cmd"),
+      `@ECHO off\r\n"${process.execPath}" "%~dp0helper.cjs"\r\n`,
+    )
   } else {
     await writeFile(join(bin, "codex"), `#!${process.execPath}\n${program}\n`, { mode: 0o755 })
+    await writeFile(join(bin, "cohall-provider-helper"), `#!${process.execPath}\n${helper}\n`, {
+      mode: 0o755,
+    })
   }
   process.env.PATH = relative(process.cwd(), bin)
 
   await expect(
     Effect.runPromise(run({ provider: "codex", threadId: "test", prompt: "test", cwd: workspace })),
-  ).resolves.toEqual({ result: workspace })
+  ).resolves.toEqual({ result: JSON.stringify({ cwd: workspace, helper: "helper-ok" }) })
 })
 
 const openCodeText = (messageId: string, partId: string, content: string) => ({
