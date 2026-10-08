@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/AksharP5/cohall/compare/v0.11.3...v0.12.0) (2026-10-08)
+
+
+### Features
+
+* **cli:** show device work and availability live ([#193](https://github.com/AksharP5/cohall/issues/193)) ([b2f8fb6](https://github.com/AksharP5/cohall/commit/b2f8fb649e75092b3bd196466240fa968bf26c84))
+* **device:** describe specialties for easier target selection ([#191](https://github.com/AksharP5/cohall/issues/191)) ([2ba74b9](https://github.com/AksharP5/cohall/commit/2ba74b972a6896f014829456013243c6088890ef))
+
 ## [0.11.3](https://github.com/AksharP5/cohall/compare/v0.11.2...v0.11.3) (2026-10-08)
 
 
