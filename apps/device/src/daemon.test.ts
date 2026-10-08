@@ -27,7 +27,12 @@ import { basename, dirname, join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer, type WebSocket } from "ws"
 import { DeviceConfiguration } from "./config.ts"
-import { allowedWorkspace, performDeviceOperation, runDaemon } from "./daemon.ts"
+import {
+  allowedWorkspace,
+  openAllowedWorkspace,
+  performDeviceOperation,
+  runDaemon,
+} from "./daemon.ts"
 import type { UpgradeOptions, UpgradeResult } from "./upgrade.ts"
 import * as Upgrades from "./upgrade.ts"
 import * as Grok from "./grok-bot.ts"
@@ -105,6 +110,14 @@ describe("device relay connection", () => {
       })
       await expect(allowedWorkspace(configuration, root)).resolves.toBe(canonicalRoot)
       await expect(allowedWorkspace(configuration, child)).resolves.toBe(canonicalChild)
+      for (const path of [root, child]) {
+        const authorized = await openAllowedWorkspace(configuration, path)
+        try {
+          await authorized.validate()
+        } finally {
+          await authorized.close()
+        }
+      }
       await expect(allowedWorkspace(configuration, directory)).rejects.toThrow(
         "outside this device's configured workspace roots",
       )
@@ -115,6 +128,59 @@ describe("device relay connection", () => {
       await Filesystem.rm(directory, { recursive: true, force: true })
     }
   })
+
+  it.skipIf(process.platform === "win32")(
+    "rejects an intermediate workspace parent replaced between resolution and opening",
+    async () => {
+      const directory = await Filesystem.mkdtemp(join(tmpdir(), "cohall-workspace-parent-"))
+      const root = join(directory, "root")
+      const parent = join(root, "parent")
+      const requested = join(parent, "project")
+      const outside = join(directory, "outside")
+      const handles: Array<Awaited<ReturnType<typeof Filesystem.open>>> = []
+      try {
+        await Filesystem.mkdir(requested, { recursive: true })
+        await Filesystem.mkdir(join(outside, "project"), { recursive: true })
+        const canonicalRoot = await Filesystem.realpath(root)
+        const configuration = DeviceConfiguration.make({
+          relayUrl: "http://127.0.0.1:1",
+          token: "unused-test-token",
+          id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+          name: "worker",
+          workspaces: [canonicalRoot],
+        })
+        const originalRealpath = Filesystem.realpath
+        let swapped = false
+        vi.spyOn(Filesystem, "realpath").mockImplementation(async (path, options) => {
+          const resolved = await originalRealpath(path, options)
+          if (path === requested && !swapped) {
+            swapped = true
+            await Filesystem.rename(parent, join(root, "parent-original"))
+            await Filesystem.symlink(outside, parent)
+          }
+          return resolved
+        })
+        const originalOpen = Filesystem.open
+        vi.spyOn(Filesystem, "open").mockImplementation(async (...args) => {
+          const handle = await originalOpen(...args)
+          handles.push(handle)
+          vi.spyOn(handle, "close")
+          return handle
+        })
+        syncBuiltinESMExports()
+
+        await expect(openAllowedWorkspace(configuration, requested)).rejects.toThrow(
+          "outside this device's configured workspace roots",
+        )
+        expect(swapped).toBe(true)
+        expect(handles).toHaveLength(1)
+        expect(handles[0]?.close).toHaveBeenCalledOnce()
+      } finally {
+        await Promise.all(handles.map((handle) => handle.close()))
+        await Filesystem.rm(directory, { recursive: true, force: true })
+      }
+    },
+  )
 
   it.each(["codex", "grok-bot"] as const)(
     "rejects queued %s work when that provider was disabled before restarting",
