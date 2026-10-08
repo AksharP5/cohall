@@ -190,30 +190,32 @@ export const openAllowedWorkspace = async (
     constants.O_RDONLY |
     (operatingSystem === "win32" ? 0 : constants.O_DIRECTORY | constants.O_NOFOLLOW)
   const handle = await open(path, flags)
-  const identity = await handle.stat()
-  if (!identity.isDirectory()) {
-    await handle.close()
-    throw new Error(`Workspace ${path} is not a directory`)
-  }
-  // macOS resolves cwd after closing non-inherited descriptors during posix_spawn,
-  // so /dev/fd cannot safely serve as a directory cwd there.
-  const cwd = operatingSystem === "linux" ? `/proc/self/fd/${handle.fd}` : path
-  return {
-    cwd,
-    validate: async () => {
+  try {
+    const identity = await handle.stat()
+    if (!identity.isDirectory()) {
+      throw new Error(`Workspace ${path} is not a directory`)
+    }
+    // macOS resolves cwd after closing non-inherited descriptors during posix_spawn,
+    // so /dev/fd cannot safely serve as a directory cwd there.
+    const cwd = operatingSystem === "linux" ? `/proc/self/fd/${handle.fd}` : path
+    const validate = async (): Promise<void> => {
       const current = await handle.stat()
       if (!current.isDirectory() || current.dev !== identity.dev || current.ino !== identity.ino) {
         throw new Error(`Workspace ${path} changed before provider startup`)
       }
+      const currentPath = await allowedWorkspace(configuration, cwd)
       if (operatingSystem !== "linux") {
-        const currentPath = await realpath(path)
         const currentPathIdentity = await stat(currentPath)
         if (currentPathIdentity.dev !== identity.dev || currentPathIdentity.ino !== identity.ino) {
           throw new Error(`Workspace ${path} changed before provider startup`)
         }
       }
-    },
-    close: () => handle.close(),
+    }
+    await validate()
+    return { cwd, validate, close: () => handle.close() }
+  } catch (cause) {
+    await handle.close().catch(() => undefined)
+    throw cause
   }
 }
 
