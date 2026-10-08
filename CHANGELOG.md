@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.3](https://github.com/AksharP5/cohall/compare/v0.11.2...v0.11.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* **cli:** preserve new settings during relay verification ([#185](https://github.com/AksharP5/cohall/issues/185)) ([e0445e4](https://github.com/AksharP5/cohall/commit/e0445e4d19bfddcabd9f10a73466da948713c4b0))
+* **device:** recheck workspace authorization before provider startup ([#187](https://github.com/AksharP5/cohall/issues/187)) ([67d124d](https://github.com/AksharP5/cohall/commit/67d124df176c12001b2a48a5677e28fc86263412))
+* **grok:** reject non-file gateway discovery without blocking ([#183](https://github.com/AksharP5/cohall/issues/183)) ([41dc4aa](https://github.com/AksharP5/cohall/commit/41dc4aa59518fcf14f95499aa0a37c305fff7596))
+* **providers:** preserve helper commands when changing workspaces ([#188](https://github.com/AksharP5/cohall/issues/188)) ([6cde0b9](https://github.com/AksharP5/cohall/commit/6cde0b95d51f3f5a09e773019ea2a3f5ce3d47a7))
+* **relay:** preserve active turns through reconnects ([#189](https://github.com/AksharP5/cohall/issues/189)) ([e399483](https://github.com/AksharP5/cohall/commit/e399483ec5297295a8e682967db1905fc3ce4f1e))
+* **setup:** reject device names the relay cannot register ([#184](https://github.com/AksharP5/cohall/issues/184)) ([21bc5b4](https://github.com/AksharP5/cohall/commit/21bc5b48b68612cf3e9cba5dc167447e1360b9ab))
+* **upgrade:** check installed version before recovering restarts ([#186](https://github.com/AksharP5/cohall/issues/186)) ([2bb1cc9](https://github.com/AksharP5/cohall/commit/2bb1cc9e79a9e38665499673b0b8d7c9baa3c523))
+
 ## [0.11.2](https://github.com/AksharP5/cohall/compare/v0.11.1...v0.11.2) (2026-10-05)
 
 
