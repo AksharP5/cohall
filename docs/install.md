@@ -202,6 +202,25 @@ On Linux, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` must be absolute paths. Empty or
 relative values use `~/.config` and `~/.local/share` instead. Relay data defaults
 to the `cohall` directory under `XDG_DATA_HOME`; `COHALL_DATA_DIR` overrides it.
 
+### Live device status
+
+`cohall devices --watch` shows device availability, descriptions, version
+differences, and current task counts. `Input` counts tasks paused for an answer;
+`Active` includes assigned and running tasks. `Oldest` is the oldest queued wait.
+Completed, failed, and cancelled tasks are excluded, as are forgotten devices.
+Descriptions and counts describe all registered devices, not just tasks sent
+by the current client.
+
+Refreshes run sequentially every five seconds after the previous request
+finishes. Use `--interval <seconds>` with a whole number from 1 to 300 to change
+the cadence. Ctrl-C or SIGTERM stops the watch and any pending request. A temporary
+relay failure displays an error and retries; authentication failures or an
+unsupported relay end the watch. Upgrade the relay before using this command.
+When stdout is redirected, `--watch` prints one compact JSON snapshot and exits;
+plain `cohall devices` keeps its existing full JSON roster.
+
+### Environment variables
+
 Environment variables override stored values:
 
 | Variable                                  | Purpose                                        |

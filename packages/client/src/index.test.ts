@@ -9,6 +9,7 @@ import {
   Device,
   DeviceId,
   DevicePage,
+  DeviceOverview,
   RequestTaskInput,
   TaskTrace,
   TaskProgressInput,
@@ -36,6 +37,27 @@ const pageDevice = (index: number, name: string) =>
     version: "0.9.0",
     lastSeenAt: now(),
   })
+
+it("reads compact device status without fetching full rosters and rejects unsupported relays", async () => {
+  const overview = DeviceOverview.make({
+    ...pageDevice(1, "worker"),
+    queued: 2,
+    active: 1,
+    needsInput: 1,
+    cancelling: 0,
+  })
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json([overview]))
+  try {
+    const client = make({ baseUrl: "http://relay.test", token: "test" })
+    expect(await Effect.runPromise(client.deviceOverview())).toEqual([overview])
+    expect(fetch.mock.calls[0]?.[0]).toBe("http://relay.test/api/devices/overview")
+    fetch.mockResolvedValue(Response.json({ error: "Route not found" }, { status: 404 }))
+    await expect(Effect.runPromise(client.deviceOverview())).rejects.toThrow("upgrade the relay")
+    expect(fetch).toHaveBeenCalledTimes(2)
+  } finally {
+    fetch.mockRestore()
+  }
+})
 
 it("assembles large device pages and restores name ordering", async () => {
   const description =

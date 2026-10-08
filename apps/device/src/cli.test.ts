@@ -92,6 +92,85 @@ it("sets, reports, retains, and clears device specialties without changing other
   expect(await readStoredConfiguration()).toEqual({ ...original, model: "another-model" })
 })
 
+it("prints one compact JSON snapshot when a device watch is redirected", async () => {
+  await temporary()
+  const overview = [{ name: "worker" }]
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    Response.json([
+      {
+        id: taskId,
+        ...overview[0],
+        status: "online",
+        version: "test",
+        lastSeenAt: "2026-10-08T00:00:00Z",
+        queued: 0,
+        active: 1,
+        needsInput: 0,
+        cancelling: 0,
+      },
+    ]),
+  )
+  vi.stubGlobal("fetch", fetch)
+  const output = vi.spyOn(console, "log").mockImplementation(() => undefined)
+  await runCli("devices", ["--watch"])
+  expect(JSON.parse(String(output.mock.calls[0]?.[0]))).toMatchObject(overview)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(fetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:1/api/devices/overview")
+  for (const args of [
+    ["--interval", "5"],
+    ["--watch", "--interval", "0"],
+    ["--watch", "--interval", "1.5"],
+  ])
+    await expect(runCli("devices", args)).rejects.toThrow("--interval")
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
+it("stops an in-flight terminal watch and removes its signal handlers", async () => {
+  await temporary()
+  const stdout = process.stdout
+  const descriptor = Object.getOwnPropertyDescriptor(stdout, "isTTY")
+  const originalSigint = process.listeners("SIGINT")
+  const originalSigterm = process.listeners("SIGTERM")
+  const started = Promise.withResolvers<void>()
+  let aborted = false
+  vi.spyOn(stdout, "write").mockImplementation(() => true)
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof globalThis.fetch>().mockImplementation((_url, init) => {
+      const signal = init?.signal
+      if (signal === undefined || signal === null) throw new Error("Expected a cancellable request")
+      started.resolve()
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            aborted = true
+            reject(new DOMException("Stopped", "AbortError"))
+          },
+          { once: true },
+        )
+      })
+    }),
+  )
+  Object.defineProperty(stdout, "isTTY", { configurable: true, value: true })
+  let stop: (typeof originalSigterm)[number] | undefined
+  try {
+    const running = runCli("devices", ["--watch"])
+    await started.promise
+    stop = process.listeners("SIGTERM").find((listener) => !originalSigterm.includes(listener))
+    if (stop === undefined) throw new Error("Expected watch shutdown handler")
+    stop("SIGTERM")
+    await running
+    expect(aborted).toBe(true)
+    expect(process.listeners("SIGINT")).toEqual(originalSigint)
+    expect(process.listeners("SIGTERM")).toEqual(originalSigterm)
+  } finally {
+    stop?.("SIGTERM")
+    if (descriptor === undefined) Reflect.deleteProperty(stdout, "isTTY")
+    else Object.defineProperty(stdout, "isTTY", descriptor)
+  }
+})
+
 it.each(["init", "join"] as const)(
   "requires a relay for a fresh %s before reading its token",
   async (command) => {

@@ -23,6 +23,104 @@ import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
+it("summarizes current work without transferring full rosters or including forgotten devices", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "worker",
+      description: "iOS builds",
+      hostname: "localhost",
+      platform: "darwin",
+      architecture: "arm64",
+      status: "online",
+      providers: ["codex", "grok-bot", "opencode"],
+      bots: Array.from({ length: 64 }, (_, index) =>
+        Bot.make({
+          id: BotId.make(`bot-${index}`),
+          name: `Bot ${index}`,
+          description: "x".repeat(512),
+        }),
+      ),
+      capabilities: [{ id: "task-clarification", label: "Clarification" }],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const completed = await Effect.runPromise(
+      store.createDelegation({ prompt: "Done" }, device.id, "owner"),
+    )
+    await Effect.runPromise(store.assignTask(completed.id))
+    await Effect.runPromise(store.acceptTask(completed.id, device.id))
+    await Effect.runPromise(store.finishTask(completed.id, device.id, "Done"))
+    const paused = await Effect.runPromise(
+      store.createDelegation({ prompt: "Ask" }, device.id, "owner"),
+    )
+    const assigned = await Effect.runPromise(store.assignTask(paused.id))
+    await Effect.runPromise(store.acceptTask(paused.id, device.id))
+    if (assigned.runId === undefined) throw new Error("Expected an assigned turn")
+    await Effect.runPromise(
+      store.pauseTaskForInput(
+        paused.id,
+        device.id,
+        Schema.decodeUnknownSync(RequestTaskInput)({
+          runId: assigned.runId,
+          question: "Which branch?",
+        }),
+      ),
+    )
+    const active = await Effect.runPromise(
+      store.createDelegation(
+        { prompt: "Build", provider: "grok-bot", botId: BotId.make("bot-0") },
+        device.id,
+        "owner",
+      ),
+    )
+    await Effect.runPromise(store.assignTask(active.id))
+    const cancelling = await Effect.runPromise(
+      store.createDelegation({ prompt: "Stop", provider: "opencode" }, device.id, "owner"),
+    )
+    await Effect.runPromise(store.assignTask(cancelling.id))
+    await Effect.runPromise(store.acceptTask(cancelling.id, device.id))
+    await Effect.runPromise(store.requestCancellation(cancelling.id))
+    const queued = await Effect.runPromise(
+      store.createDelegation({ prompt: "Later" }, device.id, "owner"),
+    )
+    await Effect.runPromise(store.createDelegation({ prompt: "Later still" }, device.id, "owner"))
+    await Effect.runPromise(store.markDeviceOffline(device.id))
+    const forgotten = Device.make({
+      ...device,
+      id: makeDeviceId(),
+      name: "gone",
+      status: "offline",
+    })
+    await Effect.runPromise(store.upsertDevice(forgotten))
+    await Effect.runPromise(store.forgetDevice(forgotten.id))
+    const overview = await Effect.runPromise(store.deviceOverview())
+    expect(overview).toEqual([
+      {
+        id: device.id,
+        name: device.name,
+        description: device.description,
+        status: "offline",
+        version,
+        lastSeenAt: expect.any(String),
+        queued: 2,
+        active: 1,
+        needsInput: 1,
+        cancelling: 1,
+        oldestQueuedAt: queued.createdAt,
+      },
+    ])
+    expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThan(1024)
+    expect(Buffer.byteLength(JSON.stringify(device))).toBeGreaterThan(32 * 1024)
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("migrates old device records and retains editable descriptions across relay restarts", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-device-description-"))
   const path = join(directory, "relay.db")

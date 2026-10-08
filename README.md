@@ -427,6 +427,22 @@ cohall versions
 cohall usage
 ```
 
+Watch device availability and current work in one terminal:
+
+```bash
+cohall devices --watch
+cohall devices --watch --interval 10
+```
+
+The view refreshes every five seconds by default and puts stranded offline work,
+tasks awaiting answers, cancellation, and version differences first. It shows
+queued, active, awaiting-input, and cancelling task counts per device, plus the
+oldest queued wait. Active includes assigned and running work. Ctrl-C exits.
+Refresh failures replace the view with an error; temporary failures retry on
+the same cadence. Redirected output prints one compact JSON snapshot and exits.
+Use an updated relay; the view transfers status summaries rather than full Bot
+and workspace rosters.
+
 `doctor --all` reports connectivity, providers, workspaces, and version drift.
 It and `cohall devices` include each device's current queue count and the
 creation time of its oldest queued task. Assigned, running, cancelling, and
