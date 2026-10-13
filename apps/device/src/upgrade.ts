@@ -13,7 +13,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises"
-import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "node:path"
+import { delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { platform as operatingSystem } from "node:os"
 import { configurationPath } from "./config.ts"
 
@@ -221,8 +221,10 @@ export const packageInstallation = (
   const nodeModulesParent = path.slice(0, packageIndex)
   const prefix =
     runtimePlatform !== "win32" && nodeModulesParent.endsWith("/lib")
-      ? nodeModulesParent.slice(0, -"/lib".length)
-      : nodeModulesParent
+      ? nodeModulesParent.slice(0, -"/lib".length) || "/"
+      : runtimePlatform === "win32" && nodeModulesParent.endsWith(":")
+        ? `${nodeModulesParent}/`
+        : nodeModulesParent
   return { manager: "npm", prefix, entrypoint }
 }
 
@@ -437,7 +439,7 @@ const executableNames = (command: string): ReadonlyArray<string> => {
 
 const containsPath = (root: string, path: string): boolean => {
   const child = relative(root, path)
-  return child === "" || (!child.startsWith("..") && !isAbsolute(child))
+  return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child)
 }
 
 const linuxSystemExecutableRoots = [
@@ -549,6 +551,7 @@ export const trustedExecutable = async (
       .catch(() => false)
     if (!available) continue
     try {
+      if (!(await stat(path)).isFile()) continue
       return await validateExecutable(path, options.writableRoot, options.preserveSymlink)
     } catch (cause) {
       failure ??= cause
