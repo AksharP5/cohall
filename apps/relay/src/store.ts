@@ -1702,17 +1702,17 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           db
             .query<MessageRow, [string]>(
               `SELECT * FROM (
-                 SELECT * FROM messages WHERE thread_id = ?
-                 ORDER BY created_at DESC, id DESC LIMIT 21
-               ) ORDER BY created_at, id`,
+                 SELECT *, rowid AS sequence FROM messages WHERE thread_id = ?
+                 ORDER BY created_at DESC, rowid DESC LIMIT 21
+               ) ORDER BY created_at, sequence`,
             )
             .all(threadId),
           db
             .query<TaskRow, [string]>(
               `SELECT * FROM (
-                 SELECT * FROM tasks WHERE thread_id = ?
-                 ORDER BY created_at DESC, id DESC LIMIT 21
-               ) ORDER BY created_at, id`,
+                 SELECT *, rowid AS sequence FROM tasks WHERE thread_id = ?
+                 ORDER BY created_at DESC, rowid DESC LIMIT 21
+               ) ORDER BY created_at, sequence`,
             )
             .all(threadId),
         ] as const,
@@ -1744,7 +1744,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           .query<TaskRow, [string]>(
             `SELECT * FROM tasks WHERE target_device_id = ?
            AND status IN ('queued', 'cancelling')
-           ORDER BY dispatched_at IS NULL, created_at, id LIMIT 100`,
+           ORDER BY dispatched_at IS NULL, created_at, rowid LIMIT 100`,
           )
           .all(deviceId),
       catch: operationError("RelayStore.pendingTasksFor"),
