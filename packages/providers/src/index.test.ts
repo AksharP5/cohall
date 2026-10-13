@@ -36,6 +36,121 @@ const isRunning = (pid: number): boolean => {
   }
 }
 
+const providerFixture = async (command: string, script: string): Promise<string> => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-provider-"))
+  directories.push(directory)
+  await writeFile(
+    join(directory, command),
+    `#!${process.execPath}
+process.stdin.resume()
+process.stdin.on("end", () => {
+${script}
+})
+`,
+    { mode: 0o755 },
+  )
+  process.env.PATH = directory
+  return directory
+}
+
+it.skipIf(process.platform === "win32").each([
+  ["claude-code", "", 1, "Not logged in.", "Not logged in."],
+  ["claude-code", "not JSON", 1, "Not logged in.", "Not logged in."],
+  ["claude-code", "{}", 0, "", "Claude Code returned JSON without a result"],
+  ["claude-code", '{"is_error":true,"result":"Not logged in."}', 1, "", "Not logged in."],
+  [
+    "claude-code",
+    '{"is_error":true,"errors":["First error","Second error"]}',
+    2,
+    "",
+    "First error\nSecond error",
+  ],
+  ["opencode", "", 2, "Authentication failed.", "Authentication failed."],
+  ["codex", "not JSON", 2, "Authentication failed.", "Authentication failed."],
+] as const)(
+  "preserves %s failures for stdout %j and status %i",
+  async (provider, stdout, exitCode, stderr, message) => {
+    const directory = await providerFixture(
+      provider === "claude-code" ? "claude" : provider,
+      `
+    process.stdout.write(${JSON.stringify(stdout)})
+    process.stderr.write(${JSON.stringify(stderr)})
+    process.exitCode = ${exitCode}
+  `,
+    )
+    await expect(
+      Effect.runPromise(run({ provider, threadId: "test", prompt: "test", cwd: directory })),
+    ).rejects.toMatchObject({
+      _tag: "CohallProvider.RunError",
+      message,
+      ...(exitCode === 0 ? {} : { exitCode }),
+    })
+  },
+)
+
+it.skipIf(process.platform === "win32")(
+  "preserves stderr when malformed Codex output forces termination",
+  async () => {
+    const directory = await providerFixture(
+      "codex",
+      `
+      process.stderr.write("Authentication failed.")
+      process.stdout.write("not JSON\\n")
+      setInterval(() => {}, 1000)
+    `,
+    )
+    await expect(
+      Effect.runPromise(
+        run({ provider: "codex", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "CohallProvider.RunError",
+      message: "Authentication failed.",
+    })
+  },
+)
+
+it.skipIf(process.platform === "win32").each([false, true])(
+  "preserves a Codex parse failure when the malformed process stays running: %s",
+  async (stayRunning) => {
+    const directory = await providerFixture(
+      "codex",
+      `
+      process.stdout.write("not JSON\\n")
+      if (${stayRunning}) setInterval(() => {}, 1000)
+    `,
+    )
+    await expect(
+      Effect.runPromise(
+        run({ provider: "codex", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(/JSON|Unexpected token/),
+    })
+  },
+)
+
+it.skipIf(process.platform === "win32")(
+  "preserves structured OpenCode errors on failed exits",
+  async () => {
+    const directory = await providerFixture(
+      "opencode",
+      `
+    console.log(JSON.stringify({type: "error", error: {name: "ProviderAuthError", data: {message: "Sign in first."}}}))
+    process.stderr.write("Command failed.")
+    process.exitCode = 2
+  `,
+    )
+    await expect(
+      Effect.runPromise(
+        run({ provider: "opencode", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).rejects.toMatchObject({
+      message: "OpenCode ProviderAuthError: Sign in first.",
+    })
+  },
+)
+
 const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknown>) => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-provider-events-"))
   directories.push(directory)

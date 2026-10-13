@@ -193,8 +193,13 @@ const captureText = (stream: Readable, limit: number): Promise<CapturedText> =>
     stream.once("error", reject)
   })
 
-const failureMessage = (command: string, stderr: CapturedText, exitCode: number): string => {
-  const fallback = `${command} exited with status ${exitCode}`
+const failureMessage = (
+  command: string,
+  stderr: CapturedText,
+  exitCode: number | undefined,
+): string => {
+  const fallback =
+    exitCode === undefined ? `${command} failed` : `${command} exited with status ${exitCode}`
   const suffix = stderr.truncated ? "\n[stderr truncated after 64 KiB]" : ""
   const available = 16_384 - suffix.length
   return `${(stderr.text.trim() || fallback).slice(0, available)}${suffix}`
@@ -376,6 +381,23 @@ const parseClaude = (stdout: string, existingSession?: string): RunResult => {
   return { result, ...(sessionId === undefined ? {} : { sessionId }) }
 }
 
+const claudeFailureMessage = (stdout: string): string | undefined => {
+  try {
+    const value = record(JSON.parse(stdout) as unknown)
+    const result = text(value?.result) ?? text(value?.content)
+    if (result?.trim()) return result
+    const errors = value?.errors
+    return Array.isArray(errors)
+      ? errors
+          .map(text)
+          .filter((error) => error !== undefined)
+          .join("\n") || undefined
+      : text(errors)
+  } catch {
+    return undefined
+  }
+}
+
 const textFromPart = (value: unknown): string | undefined => {
   const part = record(value)
   if (part === undefined) {
@@ -421,7 +443,7 @@ const parseOpenCode = async (stdout: Readable, existingSession?: string): Promis
     (event) => {
       const failure = openCodeError(event)
       if (failure !== undefined) {
-        throw new Error(failure)
+        throw new ProviderRunError({ provider: "opencode", message: failure })
       }
       sessionId =
         text(event.sessionID) ??
@@ -485,17 +507,17 @@ const parseOpenCode = async (stdout: Readable, existingSession?: string): Promis
   return { result, ...(sessionId === undefined ? {} : { sessionId }) }
 }
 
-const parse = async (
+const readOutput = async (
   options: RunOptions,
   stdout: Readable,
   onFailure: () => void,
-): Promise<RunResult> => {
+): Promise<RunResult | string> => {
   try {
     switch (options.provider) {
       case "codex":
         return await parseCodex(stdout, options.sessionId)
       case "claude-code":
-        return parseClaude(await boundedText(stdout, maxJsonBytes, onFailure), options.sessionId)
+        return await boundedText(stdout, maxJsonBytes, onFailure)
       case "opencode":
         return await parseOpenCode(stdout, options.sessionId)
     }
@@ -561,6 +583,12 @@ const terminateProcessTree = async (pid: number): Promise<void> => {
   await waitForProcessGroup(pid, 1_000)
 }
 
+const settlePromise = <A>(promise: Promise<A>) =>
+  promise.then(
+    (value) => ({ _tag: "Success", value }) as const,
+    (error: unknown) => ({ _tag: "Failure", error }) as const,
+  )
+
 export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError> =>
   Effect.callback((resume, signal) => {
     const running = (async () => {
@@ -620,19 +648,42 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
               cause === undefined || cause === null ? resolve() : reject(cause),
             )
           })
-          const [result, stderr, exitCode] = await Promise.all([
-            parse(options, child.stdout, terminate),
+          const [output, stderr, exit] = await Promise.all([
+            settlePromise(readOutput(options, child.stdout, terminate)),
             captureText(child.stderr, 64 * 1024),
-            exited,
+            settlePromise(exited),
             written,
           ])
+          if (output._tag === "Failure" && output.error instanceof ProviderRunError)
+            throw output.error
+          if (exit._tag === "Failure" && (output._tag === "Success" || child.pid === undefined)) {
+            throw exit.error
+          }
+          const exitCode = exit._tag === "Success" ? exit.value : undefined
           if (exitCode !== 0) {
+            let diagnostic = stderr
+            if (stderr.text.trim().length === 0) {
+              const message =
+                output._tag === "Failure"
+                  ? output.error instanceof Error
+                    ? output.error.message
+                    : String(output.error)
+                  : typeof output.value === "string"
+                    ? claudeFailureMessage(output.value)
+                    : undefined
+              if (message !== undefined) diagnostic = { text: message, truncated: false }
+            }
             throw new ProviderRunError({
               provider: options.provider,
-              message: failureMessage(executables[options.provider], stderr, exitCode),
-              exitCode,
+              message: failureMessage(executables[options.provider], diagnostic, exitCode),
+              ...(exitCode === undefined ? {} : { exitCode }),
             })
           }
+          if (output._tag === "Failure") throw output.error
+          const result =
+            typeof output.value === "string"
+              ? parseClaude(output.value, options.sessionId)
+              : output.value
           if (byteLength(result.result) > maxResultBytes) {
             throw new ProviderRunError({
               provider: options.provider,
