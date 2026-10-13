@@ -193,8 +193,13 @@ const captureText = (stream: Readable, limit: number): Promise<CapturedText> =>
     stream.once("error", reject)
   })
 
-const failureMessage = (command: string, stderr: CapturedText, exitCode: number): string => {
-  const fallback = `${command} exited with status ${exitCode}`
+const failureMessage = (
+  command: string,
+  stderr: CapturedText,
+  exitCode: number | undefined,
+): string => {
+  const fallback =
+    exitCode === undefined ? `${command} failed` : `${command} exited with status ${exitCode}`
   const suffix = stderr.truncated ? "\n[stderr truncated after 64 KiB]" : ""
   const available = 16_384 - suffix.length
   return `${(stderr.text.trim() || fallback).slice(0, available)}${suffix}`
@@ -651,11 +656,10 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
           ])
           if (output._tag === "Failure" && output.error instanceof ProviderRunError)
             throw output.error
-          if (exit._tag === "Failure") {
-            if (output._tag === "Failure" && child.pid !== undefined) throw output.error
+          if (exit._tag === "Failure" && (output._tag === "Success" || child.pid === undefined)) {
             throw exit.error
           }
-          const exitCode = exit.value
+          const exitCode = exit._tag === "Success" ? exit.value : undefined
           if (exitCode !== 0) {
             let diagnostic = stderr
             if (stderr.text.trim().length === 0) {
@@ -672,7 +676,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
             throw new ProviderRunError({
               provider: options.provider,
               message: failureMessage(executables[options.provider], diagnostic, exitCode),
-              exitCode,
+              ...(exitCode === undefined ? {} : { exitCode }),
             })
           }
           if (output._tag === "Failure") throw output.error

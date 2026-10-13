@@ -66,7 +66,7 @@ it.skipIf(process.platform === "win32").each([
     "First error\nSecond error",
   ],
   ["opencode", "", 2, "Authentication failed.", "Authentication failed."],
-  ["codex", "not JSON\n", 2, "Authentication failed.", "Authentication failed."],
+  ["codex", "not JSON", 2, "Authentication failed.", "Authentication failed."],
 ] as const)(
   "preserves %s failures for stdout %j and status %i",
   async (provider, stdout, exitCode, stderr, message) => {
@@ -84,6 +84,28 @@ it.skipIf(process.platform === "win32").each([
       _tag: "CohallProvider.RunError",
       message,
       ...(exitCode === 0 ? {} : { exitCode }),
+    })
+  },
+)
+
+it.skipIf(process.platform === "win32")(
+  "preserves stderr when malformed Codex output forces termination",
+  async () => {
+    const directory = await providerFixture(
+      "codex",
+      `
+      process.stderr.write("Authentication failed.")
+      process.stdout.write("not JSON\\n")
+      setInterval(() => {}, 1000)
+    `,
+    )
+    await expect(
+      Effect.runPromise(
+        run({ provider: "codex", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "CohallProvider.RunError",
+      message: "Authentication failed.",
     })
   },
 )
