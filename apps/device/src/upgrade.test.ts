@@ -664,6 +664,37 @@ describe("latest upgrades", () => {
 })
 
 describe("package installation", () => {
+  it.skipIf(process.platform === "win32")(
+    "skips directories when resolving trusted executables",
+    async () => {
+      const root = await mkdtemp(join(process.cwd(), ".cohall-upgrade-directory-"))
+      temporaryDirectories.push(root)
+      const first = join(root, "first")
+      const second = join(root, "second")
+      await Promise.all([mkdir(join(first, "npm"), { recursive: true }), mkdir(second)])
+      await writeFile(join(second, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+      vi.stubEnv("PATH", `${first}:${second}`)
+      await expect(trustedExecutable("npm")).resolves.toBe(join(second, "npm"))
+      await expect(trustedExecutable(join(first, "npm"))).rejects.toThrow("Could not find")
+    },
+  )
+
+  it.each([
+    ["/lib", "/", "linux"],
+    ["C:", "C:/", "win32"],
+  ] as const)("preserves npm root prefixes for %s", (root, prefix, platform) => {
+    expect(
+      packageInstallation(
+        `${root}/node_modules/@akshar5/cohall/bin/cohall.js`,
+        undefined,
+        platform,
+      ),
+    ).toMatchObject({
+      manager: "npm",
+      prefix,
+    })
+  })
+
   const platforms = [
     { platform: "linux", name: "Linux" },
     { platform: "win32", name: "Windows" },
@@ -967,6 +998,13 @@ describe("package installation", () => {
     }
 
     expect(isTrustedGroupWritablePath(homebrew)).toBe(true)
+    expect(
+      isTrustedGroupWritablePath({
+        ...homebrew,
+        canonical: "/opt/homebrew/..tools/npm",
+        path: "/opt/homebrew/..tools",
+      }),
+    ).toBe(true)
     expect(isTrustedGroupWritablePath({ ...homebrew, platform: "linux" })).toBe(false)
     expect(isTrustedGroupWritablePath({ ...homebrew, ownerGid: 20 })).toBe(false)
     expect(isTrustedGroupWritablePath({ ...homebrew, ownerUid: 502 })).toBe(false)
