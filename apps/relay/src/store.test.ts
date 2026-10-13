@@ -23,6 +23,61 @@ import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
+it("preserves submission order when queued tasks and thread messages share a timestamp", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  vi.useFakeTimers({ toFake: ["Date"] })
+  vi.setSystemTime(new Date("2026-10-12T00:00:00Z"))
+  let sequence = 1_000
+  const ids = vi
+    .spyOn(crypto, "randomUUID")
+    .mockImplementation(() => `00000000-0000-4000-8000-${String(--sequence).padStart(12, "0")}`)
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "ordered-worker",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "offline",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const first = await Effect.runPromise(
+      store.createDelegation({ prompt: "First" }, device.id, "owner"),
+    )
+    const tasks = [first]
+    for (let index = 1; index < 22; index += 1) {
+      tasks.push(
+        await Effect.runPromise(
+          store.createDelegation(
+            { prompt: `Follow-up ${index}`, threadId: first.threadId },
+            device.id,
+            "owner",
+          ),
+        ),
+      )
+    }
+    expect(
+      (await Effect.runPromise(store.pendingTasksFor(device.id))).map((task) => task.id),
+    ).toEqual(tasks.map((task) => task.id))
+    const context = await Effect.runPromise(store.threadContext(first.threadId))
+    expect(context.tasks.map((task) => task.id)).toEqual(tasks.slice(-20).map((task) => task.id))
+    expect(context.messages.map((message) => message.content)).toEqual(
+      tasks.slice(-20).map((task) => task.prompt),
+    )
+    expect(context.truncated).toBe(true)
+  } finally {
+    ids.mockRestore()
+    vi.useRealTimers()
+    await runtime.dispose()
+  }
+})
+
 it("summarizes current work without transferring full rosters or including forgotten devices", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {
