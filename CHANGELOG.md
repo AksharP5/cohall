@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.2](https://github.com/AksharP5/cohall/compare/v0.12.1...v0.12.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **providers:** show why a Codex turn failed ([#198](https://github.com/AksharP5/cohall/issues/198)) ([14b4df2](https://github.com/AksharP5/cohall/commit/14b4df241d3e091dba5924bbfff5d896739caf01))
+* **relay:** reject updates from closing connections ([#199](https://github.com/AksharP5/cohall/issues/199)) ([110645c](https://github.com/AksharP5/cohall/commit/110645cbad2e271fa6764f868ef6abe0885442c2))
+
 ## [0.12.1](https://github.com/AksharP5/cohall/compare/v0.12.0...v0.12.1) (2026-10-13)
 
 
