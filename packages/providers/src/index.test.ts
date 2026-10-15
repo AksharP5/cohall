@@ -151,6 +151,28 @@ it.skipIf(process.platform === "win32")(
   },
 )
 
+it.skipIf(process.platform === "win32")(
+  "preserves Codex's structured turn failure instead of its stderr warning",
+  async () => {
+    const directory = await providerFixture(
+      "codex",
+      `
+    process.stderr.write("Warning: using the default model.")
+    console.log(JSON.stringify({type: "turn.failed", error: {message: "Usage limit reached. Try again later."}}))
+    process.exitCode = 1
+  `,
+    )
+    await expect(
+      Effect.runPromise(
+        run({ provider: "codex", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "CohallProvider.RunError",
+      message: "Usage limit reached. Try again later.",
+    })
+  },
+)
+
 const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknown>) => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-provider-events-"))
   directories.push(directory)
@@ -173,6 +195,19 @@ const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknow
   process.env.PATH = directory
   return Effect.runPromise(run({ provider, threadId: "test", prompt: "test", cwd: directory }))
 }
+
+it("accepts a successful Codex turn after a recoverable stream error", async () => {
+  await expect(
+    runWithEvents("codex", [
+      { type: "error", message: "Reconnecting... 1/5" },
+      { type: "item.completed", item: { type: "agent_message", text: "Finished after retrying." } },
+      {
+        type: "turn.completed",
+        usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 },
+      },
+    ]),
+  ).resolves.toEqual({ result: "Finished after retrying." })
+})
 
 it("skips directories shadowing executable files, including Windows shims", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-provider-discovery-"))

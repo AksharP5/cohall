@@ -345,6 +345,12 @@ const parseCodex = async (stdout: Readable, existingSession?: string): Promise<R
   await forEachJsonEvent(
     stdout,
     (event) => {
+      if (text(event.type) === "turn.failed") {
+        throw new ProviderRunError({
+          provider: "codex",
+          message: (text(record(event.error)?.message) || "Codex turn failed").slice(0, 16_384),
+        })
+      }
       if (text(event.type) === "thread.started") {
         sessionId = text(event.thread_id) ?? sessionId
       }
