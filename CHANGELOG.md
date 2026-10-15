@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.1](https://github.com/AksharP5/cohall/compare/v0.12.0...v0.12.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **providers:** preserve the real error when a command fails ([#194](https://github.com/AksharP5/cohall/issues/194)) ([a58c44e](https://github.com/AksharP5/cohall/commit/a58c44e5a5f4185f75201242fb1f11732e4151bb))
+* **tasks:** keep simultaneous follow-ups in submission order ([#195](https://github.com/AksharP5/cohall/issues/195)) ([5f6c487](https://github.com/AksharP5/cohall/commit/5f6c4875fa598ee3e8b2e632e84dab11d5387015))
+* **upgrade:** resolve runnable commands and preserve root prefixes ([#196](https://github.com/AksharP5/cohall/issues/196)) ([cefbe66](https://github.com/AksharP5/cohall/commit/cefbe66b885fccdd86441ec57f4e1dc82112437a))
+
 ## [0.12.0](https://github.com/AksharP5/cohall/compare/v0.11.3...v0.12.0) (2026-10-08)
 
 
