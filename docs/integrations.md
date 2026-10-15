@@ -41,9 +41,11 @@ Requests without an ID continue to create a new task each time.
 Use a device UUID or `@device-uuid/bot-id` from `cohall bots` for retries. These
 targets bypass live name discovery when a request ID is supplied, so the original
 task can still be recovered after its target is forgotten or stops advertising
-the provider. Names need discovery on each call. With a request ID, a thread
-follow-up must select a target or provider explicitly. Select the Bot explicitly
-for a Bot follow-up. Cohall does not retry submissions automatically.
+the provider. Names need discovery on each call. Qualified Bot names such as
+`@device-uuid/Research` also work with request IDs while the Bot is still advertised.
+With a request ID, a thread follow-up must select a target or provider explicitly.
+Select the Bot explicitly
+for a Bot follow-up. Cohall does not retry network failures automatically.
 
 IDs belong to the original requester credential. Another pairing or the relay
 owner has a separate ID namespace. Keep all task input unchanged, including

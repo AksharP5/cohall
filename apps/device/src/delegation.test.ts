@@ -159,6 +159,29 @@ it("requires an explicit target or provider for keyed thread follow-ups", async 
   expect(relay.threadContext).not.toHaveBeenCalled()
 })
 
+it("preserves a keyed Bot request conflict when discovery is unavailable", async () => {
+  const relay = {
+    ...client(),
+    devices: () =>
+      Effect.fail(
+        new RelayRequestError({ operation: "devices", status: 503, message: "Unavailable" }),
+      ),
+    createTask: () =>
+      Effect.fail(
+        new RelayRequestError({ operation: "createTask", status: 409, message: "Different input" }),
+      ),
+  }
+  await expect(
+    Effect.runPromise(
+      createDelegation(relay, configuration, {
+        requestId: TaskRequestId.make(crypto.randomUUID()),
+        target: `@${device.id}/Research`,
+        prompt: "Changed",
+      }),
+    ),
+  ).rejects.toMatchObject({ status: 409, message: "Different input" })
+})
+
 it("returns successful work even when inbox acknowledgement is unavailable", async () => {
   const completed = Task.make({ ...task, completedAt: timestamp })
   const unavailable = {

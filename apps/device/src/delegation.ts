@@ -16,6 +16,7 @@ import {
   terminalTaskStatuses,
   isTerminalTask,
   type Device,
+  type CreateTaskInput,
   type InputAttachment,
   type Provider as ProviderName,
   type Task,
@@ -279,7 +280,7 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
     (configuration.mcpTaskId === undefined
       ? undefined
       : yield* Schema.decodeUnknownEffect(TaskId)(configuration.mcpTaskId))
-  return yield* client.createTask({
+  const input: CreateTaskInput = {
     prompt: options.prompt,
     ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
     ...(target === undefined ? {} : { targetDeviceId: target.deviceId }),
@@ -295,7 +296,29 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
     ...(parentTaskId === undefined ? {} : { parentTaskId }),
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.expiresAt === undefined ? {} : { expiresAt: options.expiresAt }),
-  })
+  }
+  return yield* client.createTask(input).pipe(
+    Effect.catch((cause) =>
+      Effect.gen(function* () {
+        const suppliedTarget = options.target
+        if (
+          directTarget?.botId === undefined ||
+          suppliedTarget === undefined ||
+          !(cause instanceof RelayRequestError) ||
+          (cause.status !== 404 && cause.status !== 409)
+        )
+          return yield* Effect.fail(cause)
+        // A name retry first conflicts with the Bot ID saved by its original submission.
+        const resolved = yield* client.devices().pipe(
+          Effect.flatMap((devices) => selectTarget(devices, suppliedTarget)),
+          Effect.catch((error) => Effect.fail(cause.status === 409 ? cause : error)),
+        )
+        if (resolved.botId === undefined || resolved.botId === directTarget.botId)
+          return yield* Effect.fail(cause)
+        return yield* client.createTask({ ...input, botId: resolved.botId })
+      }),
+    ),
+  )
 })
 
 export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
