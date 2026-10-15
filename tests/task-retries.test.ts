@@ -1,5 +1,6 @@
 import { RelayClient, exchangePairing } from "../packages/client/src/index.ts"
 import {
+  BotId,
   Device,
   Task,
   TaskRequestId,
@@ -8,6 +9,8 @@ import {
   now,
   version,
 } from "../packages/protocol/src/index.ts"
+import { ClientConfiguration } from "../apps/device/src/config.ts"
+import { createDelegation } from "../apps/device/src/delegation.ts"
 import { RelayStore } from "../apps/relay/src/store.ts"
 import { Effect, ManagedRuntime, Schema } from "effect"
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js"
@@ -31,7 +34,8 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
     platform: "linux",
     architecture: "x64",
     status: "offline",
-    providers: ["codex"],
+    providers: ["codex", "grok-bot"],
+    bots: [{ id: BotId.make("research-id"), name: "Research" }],
     capabilities: [{ id: "task-deadlines", label: "Deadlines" }],
     workspaces: [],
     version,
@@ -137,7 +141,26 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
     expect(separate.id).not.toBe(original.id)
     const ownerTask = await Effect.runPromise(owner.createTask(input))
     expect(ownerTask.id).not.toBe(original.id)
-    for (const current of [original, separate, ownerTask])
+    const configuration = ClientConfiguration.make({ relayUrl, token: requesterToken })
+    const botInput = {
+      requestId: TaskRequestId.make(crypto.randomUUID()),
+      target: `@${target.id}/Research`,
+      prompt: "Find a project",
+    }
+    const botTask = await Effect.runPromise(createDelegation(client, configuration, botInput))
+    expect(botTask.botId).toBe("research-id")
+    expect((await Effect.runPromise(createDelegation(client, configuration, botInput))).id).toBe(
+      botTask.id,
+    )
+    await expect(
+      Effect.runPromise(
+        createDelegation(client, configuration, { ...botInput, prompt: "Changed" }),
+      ),
+    ).rejects.toMatchObject({ status: 409 })
+    const botContext = await Effect.runPromise(client.threadContext(botTask.threadId))
+    expect(botContext.tasks).toHaveLength(1)
+    expect(botContext.messages).toHaveLength(1)
+    for (const current of [original, separate, ownerTask, botTask])
       await Effect.runPromise(owner.cancelTask(current.id))
     await vi.waitFor(() => expect(Date.now()).toBeGreaterThan(Date.parse(input.expiresAt)), {
       timeout: 10_000,
@@ -151,6 +174,15 @@ it("recovers an accepted task after a lost HTTP response and restart with its or
     expect((await Effect.runPromise(client.createTask(input))).status).toBe("cancelled")
     await expect(
       Effect.runPromise(client.createTask({ ...input, prompt: "Changed" })),
+    ).rejects.toMatchObject({ status: 409 })
+    const stableBotInput = { ...botInput, target: `@${target.id}/${botTask.botId}` }
+    expect(
+      await Effect.runPromise(createDelegation(client, configuration, stableBotInput)),
+    ).toMatchObject({ id: botTask.id, status: "cancelled" })
+    await expect(
+      Effect.runPromise(
+        createDelegation(client, configuration, { ...stableBotInput, prompt: "Changed" }),
+      ),
     ).rejects.toMatchObject({ status: 409 })
     const environment = {
       ...process.env,
