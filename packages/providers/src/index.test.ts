@@ -491,16 +491,48 @@ setInterval(() => {}, 1000)
   10_000,
 )
 
-it.skipIf(process.platform === "win32")(
-  "reports a failed prompt write without crashing the worker",
-  async () => {
+it.skipIf(process.platform === "win32").each([
+  {
+    provider: "codex",
+    diagnostic: "the write error",
+    stdout: "",
+    stderr: "",
+    message: /EPIPE|ECONNRESET/,
+  },
+  {
+    provider: "codex",
+    diagnostic: "stderr",
+    stdout: "",
+    stderr: "Authentication failed. Run codex login.",
+    message: "Authentication failed. Run codex login.",
+  },
+  {
+    provider: "codex",
+    diagnostic: "the structured turn error",
+    stdout: `${JSON.stringify({ type: "turn.failed", error: { message: "Usage limit reached." } })}\n`,
+    stderr: "Warning: using the default model.",
+    message: "Usage limit reached.",
+  },
+  {
+    provider: "claude-code",
+    diagnostic: "the JSON error",
+    stdout: JSON.stringify({ is_error: true, result: "Not logged in." }),
+    stderr: "",
+    message: "Not logged in.",
+  },
+] as const)(
+  "reports a failed $provider prompt write using $diagnostic without crashing the worker",
+  async ({ provider, stdout, stderr, message }) => {
     const directory = await mkdtemp(join(tmpdir(), "cohall-provider-input-"))
     directories.push(directory)
-    const executable = join(directory, "codex")
+    const executable = join(directory, provider === "claude-code" ? "claude" : provider)
     await writeFile(
       executable,
       `#!${process.execPath}
-require("node:fs").closeSync(0)
+const { closeSync, writeSync } = require("node:fs")
+writeSync(2, ${JSON.stringify(stderr)})
+writeSync(1, ${JSON.stringify(stdout)})
+closeSync(0)
 setInterval(() => {}, 1000)
 `,
       { mode: 0o755 },
@@ -509,11 +541,11 @@ setInterval(() => {}, 1000)
 
     await expect(
       Effect.runPromise(
-        run({ provider: "codex", threadId: "test", prompt: "x".repeat(262_144), cwd: directory }),
+        run({ provider, threadId: "test", prompt: "中".repeat(131_072), cwd: directory }),
       ),
     ).rejects.toMatchObject({
       _tag: "CohallProvider.RunError",
-      message: expect.stringMatching(/EPIPE|ECONNRESET/),
+      message: expect.stringMatching(message),
     })
   },
 )
