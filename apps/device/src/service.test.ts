@@ -3,7 +3,7 @@ import { execFile, type ExecFileException } from "node:child_process"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { promisify } from "node:util"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { deviceServicePlan, installDeviceService, restartDeviceService } from "./service.ts"
 import { serviceCandidates, type CommandRunner } from "./upgrade.ts"
 import { findExecutable } from "@cohall/providers"
@@ -11,6 +11,11 @@ import { findExecutable } from "@cohall/providers"
 afterEach(() => vi.unstubAllEnvs())
 
 describe("device service plans", () => {
+  beforeEach(() => {
+    vi.stubEnv("PNPM_HOME", undefined)
+    vi.stubEnv("XDG_DATA_HOME", undefined)
+  })
+
   it.each(["/chosen config", "", "relative-config"])(
     "uses the Linux unit search path with XDG_CONFIG_HOME=%s",
     (configHome) => {
@@ -197,20 +202,37 @@ Invoke-Expression $Inspection
     },
   )
 
-  it.skipIf(process.platform === "win32").each(["linux", "darwin"] as const)(
-    "finds providers from a custom npm prefix in an installed %s service",
-    async (platform) => {
+  it.skipIf(process.platform === "win32").each(
+    (["linux", "darwin"] as const).flatMap((platform) =>
+      ["npm", "PNPM_HOME", "XDG_DATA_HOME"].map((providerLocation) => ({
+        platform,
+        providerLocation,
+      })),
+    ),
+  )(
+    "finds providers from $providerLocation in an installed $platform service",
+    async ({ platform, providerLocation }) => {
       const directory = await mkdtemp(join(tmpdir(), "cohall-service-npm-prefix-"))
       const prefix = join(await realpath(directory), "custom npm tools")
       const bin = join(prefix, "bin")
       const entrypoint = join(prefix, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
-      const provider = join(bin, "codex")
+      const dataHome = join(directory, "data home")
+      const providerBin =
+        providerLocation === "npm"
+          ? bin
+          : providerLocation === "PNPM_HOME"
+            ? join(directory, "pnpm home")
+            : join(dataHome, "pnpm")
+      const provider = join(providerBin, "codex")
       vi.stubEnv("XDG_CONFIG_HOME", join(directory, "config"))
       vi.stubEnv("COHALL_CONFIG", join(directory, "config/cohall/config.json"))
-      vi.stubEnv("PATH", bin)
+      vi.stubEnv("PNPM_HOME", providerLocation === "PNPM_HOME" ? providerBin : undefined)
+      vi.stubEnv("XDG_DATA_HOME", dataHome)
+      vi.stubEnv("PATH", providerBin)
       try {
         await mkdir(dirname(entrypoint), { recursive: true })
         await mkdir(bin)
+        await mkdir(providerBin, { recursive: true })
         await writeFile(entrypoint, "#!/usr/bin/env node\n")
         await symlink(entrypoint, join(bin, "cohall"), "file")
         await writeFile(provider, "#!/bin/sh\nexit 0\n", { mode: 0o755 })
@@ -228,7 +250,7 @@ Invoke-Expression $Inspection
           platform === "linux"
             ? content.match(/^Environment="PATH=(.+)"$/m)?.[1]
             : content.match(/<key>PATH<\/key>\s*<string>(.+)<\/string>/)?.[1]
-        expect(servicePath?.split(":")).toContain(bin)
+        expect(servicePath?.split(":")).toContain(providerBin)
         vi.stubEnv("PATH", servicePath)
         expect(findExecutable("codex")).toBe(provider)
       } finally {

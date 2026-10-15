@@ -62,11 +62,7 @@ export const deviceServicePlan = (options: {
   readonly configPath: string
   readonly uid?: number
 }): DeviceServicePlan => {
-  const pnpmHome =
-    options.pnpm?.home ??
-    (options.platform === "darwin"
-      ? join(options.home, "Library", "pnpm")
-      : join(options.home, ".local", "share", "pnpm"))
+  const pnpmHome = options.pnpm?.home ?? pnpmHomeDirectory(options.platform, options.home)
   const servicePath = [
     dirname(options.nodeExecutable),
     ...(options.npmPrefix === undefined ? [] : [join(options.npmPrefix, "bin")]),

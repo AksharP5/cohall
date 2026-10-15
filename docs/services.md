@@ -51,8 +51,10 @@ is an absolute path, or `$HOME/.config/systemd/user` otherwise.
 The generated service uses the exact Cohall executable and puts the current
 Node.js directory first on `PATH`. For npm installations, Linux and macOS services
 also include the verified global prefix's `bin` directory so providers installed
-alongside Cohall remain available, including with a custom prefix. They also
-include the configured pnpm home and its `bin` subdirectory. For pnpm installations,
+alongside Cohall remain available, including with a custom prefix. Linux and macOS
+services also include the pnpm home and its `bin` subdirectory, using `PNPM_HOME`,
+then `$XDG_DATA_HOME/pnpm`, then the platform default, regardless of how Cohall
+was installed. For pnpm installations,
 services also save the selected pnpm executable, global package directory, global
 bin directory, and store directory.
 This preserves custom paths supplied through shell configuration and prevents a
