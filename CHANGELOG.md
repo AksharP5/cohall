@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.3](https://github.com/AksharP5/cohall/compare/v0.12.2...v0.12.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* **providers:** preserve errors when prompt delivery fails ([#203](https://github.com/AksharP5/cohall/issues/203)) ([a56272a](https://github.com/AksharP5/cohall/commit/a56272a8103923ad2099efe3e93775981c675a16))
+* **service:** keep custom pnpm providers available ([#201](https://github.com/AksharP5/cohall/issues/201)) ([b9914a1](https://github.com/AksharP5/cohall/commit/b9914a1152df950c91848694dc712d7b61e39a53))
+* **tasks:** resolve Bot names with retry request IDs ([#204](https://github.com/AksharP5/cohall/issues/204)) ([f481a45](https://github.com/AksharP5/cohall/commit/f481a4519ee65a8be338ae7e2d04b165ed7df31d))
+
 ## [0.12.2](https://github.com/AksharP5/cohall/compare/v0.12.1...v0.12.2) (2026-10-15)
 
 
