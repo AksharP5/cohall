@@ -654,22 +654,30 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
               cause === undefined || cause === null ? resolve() : reject(cause),
             )
           })
-          const [output, stderr, exit] = await Promise.all([
+          const [output, stderr, exit, input] = await Promise.all([
             settlePromise(readOutput(options, child.stdout, terminate)),
             captureText(child.stderr, 64 * 1024),
             settlePromise(exited),
-            written,
+            settlePromise(
+              written.catch((cause: unknown) => {
+                terminate()
+                throw cause
+              }),
+            ),
           ])
           if (output._tag === "Failure" && output.error instanceof ProviderRunError)
             throw output.error
-          if (exit._tag === "Failure" && (output._tag === "Success" || child.pid === undefined)) {
+          if (
+            exit._tag === "Failure" &&
+            (child.pid === undefined || (output._tag === "Success" && input._tag === "Success"))
+          ) {
             throw exit.error
           }
           const exitCode = exit._tag === "Success" ? exit.value : undefined
-          if (exitCode !== 0) {
+          if (exitCode !== 0 || input._tag === "Failure") {
             let diagnostic = stderr
             if (stderr.text.trim().length === 0) {
-              const message =
+              let message =
                 output._tag === "Failure"
                   ? output.error instanceof Error
                     ? output.error.message
@@ -677,6 +685,9 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
                   : typeof output.value === "string"
                     ? claudeFailureMessage(output.value)
                     : undefined
+              if (message === undefined && input._tag === "Failure") {
+                message = input.error instanceof Error ? input.error.message : String(input.error)
+              }
               if (message !== undefined) diagnostic = { text: message, truncated: false }
             }
             throw new ProviderRunError({
