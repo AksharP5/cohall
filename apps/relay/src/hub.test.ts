@@ -26,6 +26,24 @@ it("permits only one socket per device session", () => {
   expect(hub.attach(second, { sessionId })).toBe(true)
 })
 
+it("rejects a revoked socket before its close handshake finishes", () => {
+  const hub = new Hub()
+  const sessionId = AuthSessionId.make("11111111-1111-4111-8111-111111111111")
+  const deviceId = DeviceId.make("22222222-2222-4222-8222-222222222222")
+  const connection = socket()
+  connection.close = () => {
+    Object.defineProperty(connection, "readyState", { value: WebSocket.CLOSING })
+  }
+  hub.attach(connection, { sessionId })
+  hub.registerDevice(deviceId, connection)
+  expect(hub.isAuthorized(connection)).toBe(true)
+
+  hub.closeSession(sessionId)
+
+  expect(hub.isAuthorized(connection)).toBe(false)
+  expect(hub.detach(connection)).toBe(deviceId)
+})
+
 it("bounds owner sockets and accepts one registration per socket", () => {
   const hub = new Hub()
   const owners = Array.from({ length: 17 }, socket)
