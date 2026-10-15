@@ -46,6 +46,9 @@ export class Hub {
   }
 
   isAuthorized(socket: ConnectionSocket): boolean {
+    if (socket.readyState !== WebSocket.OPEN) {
+      return false
+    }
     const principal = this.#principals.get(socket)
     if (principal === undefined) {
       return false
