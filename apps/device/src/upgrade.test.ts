@@ -963,9 +963,6 @@ describe("package installation", () => {
       await chmod(root, 0o777)
       await chmod(executable, 0o755)
       await expect(trustedExecutable(executable)).rejects.toThrow("group- or world-writable")
-      await expect(trustedExecutable(executable, { writableRoot: root })).rejects.toThrow(
-        "group- or world-writable",
-      )
     },
   )
 
@@ -980,38 +977,47 @@ describe("package installation", () => {
       await chmod(executable, 0o755)
 
       await expect(trustedExecutable(executable)).rejects.toThrow("group- or world-writable")
-      await expect(trustedExecutable(executable, { writableRoot: root })).rejects.toThrow(
-        "group- or world-writable",
-      )
     },
   )
 
-  it("limits group-writable package paths to the macOS Homebrew admin group", () => {
-    const homebrew = {
-      platform: "darwin" as const,
-      canonical: "/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js",
-      writableRoot: "/opt/homebrew",
-      path: "/opt/homebrew/lib",
-      uid: 501,
-      ownerUid: 501,
-      ownerGid: 80,
-    }
+  it.each(["/opt/homebrew", "/usr/local"])(
+    "trusts macOS Homebrew package managers in %s independently of the Cohall prefix",
+    (root) => {
+      const homebrew = {
+        platform: "darwin" as const,
+        canonical: `${root}/lib/node_modules/npm/bin/npm-cli.js`,
+        path: `${root}/lib`,
+        uid: 501,
+        ownerUid: 501,
+        ownerGid: 80,
+      }
 
-    expect(isTrustedGroupWritablePath(homebrew)).toBe(true)
-    expect(
-      isTrustedGroupWritablePath({
-        ...homebrew,
-        canonical: "/opt/homebrew/..tools/npm",
-        path: "/opt/homebrew/..tools",
-      }),
-    ).toBe(true)
-    expect(isTrustedGroupWritablePath({ ...homebrew, platform: "linux" })).toBe(false)
-    expect(isTrustedGroupWritablePath({ ...homebrew, ownerGid: 20 })).toBe(false)
-    expect(isTrustedGroupWritablePath({ ...homebrew, ownerUid: 502 })).toBe(false)
-    expect(isTrustedGroupWritablePath({ ...homebrew, writableRoot: "/Users/user/.local" })).toBe(
-      false,
-    )
-  })
+      expect(isTrustedGroupWritablePath(homebrew)).toBe(true)
+      expect(
+        isTrustedGroupWritablePath({
+          ...homebrew,
+          canonical: `${root}/..tools/npm`,
+          path: `${root}/..tools`,
+        }),
+      ).toBe(true)
+      expect(isTrustedGroupWritablePath({ ...homebrew, platform: "linux" })).toBe(false)
+      expect(isTrustedGroupWritablePath({ ...homebrew, ownerGid: 20 })).toBe(false)
+      expect(isTrustedGroupWritablePath({ ...homebrew, ownerUid: 502 })).toBe(false)
+      expect(isTrustedGroupWritablePath({ ...homebrew, uid: undefined })).toBe(false)
+      for (const path of ["/", "/opt", "/usr", "/Users/user/.local", `${root}-other`]) {
+        expect(isTrustedGroupWritablePath({ ...homebrew, path })).toBe(false)
+        expect(isTrustedGroupWritablePath({ ...homebrew, canonical: `${path}/bin/npm` })).toBe(
+          false,
+        )
+      }
+      expect(
+        isTrustedGroupWritablePath({
+          ...homebrew,
+          path: root === "/opt/homebrew" ? "/usr/local/lib" : "/opt/homebrew/lib",
+        }),
+      ).toBe(false)
+    },
+  )
 
   it("preserves a custom npm prefix", () => {
     const installation = packageInstallation(

@@ -305,7 +305,10 @@ Upgrade tools use the first PATH candidate that passes ownership and permission
 checks. Unsafe candidates are skipped; an explicit executable path must pass
 those checks itself. Linux user namespaces may hide root ownership of fixed OS
 directories, but user-installed executables still require trusted ownership and
-permissions.
+permissions. On macOS, current-user-owned Homebrew package managers under
+`/opt/homebrew` or `/usr/local` may use admin-group-writable paths even when
+Cohall uses a separate global prefix. Other group- or world-writable paths
+remain rejected.
 
 The relay owner can queue the same built-in upgrade across every registered
 device:
