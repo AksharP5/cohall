@@ -1,5 +1,11 @@
 import { RelayClient, RelayRequestError } from "@cohall/client"
-import { SocketEvent, Timestamp, version } from "@cohall/protocol"
+import {
+  SocketEvent,
+  Timestamp,
+  assertOwnerToken,
+  maxAuthTokenBytes,
+  version,
+} from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { createHash } from "node:crypto"
 import { createReadStream } from "node:fs"
@@ -100,8 +106,8 @@ const ownerToken = async (dataDirectory: string): Promise<string> => {
   if (!(await exists(path))) {
     throw new Error(`Relay owner token was not found at ${path}`)
   }
-  if ((await stat(path)).size > 512) {
-    throw new Error("Relay owner token file exceeds 512 bytes")
+  if ((await stat(path)).size > maxAuthTokenBytes + 2) {
+    throw new Error("Relay owner token file exceeds its size limit")
   }
   return (await readFile(path, "utf8")).trim()
 }
@@ -148,9 +154,7 @@ export const backupRelay = async (destinationInput: string): Promise<RelayBackup
     }
     verifyDatabase(databasePath)
     const token = await ownerToken(sourceDirectory)
-    if (token.length < 32 || new TextEncoder().encode(token).byteLength > 512) {
-      throw new Error("The relay owner token must contain between 32 and 512 bytes")
-    }
+    assertOwnerToken(token)
     await writeFile(ownerTokenPath, `${token}\n`, { mode: 0o600 })
     await Promise.all([chmod(databasePath, 0o600), chmod(ownerTokenPath, 0o600)])
     const createdAt = Timestamp.make(new Date().toISOString())
@@ -196,7 +200,7 @@ export const restoreRelay = async (sourceInput: string): Promise<RelayRestoreRes
   }
   await Promise.all([
     verifyBackupMember(sourceDatabase),
-    verifyBackupMember(sourceOwnerToken, 1_024),
+    verifyBackupMember(sourceOwnerToken, maxAuthTokenBytes + 2),
     verifyBackupMember(sourceManifest, 16_384),
   ])
 
@@ -234,9 +238,7 @@ export const restoreRelay = async (sourceInput: string): Promise<RelayRestoreRes
     }
     verifyDatabase(databasePath)
     const token = (await readFile(ownerTokenPath, "utf8")).trim()
-    if (token.length < 32 || new TextEncoder().encode(token).byteLength > 512) {
-      throw new Error("Relay backup contains an invalid owner token")
-    }
+    assertOwnerToken(token)
     backupVersion = manifest.cohallVersion
     await rename(staging, target)
   } catch (cause) {

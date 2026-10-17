@@ -1,3 +1,4 @@
+import { assertOwnerToken, maxAuthTokenBytes } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { access, chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir, platform } from "node:os"
@@ -6,7 +7,7 @@ import { isAbsolute, join, resolve } from "node:path"
 export const RelayConfiguration = Schema.Struct({
   host: Schema.NonEmptyString,
   port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65_535 })),
-  token: Schema.String.check(Schema.isMinLength(32)),
+  token: Schema.String.check(Schema.isMinLength(32), Schema.isMaxLength(maxAuthTokenBytes)),
   dataDirectory: Schema.NonEmptyString,
   databasePath: Schema.NonEmptyString,
   allowRemote: Schema.Boolean,
@@ -79,9 +80,7 @@ export const loadEnvironmentConfiguration = Effect.tryPromise({
       await chmod(dataDirectory, 0o700)
     }
     const token = process.env.COHALL_TOKEN ?? (await tokenFrom(join(dataDirectory, "owner-token")))
-    if (token.length < 32) {
-      throw new Error("The Cohall relay owner token must be at least 32 characters")
-    }
+    assertOwnerToken(token)
     const historyTaskLimit = Number(process.env.COHALL_HISTORY_TASK_LIMIT ?? "1000")
     return Schema.decodeUnknownSync(RelayConfiguration)({
       host,

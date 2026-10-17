@@ -7,6 +7,7 @@ import {
   OperationId,
   SocketEvent,
   maxSocketPayloadBytes,
+  maxAuthTokenBytes,
   maxAttachmentBytes,
   TaskId,
   ThreadId,
@@ -1142,7 +1143,8 @@ export const runRelay = async (): Promise<void> => {
     socket.on("message", (message: RawData) => {
       if (!hub.isAuthorized(socket)) {
         const size = Buffer.byteLength(socketText(message))
-        if (socket.data.preAuthFrameReceived || size > 1_024) {
+        // JSON escaping can expand each decoded token byte to six bytes.
+        if (socket.data.preAuthFrameReceived || size > maxAuthTokenBytes * 6 + 64) {
           socket.close(4003, "Only one authentication frame is allowed")
           return
         }

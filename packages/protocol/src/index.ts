@@ -5,6 +5,7 @@ export const version =
   typeof __COHALL_VERSION__ === "undefined" ? "0.0.0-development" : __COHALL_VERSION__
 
 export const maxSocketPayloadBytes = 1024 * 1024
+export const maxAuthTokenBytes = 512
 export const maxAttachmentBytes = 256 * 1024
 export const maxTaskAttachments = 2
 export const maxProgressNoteBytes = 1024
@@ -15,6 +16,21 @@ const optionalText = (maxLength: number) => Schema.String.check(Schema.isMaxLeng
 const boundedArray = <S extends Schema.Top>(schema: S, maxLength: number) =>
   Schema.Array(schema).check(Schema.isMaxLength(maxLength))
 const count = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }))
+
+export const assertOwnerToken = (token: string): void => {
+  if (token.length < 32) {
+    throw new Error("The Cohall relay owner token must be at least 32 characters")
+  }
+  if (new TextEncoder().encode(token).byteLength > maxAuthTokenBytes) {
+    throw new Error(`The Cohall relay owner token must be at most ${maxAuthTokenBytes} UTF-8 bytes`)
+  }
+  if (token.trim() !== token || !/^[\t\x20-\x7e\x80-\xff]+$/.test(token)) {
+    throw new Error(
+      "The Cohall relay owner token must fit an HTTP header without leading or trailing whitespace",
+    )
+  }
+}
+
 const uuid = <Name extends string>(name: Name) =>
   Schema.String.check(Schema.isUUID(4)).pipe(Schema.brand(name))
 const isoTimestamp = <Name extends string>(name: Name) =>
@@ -583,7 +599,15 @@ export const CreateTaskInput = Schema.Struct({
 export interface CreateTaskInput extends Schema.Schema.Type<typeof CreateTaskInput> {}
 
 export const SocketEvent = Schema.TaggedUnion({
-  Authenticate: { token: bounded(256) },
+  Authenticate: {
+    token: bounded(maxAuthTokenBytes).check(
+      Schema.makeFilter((token) =>
+        new TextEncoder().encode(token).byteLength <= maxAuthTokenBytes
+          ? undefined
+          : `Authentication token exceeds ${maxAuthTokenBytes} UTF-8 bytes`,
+      ),
+    ),
+  },
   Connected: {
     serverVersion: bounded(32),
     connectedAt: Timestamp,
