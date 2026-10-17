@@ -34,6 +34,7 @@ import { access, chmod } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import type { ListenOptions } from "node:net"
 import { platform } from "node:os"
+import { posix, win32 } from "node:path"
 import { WebSocketServer, type RawData } from "ws"
 import { loadEnvironmentConfiguration, type RelayConfiguration } from "./config.ts"
 import { Hub, type ConnectionSocket } from "./hub.ts"
@@ -196,15 +197,18 @@ const scoreDevice = (
   const needsXcode = /\b(xcode|ios|macos|swiftui|app store)\b/.test(prompt)
   const needsBrowser =
     /\b(browser|chrome|youtube|twitter|logged[- ]?in|signed[- ]?in|x\.com)\b/.test(prompt)
+  const paths = device.platform === "windows" ? win32 : posix
+  const workspace = input.workspace
+  const matchesWorkspace =
+    workspace !== undefined &&
+    paths.isAbsolute(workspace) &&
+    device.workspaces.some(({ path }) => {
+      const child = paths.relative(path, workspace)
+      return child !== ".." && !child.startsWith(`..${paths.sep}`) && !paths.isAbsolute(child)
+    })
   return (
     (device.status === "offline" ? 0 : 100) +
-    (input.workspace !== undefined &&
-    device.workspaces.some(
-      (workspace) =>
-        input.workspace === workspace.path || input.workspace?.startsWith(`${workspace.path}/`),
-    )
-      ? 80
-      : 0) +
+    (matchesWorkspace ? 80 : 0) +
     (needsXcode && device.capabilities.some((capability) => capability.id === "xcode") ? 60 : 0) +
     (needsBrowser && device.capabilities.some((capability) => capability.id === "browser-session")
       ? 40
