@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.4](https://github.com/AksharP5/cohall/compare/v0.12.3...v0.12.4) (2026-10-17)
+
+
+### Bug Fixes
+
+* **relay:** route work using target workspace path rules ([#205](https://github.com/AksharP5/cohall/issues/205)) ([1c5b991](https://github.com/AksharP5/cohall/commit/1c5b991558e0354da07f476df872fae9538d0508))
+
 ## [0.12.3](https://github.com/AksharP5/cohall/compare/v0.12.2...v0.12.3) (2026-10-15)
 
 
