@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.6](https://github.com/AksharP5/cohall/compare/v0.12.5...v0.12.6) (2026-10-17)
+
+
+### Bug Fixes
+
+* **upgrade:** support Homebrew managers with custom global prefixes ([#209](https://github.com/AksharP5/cohall/issues/209)) ([e826403](https://github.com/AksharP5/cohall/commit/e826403db21a9345a804b1929dea6769e648a2a3))
+
 ## [0.12.5](https://github.com/AksharP5/cohall/compare/v0.12.4...v0.12.5) (2026-10-17)
 
 
