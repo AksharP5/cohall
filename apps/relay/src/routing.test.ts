@@ -35,6 +35,36 @@ const device = (name: string) =>
     lastSeenAt: now(),
   })
 
+it.each([
+  { platform: "windows", root: "C:\\dev", workspace: "C:\\dev\\project", matches: true },
+  { platform: "windows", root: "C:\\Dev\\", workspace: "c:/dev/project", matches: true },
+  { platform: "linux", root: "/", workspace: "/dev/project", matches: true },
+  { platform: "linux", root: "/dev/", workspace: "/dev/project", matches: true },
+  { platform: "linux", root: "/dev", workspace: "/dev/../other", matches: false },
+  { platform: "windows", root: "C:\\dev", workspace: "D:\\dev\\project", matches: false },
+  { platform: "linux", root: "/", workspace: "C:\\dev\\project", matches: false },
+] as const)("routes $workspace against $platform workspace root $root", async (test) => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const fallback = device("a-default")
+    const matching = Device.make({
+      ...device("b-workspace"),
+      platform: test.platform,
+      workspaces: [{ path: test.root, label: "Workspace" }],
+    })
+    await Effect.runPromise(store.upsertDevice(fallback))
+    await Effect.runPromise(store.upsertDevice(matching))
+    expect(
+      await runtime.runPromise(
+        resolveDelegation({ prompt: "Inspect the project", workspace: test.workspace }),
+      ),
+    ).toMatchObject({ targetDeviceId: test.matches ? matching.id : fallback.id })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("explains when matching workers need file attachment support", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {
