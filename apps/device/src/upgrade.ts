@@ -462,36 +462,28 @@ export const isTrustedSystemPath = (platform: NodeJS.Platform, path: string): bo
 export const isTrustedGroupWritablePath = (options: {
   readonly platform: NodeJS.Platform
   readonly canonical: string
-  readonly writableRoot: string | undefined
   readonly path: string
   readonly uid: number | undefined
   readonly ownerUid: number
   readonly ownerGid: number
 }): boolean => {
-  const writableRoot = options.writableRoot
   return (
     options.platform === "darwin" &&
-    writableRoot !== undefined &&
     options.uid !== undefined &&
     options.ownerUid === options.uid &&
     options.ownerGid === macosAdminGroup &&
-    macosHomebrewRoots.some((root) => containsPath(root, writableRoot)) &&
-    containsPath(writableRoot, options.canonical) &&
-    containsPath(writableRoot, options.path)
+    macosHomebrewRoots.some(
+      (root) => containsPath(root, options.canonical) && containsPath(root, options.path),
+    )
   )
 }
 
-const validateExecutable = async (
-  candidate: string,
-  installationRoot: string | undefined,
-  preserveSymlink = false,
-): Promise<string> => {
+const validateExecutable = async (candidate: string, preserveSymlink = false): Promise<string> => {
   const canonical = await realpath(candidate)
   if (operatingSystem() === "win32") {
     return preserveSymlink ? resolve(candidate) : canonical
   }
   const uid = process.getuid?.()
-  const writableRoot = installationRoot === undefined ? undefined : await realpath(installationRoot)
   for (const executablePath of preserveSymlink ? [canonical, resolve(candidate)] : [canonical]) {
     for (let path = executablePath; ; path = dirname(path)) {
       const metadata = await stat(path)
@@ -500,7 +492,6 @@ const validateExecutable = async (
       const trustedGroupWritablePath = isTrustedGroupWritablePath({
         platform: operatingSystem(),
         canonical,
-        writableRoot,
         path,
         uid,
         ownerUid: metadata.uid,
@@ -533,7 +524,7 @@ const validateExecutable = async (
 
 export const trustedExecutable = async (
   command: string,
-  options: { readonly writableRoot?: string; readonly preserveSymlink?: boolean } = {},
+  options: { readonly preserveSymlink?: boolean } = {},
 ): Promise<string> => {
   const candidates = isAbsolute(command)
     ? [command]
@@ -552,7 +543,7 @@ export const trustedExecutable = async (
     if (!available) continue
     try {
       if (!(await stat(path)).isFile()) continue
-      return await validateExecutable(path, options.writableRoot, options.preserveSymlink)
+      return await validateExecutable(path, options.preserveSymlink)
     } catch (cause) {
       failure ??= cause
     }
@@ -1031,10 +1022,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     if (installation.pnpmExecutable !== undefined)
       return Promise.resolve(installation.pnpmExecutable)
     return options.resolveExecutable === undefined
-      ? trustedExecutable(
-          installation.manager,
-          installation.prefix === undefined ? {} : { writableRoot: installation.prefix },
-        )
+      ? trustedExecutable(installation.manager)
       : resolveExecutable(installation.manager)
   }
   let packageManagerExecutable: string | undefined
