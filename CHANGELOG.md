@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.5](https://github.com/AksharP5/cohall/compare/v0.12.4...v0.12.5) (2026-10-17)
+
+
+### Bug Fixes
+
+* **auth:** keep owner tokens working with devices and backups ([#207](https://github.com/AksharP5/cohall/issues/207)) ([90d8e14](https://github.com/AksharP5/cohall/commit/90d8e142b4adcebfc7108a90f0500048e14c136b))
+
 ## [0.12.4](https://github.com/AksharP5/cohall/compare/v0.12.3...v0.12.4) (2026-10-17)
 
 
