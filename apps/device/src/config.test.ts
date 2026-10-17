@@ -264,7 +264,7 @@ describe("device workspace configuration", () => {
   it("uses the relay host's protected owner credential", async () => {
     const directory = await temporary()
     const dataDirectory = join(directory, "relay")
-    const ownerToken = "local-owner-token".padEnd(64, "0")
+    const ownerToken = "\\".repeat(512)
     await mkdir(dataDirectory)
     await writeFile(join(dataDirectory, "owner-token"), `${ownerToken}\n`, { mode: 0o600 })
     const previous = {
@@ -280,6 +280,8 @@ describe("device workspace configuration", () => {
       await expect(Effect.runPromise(loadOwnerConfiguration)).resolves.toMatchObject({
         token: ownerToken,
       })
+      process.env.COHALL_TOKEN = "x".repeat(513)
+      await expect(Effect.runPromise(loadOwnerConfiguration)).rejects.toThrow("owner token")
     } finally {
       const restore = (name: string, value: string | undefined): void => {
         if (value === undefined) {

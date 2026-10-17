@@ -67,6 +67,28 @@ it("rejects weak configured owner credentials", async () => {
   )
 })
 
+it.each([
+  "x".repeat(513),
+  "é".repeat(257),
+  ` ${"x".repeat(32)}`,
+  `${"x".repeat(32)}\n`,
+  `${"x".repeat(32)}\ninside`,
+  `${"x".repeat(32)}€`,
+])("rejects owner credentials that cannot round-trip through authentication", async (token) => {
+  await configure()
+  process.env.COHALL_TOKEN = token
+  await expect(Effect.runPromise(loadEnvironmentConfiguration)).rejects.toThrow("owner token")
+})
+
+it.each(["\\".repeat(512), "é".repeat(256), `${"x".repeat(32)} internal spaces`])(
+  "keeps supported owner credentials unchanged",
+  async (token) => {
+    await configure()
+    process.env.COHALL_TOKEN = token
+    expect((await Effect.runPromise(loadEnvironmentConfiguration)).token).toBe(token)
+  },
+)
+
 it("validates the retained terminal task limit", async () => {
   await configure()
   process.env.COHALL_TOKEN = "a".repeat(64)

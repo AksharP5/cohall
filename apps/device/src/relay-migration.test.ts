@@ -43,7 +43,7 @@ describe("relay migration", () => {
     const database = new DatabaseSync(join(source, "cohall.db"))
     database.exec("CREATE TABLE sample (value TEXT NOT NULL); INSERT INTO sample VALUES ('kept')")
     database.close()
-    const token = "relay-owner-token".padEnd(64, "0")
+    const token = "\\".repeat(512)
     await writeFile(join(source, "owner-token"), `${token}\n`, { mode: 0o600 })
     const previousDataDirectory = process.env.COHALL_DATA_DIR
     const previousOwnerToken = process.env.COHALL_TOKEN

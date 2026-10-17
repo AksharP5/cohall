@@ -246,6 +246,12 @@ Environment variables override stored values:
 | `COHALL_RELAY_ALLOW_REMOTE`               | Explicit non-loopback binding opt-in           |
 | `COHALL_HISTORY_TASK_LIMIT`               | Terminal tasks retained; default `1000`        |
 
+Owner tokens require at least 32 characters and at most 512 UTF-8 bytes. They
+must fit an HTTP header and have no leading or trailing whitespace. Generate a
+compatible token with `openssl rand -hex 32`.
+Upgrade the relay and workers together before using owner tokens longer than
+256 characters.
+
 The relay must be reachable to submit work or read status. Accepted tasks wait
 durably while a target is offline and survive relay restarts when its data
 directory is persistent.

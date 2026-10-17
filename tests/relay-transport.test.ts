@@ -25,7 +25,7 @@ it("isolates invalid connections and requeues work when a device connection fail
   if (address === null || typeof address === "string") throw new Error("Expected test port")
   await new Promise<void>((resolve) => reservation.close(() => resolve()))
   const directory = await mkdtemp(join(tmpdir(), "cohall-transport-"))
-  const token = "transport-test-owner-token".padEnd(64, "0")
+  const token = "\\".repeat(512)
   const baseUrl = `http://127.0.0.1:${address.port}`
   const relay = spawn(process.execPath, ["apps/relay/src/main.ts"], {
     cwd: process.cwd(),
@@ -86,9 +86,10 @@ it("isolates invalid connections and requeues work when a device connection fail
       lastSeenAt: now(),
     })
     const worker = await openSocket()
-    const connected = once(worker, "message")
+    const connected = once(worker, "message", { signal: AbortSignal.timeout(5_000) })
     worker.send(JSON.stringify({ _tag: "Authenticate", token }))
-    await connected
+    const [authenticated] = await connected
+    expect(JSON.parse(String(authenticated))).toMatchObject({ _tag: "Connected" })
     worker.send(JSON.stringify({ _tag: "DeviceHello", device }))
     await vi.waitFor(async () => {
       expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("online")
