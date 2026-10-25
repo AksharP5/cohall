@@ -1,8 +1,6 @@
 import { Effect, Schema } from "effect"
 
-declare const __COHALL_VERSION__: string
-export const version =
-  typeof __COHALL_VERSION__ === "undefined" ? "0.0.0-development" : __COHALL_VERSION__
+export { version } from "./version.ts"
 
 export const maxSocketPayloadBytes = 1024 * 1024
 export const maxAuthTokenBytes = 512
