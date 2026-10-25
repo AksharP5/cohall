@@ -23,6 +23,56 @@ import { Database } from "./database.ts"
 import { canDispatchTaskToDevice, resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
 
+it("prunes history without scanning retained task and message bodies", async () => {
+  const database = new Database(":memory:")
+  const runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "history-worker",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const task = await Effect.runPromise(
+      store.createDelegation({ prompt: "Inspect" }, device.id, "owner"),
+    )
+    await Effect.runPromise(store.assignTask(task.id))
+    await Effect.runPromise(store.acceptTask(task.id, device.id))
+    const queries = vi.spyOn(database, "query")
+    let pruning: Array<string>
+    try {
+      await Effect.runPromise(store.finishTask(task.id, device.id, "Done"))
+      pruning = queries.mock.calls
+        .map(([sql]) => sql)
+        .filter((sql) => /^DELETE FROM (messages WHERE task_id|tasks WHERE id) IN/.test(sql))
+    } finally {
+      queries.mockRestore()
+    }
+    expect(pruning).toHaveLength(2)
+    for (const sql of pruning) {
+      const plan = database
+        .query<{ readonly detail: string }>(`EXPLAIN QUERY PLAN ${sql}`)
+        .all(task.id, 999)
+        .map((row) => row.detail)
+      expect(plan).not.toContain("SCAN messages")
+      expect(plan).not.toContain("SCAN tasks")
+      expect(plan).not.toContain("USE TEMP B-TREE FOR ORDER BY")
+    }
+  } finally {
+    await runtime.dispose()
+    database.close()
+  }
+})
+
 it("preserves submission order when queued tasks and thread messages share a timestamp", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   vi.useFakeTimers({ toFake: ["Date"] })

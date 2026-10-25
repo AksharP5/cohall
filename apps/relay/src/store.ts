@@ -2712,6 +2712,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           task_id TEXT, reply_to TEXT, device_id TEXT REFERENCES devices(id)
         );
         CREATE INDEX IF NOT EXISTS messages_thread_created ON messages(thread_id, created_at);
+        CREATE INDEX IF NOT EXISTS messages_task_id ON messages(task_id);
         CREATE TABLE IF NOT EXISTS tasks (
           id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
           prompt TEXT NOT NULL, context TEXT, provider TEXT NOT NULL, bot_id TEXT, status TEXT NOT NULL,
@@ -2725,6 +2726,9 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
         );
         CREATE INDEX IF NOT EXISTS tasks_thread_created ON tasks(thread_id, created_at);
         CREATE INDEX IF NOT EXISTS tasks_target_status ON tasks(target_device_id, status);
+        CREATE INDEX IF NOT EXISTS tasks_terminal_history
+          ON tasks(completed_at DESC, updated_at DESC, id DESC)
+          WHERE status IN ('completed', 'failed', 'cancelled');
         CREATE TABLE IF NOT EXISTS task_requests (
           requester_id TEXT NOT NULL, request_id TEXT NOT NULL, input_hash TEXT NOT NULL,
           task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
