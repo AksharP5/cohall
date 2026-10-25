@@ -49,7 +49,7 @@ describe("device service plans", () => {
   )
 
   it.skipIf(process.platform !== "win32")(
-    "installs a Windows task with the selected runtime and configuration",
+    "installs a Windows task with the selected runtime, configuration, and battery operation",
     async () => {
       const directory = await mkdtemp(join(tmpdir(), "cohall Windows ' & 100%-"))
       const entrypoint = join(directory, "cohall.cjs")
@@ -60,6 +60,7 @@ describe("device service plans", () => {
       const pnpmGlobalDir = join(directory, "custom packages")
       const pnpmGlobalBinDir = join(directory, "user tools", "bin")
       const harness = join(directory, "scheduler-fixture.ps1")
+      const settingsFile = join(directory, "settings.json")
       const powerShell = join(
         process.env.SystemRoot ?? "C:\\Windows",
         "System32",
@@ -76,11 +77,15 @@ describe("device service plans", () => {
         )
         await writeFile(
           harness,
-          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $PnpmExecutable, $PnpmStoreDir, $PnpmGlobalDir, $PnpmGlobalBinDir, $Inspection)
+          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $PnpmExecutable, $PnpmStoreDir, $PnpmGlobalDir, $PnpmGlobalBinDir, $Inspection, $SettingsFile)
 $ErrorActionPreference = 'Stop'
+Import-Module ScheduledTasks
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) return @{} }
-function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit, $RestartCount, $RestartInterval, $MultipleInstances) return @{} }
-function Register-ScheduledTask { param($TaskName, $Description, $Action, $Trigger, $Settings, [switch]$Force) $global:CohallTestAction = $Action }
+function Register-ScheduledTask {
+  param($TaskName, $Description, $Action, $Trigger, $Settings, [switch]$Force)
+  $global:CohallTestAction = $Action
+  $Settings | Select-Object DisallowStartIfOnBatteries, StopIfGoingOnBatteries | ConvertTo-Json | Set-Content -LiteralPath $SettingsFile -Encoding ASCII
+}
 function Stop-ScheduledTask { param($TaskName, $ErrorAction) $global:CohallTestStopped = $true }
 function Start-ScheduledTask { param($TaskName) if (-not $global:CohallTestStopped) { throw 'Existing task was not stopped before restarting' } }
 function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) return @{ Actions = @($global:CohallTestAction) } }
@@ -115,9 +120,15 @@ Invoke-Expression $Inspection
             pnpmGlobalBinDir,
             "-Inspection",
             inspection.inspect.arguments.at(-1) ?? "",
+            "-SettingsFile",
+            settingsFile,
           ],
           { env: { ...process.env, COHALL_UNRELATED_SECRET: "not-service-state" } },
         )
+        expect(JSON.parse(await readFile(settingsFile, "utf8"))).toEqual({
+          DisallowStartIfOnBatteries: false,
+          StopIfGoingOnBatteries: false,
+        })
         const action: unknown = JSON.parse(installed.stdout)
         if (
           typeof action !== "object" ||
