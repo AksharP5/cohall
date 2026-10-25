@@ -69,6 +69,7 @@ describe("device service plans", () => {
           harness,
           `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $PnpmExecutable, $PnpmStoreDir, $PnpmGlobalDir, $PnpmGlobalBinDir, $Inspection, $SettingsFile)
 $ErrorActionPreference = 'Stop'
+Import-Module ScheduledTasks
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) return @{} }
 function Register-ScheduledTask {
   param($TaskName, $Description, $Action, $Trigger, $Settings, [switch]$Force)
