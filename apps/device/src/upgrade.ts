@@ -1058,7 +1058,10 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
       },
       30_000,
     )
-    const latest: unknown = JSON.parse(lookup.stdout)
+    const response: unknown = JSON.parse(lookup.stdout)
+    // npm 12 wraps even a single field result in an array.
+    const latest: unknown =
+      Array.isArray(response) && response.length === 1 ? response[0] : response
     if (typeof latest !== "string" || parseVersion(latest) === undefined) {
       throw new Error(`Could not resolve ${packageName}@latest to an exact semantic version`)
     }

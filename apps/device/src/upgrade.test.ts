@@ -360,9 +360,14 @@ describe("latest upgrades", () => {
     },
   )
 
-  it.each(["npm", "bun", "pnpm"] as const)(
-    "pins a newer latest version before installing with %s",
-    async (manager) => {
+  it.each([
+    ["npm", '"1.2.3"'],
+    ["npm", '["1.2.3"]'],
+    ["bun", '"1.2.3"'],
+    ["pnpm", '"1.2.3"'],
+  ] as const)(
+    "pins a newer latest version before installing with %s response %s",
+    async (manager, stdout) => {
       const { root, entrypoint, metadata } = await installation("1.2.3-rc.1", manager)
       const invocations: Array<string> = []
       const runner: CommandRunner = {
@@ -380,7 +385,7 @@ describe("latest upgrades", () => {
             return { exitCode: 0, stdout: "1.2.15\n", stderr: "" }
           }
           if (arguments_.includes("view")) {
-            return { exitCode: 0, stdout: '"1.2.3"', stderr: "" }
+            return { exitCode: 0, stdout, stderr: "" }
           }
           if (command === manager) {
             await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
@@ -622,7 +627,7 @@ describe("latest upgrades", () => {
     expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
   })
 
-  it.each(['"latest"', '"1.2.3-01"', '["1.2.3"]'])(
+  it.each(['"latest"', '"1.2.3-01"', "[]", '["1.2.3", "1.2.4"]', "[123]"])(
     "leaves the installation and recovery state intact when latest is invalid: %s",
     async (stdout) => {
       const { root, entrypoint, metadata } = await installation("1.2.3")
