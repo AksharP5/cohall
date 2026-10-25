@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises"
+import { mkdir, readFile, rm } from "node:fs/promises"
 import { resolve } from "node:path"
 
 const metadata: unknown = JSON.parse(await readFile(resolve("package.json"), "utf8"))
@@ -12,6 +12,7 @@ if (
 }
 
 const directory = resolve("bin")
+await rm(directory, { recursive: true, force: true })
 await mkdir(directory, { recursive: true })
 const result = await Bun.build({
   entrypoints: [resolve("apps/device/src/main.ts")],
@@ -19,6 +20,7 @@ const result = await Bun.build({
   naming: "cohall.js",
   target: "node",
   format: "esm",
+  splitting: true,
   minify: false,
   sourcemap: "external",
   external: ["effect", "@modelcontextprotocol/sdk/*", "zod/*", "ws", "execa"],
