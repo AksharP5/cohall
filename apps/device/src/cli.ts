@@ -62,7 +62,6 @@ import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 import { installDeviceService } from "./service.ts"
 import { deviceVersionWarning, normalizeUpgradeTarget, upgrade } from "./upgrade.ts"
 import { readInputAttachments } from "./task-attachments.ts"
-import { checkMcp, readMcpHostDiagnostics } from "./mcp-diagnostics.ts"
 import { readBoundedFile } from "./bounded-file.ts"
 import { renderDeviceWatch, watchDevices } from "./device-watch.ts"
 
@@ -749,6 +748,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       print(allDeviceHealth(await Effect.runPromise(relay.devices()), version))
       return
     }
+    const { checkMcp, readMcpHostDiagnostics } = await import("./mcp-diagnostics.ts")
     const configuration = await readStoredConfiguration()
     const relayUrl = normalizeRelayUrl(
       process.env.COHALL_RELAY_URL ?? configuration?.relayUrl ?? "http://127.0.0.1:8787",
