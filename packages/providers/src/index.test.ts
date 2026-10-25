@@ -274,6 +274,30 @@ process.stdin.on("end", () => {
   ).resolves.toEqual({ result: JSON.stringify({ cwd: workspace, helper: "helper-ok" }) })
 })
 
+it.skipIf(process.platform === "win32")(
+  "keeps a relative Cohall configuration usable after changing workspaces",
+  async () => {
+    const directory = await providerFixture(
+      "codex",
+      `
+      const result = require("node:fs").readFileSync(process.env.COHALL_CONFIG, "utf8")
+      console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: result } }))
+    `,
+    )
+    const configDirectory = await mkdtemp(join(process.cwd(), ".cohall-provider-config-"))
+    directories.push(configDirectory)
+    const config = join(configDirectory, "config.json")
+    await writeFile(config, "The worker's selected configuration")
+    vi.stubEnv("COHALL_CONFIG", relative(process.cwd(), config))
+
+    await expect(
+      Effect.runPromise(
+        run({ provider: "codex", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).resolves.toEqual({ result: "The worker's selected configuration" })
+  },
+)
+
 const openCodeText = (messageId: string, partId: string, content: string) => ({
   type: "text",
   timestamp: 1,

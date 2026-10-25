@@ -60,6 +60,9 @@ const providerEnvironment = (): NodeJS.ProcessEnv => ({
       return !key.startsWith("COHALL_") || key === "COHALL_CONFIG"
     }),
   ),
+  ...(process.env.COHALL_CONFIG === undefined
+    ? {}
+    : { COHALL_CONFIG: resolve(process.env.COHALL_CONFIG) }),
   PATH: executableDirectories().join(delimiter),
 })
 

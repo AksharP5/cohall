@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
-import { copyFile, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { copyFile, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -121,6 +121,11 @@ else setInterval(() => {}, 1000)`,
     await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve))
     try {
       await copyFile(packaged, entrypoint)
+      await Promise.all(
+        (await readdir(dirname(packaged)))
+          .filter((name) => name.startsWith("chunk-") && name.endsWith(".js"))
+          .map((name) => copyFile(join(dirname(packaged), name), join(directory, name))),
+      )
       const address = relay.address()
       if (address === null || typeof address === "string") throw new Error("Missing test port")
       const transport = new StdioClientTransport({

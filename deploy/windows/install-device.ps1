@@ -45,6 +45,8 @@ $powerShell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $action = New-ScheduledTaskAction -Execute $powerShell -Argument "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet `
+  -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries `
   -ExecutionTimeLimit (New-TimeSpan -Days 3650) `
   -RestartCount 999 `
   -RestartInterval (New-TimeSpan -Minutes 1) `

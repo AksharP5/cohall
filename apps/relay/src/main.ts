@@ -681,6 +681,9 @@ export const runRelay = async (): Promise<void> => {
       await run(
         Effect.gen(function* () {
           const store = yield* RelayStore.Service
+          // Disconnect cleanup may have failed before this work was requeued.
+          yield* store.requeueTasksFor(device.id)
+          yield* store.requeueOperationsFor(device.id)
           yield* store.upsertDevice(device)
         }),
       )
@@ -785,6 +788,15 @@ export const runRelay = async (): Promise<void> => {
         )
           return true
         sendError(socket, "event_failed", cause instanceof Error ? cause.message : String(cause))
+        if (
+          cause instanceof RelayStore.PersistenceError &&
+          (taskTerminal || operationTerminal) &&
+          cause.operation !== "RelayStore.requireTarget" &&
+          cause.operation !== "RelayStore.requireOperationTarget"
+        ) {
+          // Reconnect so the worker replays the reply it still has pending.
+          socket.close(1011, "Could not persist worker reply")
+        }
         return false
       })
     if (processed && taskTerminal) {
@@ -1163,6 +1175,8 @@ export const runRelay = async (): Promise<void> => {
         .then(() => (socket.data.closed ? undefined : handleSocketEvent(socket, message)))
         .catch((cause: unknown) => {
           sendError(socket, "event_failed", cause instanceof Error ? cause.message : String(cause))
+          if (cause instanceof RelayStore.PersistenceError)
+            socket.close(1011, "Could not persist device event")
         })
         .finally(() => {
           socket.data.queuedMessages = Math.max(0, socket.data.queuedMessages - 1)

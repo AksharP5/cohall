@@ -361,13 +361,14 @@ describe("latest upgrades", () => {
   )
 
   it.each([
-    ["npm", ""],
-    ["bun", ""],
-    ["pnpm", "10.28.1"],
-    ["pnpm", "11.0.9"],
+    ["npm", '"1.2.3"', ""],
+    ["npm", '["1.2.3"]', ""],
+    ["bun", '"1.2.3"', ""],
+    ["pnpm", '"1.2.3"', "10.28.1"],
+    ["pnpm", '"1.2.3"', "11.0.9"],
   ] as const)(
-    "pins a newer latest version before installing with %s %s",
-    async (manager, pnpmVersion) => {
+    "pins a newer latest version before installing with %s response %s version %s",
+    async (manager, stdout, pnpmVersion) => {
       const { root, entrypoint, metadata } = await installation("1.2.3-rc.1", manager)
       const invocations: Array<string> = []
       const lookupDirectories: Array<string | undefined> = []
@@ -389,7 +390,7 @@ describe("latest upgrades", () => {
           }
           if (arguments_.includes("view")) {
             lookupDirectories.push(cwd)
-            return { exitCode: 0, stdout: '"1.2.3"', stderr: "" }
+            return { exitCode: 0, stdout, stderr: "" }
           }
           if (command === manager) {
             await writeFile(metadata, JSON.stringify({ name: "@akshar5/cohall", version: "1.2.3" }))
@@ -640,7 +641,7 @@ describe("latest upgrades", () => {
     expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
   })
 
-  it.each(['"latest"', '"1.2.3-01"', '["1.2.3"]'])(
+  it.each(['"latest"', '"1.2.3-01"', "[]", '["1.2.3", "1.2.4"]', "[123]"])(
     "leaves the installation and recovery state intact when latest is invalid: %s",
     async (stdout) => {
       const { root, entrypoint, metadata } = await installation("1.2.3")

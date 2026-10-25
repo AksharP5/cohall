@@ -199,11 +199,7 @@ export const make = (options: RelayClientOptions): Interface => {
               status: response.status,
             })
           }
-          return jsonBody(response, operation, maxResponseBytes).catch((cause: unknown) => {
-            throw cause instanceof RelayDecodeError
-              ? cause
-              : new RelayDecodeError({ operation, message: String(cause) })
-          })
+          return jsonBody(response, operation, maxResponseBytes)
         },
         catch: (cause) =>
           cause instanceof RelayRequestError || cause instanceof RelayDecodeError
@@ -507,11 +503,7 @@ export const exchangePairing = (
             status: response.status,
           })
         }
-        return jsonBody(response, operation).catch((cause: unknown) => {
-          throw cause instanceof RelayDecodeError
-            ? cause
-            : new RelayDecodeError({ operation, message: String(cause) })
-        })
+        return jsonBody(response, operation)
       },
       catch: (cause) =>
         cause instanceof RelayRequestError || cause instanceof RelayDecodeError

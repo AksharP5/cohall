@@ -1,4 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import { execFile, type ExecFileException } from "node:child_process"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -39,7 +49,7 @@ describe("device service plans", () => {
   )
 
   it.skipIf(process.platform !== "win32")(
-    "installs a Windows task with the selected runtime and configuration",
+    "installs a Windows task with the selected runtime, configuration, and battery operation",
     async () => {
       const directory = await mkdtemp(join(tmpdir(), "cohall Windows ' & 100%-"))
       const entrypoint = join(directory, "cohall.cjs")
@@ -50,6 +60,7 @@ describe("device service plans", () => {
       const pnpmGlobalDir = join(directory, "custom packages")
       const pnpmGlobalBinDir = join(directory, "user tools", "bin")
       const harness = join(directory, "scheduler-fixture.ps1")
+      const settingsFile = join(directory, "settings.json")
       const powerShell = join(
         process.env.SystemRoot ?? "C:\\Windows",
         "System32",
@@ -66,11 +77,15 @@ describe("device service plans", () => {
         )
         await writeFile(
           harness,
-          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $PnpmExecutable, $PnpmStoreDir, $PnpmGlobalDir, $PnpmGlobalBinDir, $Inspection)
+          `param($Installer, $NodeExecutable, $Entrypoint, $Config, $PnpmHome, $PnpmExecutable, $PnpmStoreDir, $PnpmGlobalDir, $PnpmGlobalBinDir, $Inspection, $SettingsFile)
 $ErrorActionPreference = 'Stop'
+Import-Module ScheduledTasks
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn, $User) return @{} }
-function New-ScheduledTaskSettingsSet { param($ExecutionTimeLimit, $RestartCount, $RestartInterval, $MultipleInstances) return @{} }
-function Register-ScheduledTask { param($TaskName, $Description, $Action, $Trigger, $Settings, [switch]$Force) $global:CohallTestAction = $Action }
+function Register-ScheduledTask {
+  param($TaskName, $Description, $Action, $Trigger, $Settings, [switch]$Force)
+  $global:CohallTestAction = $Action
+  $Settings | Select-Object DisallowStartIfOnBatteries, StopIfGoingOnBatteries | ConvertTo-Json | Set-Content -LiteralPath $SettingsFile -Encoding ASCII
+}
 function Stop-ScheduledTask { param($TaskName, $ErrorAction) $global:CohallTestStopped = $true }
 function Start-ScheduledTask { param($TaskName) if (-not $global:CohallTestStopped) { throw 'Existing task was not stopped before restarting' } }
 function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) return @{ Actions = @($global:CohallTestAction) } }
@@ -105,9 +120,15 @@ Invoke-Expression $Inspection
             pnpmGlobalBinDir,
             "-Inspection",
             inspection.inspect.arguments.at(-1) ?? "",
+            "-SettingsFile",
+            settingsFile,
           ],
           { env: { ...process.env, COHALL_UNRELATED_SECRET: "not-service-state" } },
         )
+        expect(JSON.parse(await readFile(settingsFile, "utf8"))).toEqual({
+          DisallowStartIfOnBatteries: false,
+          StopIfGoingOnBatteries: false,
+        })
         const action: unknown = JSON.parse(installed.stdout)
         if (
           typeof action !== "object" ||
@@ -197,6 +218,68 @@ Invoke-Expression $Inspection
       } finally {
         if (previousConfig === undefined) delete process.env.COHALL_CONFIG
         else process.env.COHALL_CONFIG = previousConfig
+        await rm(directory, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.skipIf(process.platform === "win32").each(["linux", "darwin"] as const)(
+    "preserves the existing %s service when a replacement cannot be written",
+    async (platform) => {
+      const directory = await mkdtemp(join(tmpdir(), "cohall-service-write-"))
+      const entrypoint = join(directory, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+      vi.stubEnv("XDG_CONFIG_HOME", join(directory, "config"))
+      vi.stubEnv("COHALL_CONFIG", join(directory, "config/cohall/config.json"))
+      try {
+        await mkdir(dirname(entrypoint), { recursive: true })
+        await mkdir(join(directory, "bin"))
+        await writeFile(entrypoint, "#!/usr/bin/env node\n")
+        await symlink(entrypoint, join(directory, "bin/cohall"))
+        const installed = await installDeviceService({
+          entrypoint,
+          platform,
+          home: directory,
+          runner: { run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+        })
+        const original = await readFile(installed.installed, "utf8")
+        const script = `
+          import { installDeviceService } from ${JSON.stringify(new URL("./service.ts", import.meta.url).href)}
+          await installDeviceService({
+            entrypoint: ${JSON.stringify(entrypoint)},
+            platform: ${JSON.stringify(platform)},
+            home: ${JSON.stringify(directory)},
+            runner: { run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+          })
+        `
+        await expect(
+          promisify(execFile)("/bin/sh", [
+            "-c",
+            'ulimit -f 0; exec "$@"',
+            "cohall-service-write",
+            process.execPath,
+            "--input-type=module",
+            "--eval",
+            script,
+          ]),
+        ).rejects.toMatchObject({ stderr: expect.stringContaining("EFBIG") })
+        expect(await readFile(installed.installed, "utf8")).toBe(original)
+        expect(await readdir(dirname(installed.installed))).toEqual([
+          platform === "linux" ? "cohall-device.service" : "com.cohall.device.plist",
+        ])
+        const replacementConfig = join(directory, "replacement.json")
+        vi.stubEnv("COHALL_CONFIG", replacementConfig)
+        await installDeviceService({
+          entrypoint,
+          platform,
+          home: directory,
+          runner: {
+            run: async () => {
+              expect(await readFile(installed.installed, "utf8")).toContain(replacementConfig)
+              return { exitCode: 0, stdout: "", stderr: "" }
+            },
+          },
+        })
+      } finally {
         await rm(directory, { recursive: true, force: true })
       }
     },

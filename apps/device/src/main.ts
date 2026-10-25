@@ -1,11 +1,7 @@
 #!/usr/bin/env node
 
-import { version } from "@cohall/protocol"
-import { Effect } from "effect"
-import { printHelp, runCli } from "./cli.ts"
-import { loadClientConfiguration, loadDeviceConfiguration } from "./config.ts"
-import { runDaemon } from "./daemon.ts"
-import { runMcp } from "./mcp.ts"
+import { version } from "@cohall/protocol/version"
+import { printHelp } from "./help.ts"
 
 const main = async (): Promise<void> => {
   const command = process.argv[2]
@@ -34,6 +30,9 @@ const main = async (): Promise<void> => {
     return
   }
   if (command === "device") {
+    const { Effect } = await import("effect")
+    const { loadDeviceConfiguration } = await import("./config.ts")
+    const { runDaemon } = await import("./daemon.ts")
     const configuration = await Effect.runPromise(loadDeviceConfiguration)
     const controller = new AbortController()
     const stop = () => controller.abort()
@@ -52,10 +51,14 @@ const main = async (): Promise<void> => {
     return
   }
   if (command === "mcp") {
+    const { Effect } = await import("effect")
+    const { loadClientConfiguration } = await import("./config.ts")
+    const { runMcp } = await import("./mcp.ts")
     const configuration = await Effect.runPromise(loadClientConfiguration)
     await runMcp(configuration)
     return
   }
+  const { runCli } = await import("./cli.ts")
   await runCli(command, commandArguments)
 }
 
