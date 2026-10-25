@@ -281,7 +281,8 @@ Cohall; a different global directory is rejected.
 The default target, `latest`, is resolved through that package manager using its
 registry and network settings, then pinned before installation. Bun installations
 require Bun 1.2.15 or newer for this lookup; older Bun versions can still use an
-exact `--to` version. If `latest` is older than the running or installed version,
+exact `--to` version. pnpm runs this lookup from its verified global directory.
+If `latest` is older than the running or installed version,
 Cohall leaves the installation and services untouched. Version ordering includes
 prereleases and ignores build metadata. A failed or invalid lookup, or unreadable
 installed package metadata, stops the upgrade before installation. Use an exact
