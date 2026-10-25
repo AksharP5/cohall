@@ -1,4 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import { execFile, type ExecFileException } from "node:child_process"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -197,6 +207,68 @@ Invoke-Expression $Inspection
       } finally {
         if (previousConfig === undefined) delete process.env.COHALL_CONFIG
         else process.env.COHALL_CONFIG = previousConfig
+        await rm(directory, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it.skipIf(process.platform === "win32").each(["linux", "darwin"] as const)(
+    "preserves the existing %s service when a replacement cannot be written",
+    async (platform) => {
+      const directory = await mkdtemp(join(tmpdir(), "cohall-service-write-"))
+      const entrypoint = join(directory, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+      vi.stubEnv("XDG_CONFIG_HOME", join(directory, "config"))
+      vi.stubEnv("COHALL_CONFIG", join(directory, "config/cohall/config.json"))
+      try {
+        await mkdir(dirname(entrypoint), { recursive: true })
+        await mkdir(join(directory, "bin"))
+        await writeFile(entrypoint, "#!/usr/bin/env node\n")
+        await symlink(entrypoint, join(directory, "bin/cohall"))
+        const installed = await installDeviceService({
+          entrypoint,
+          platform,
+          home: directory,
+          runner: { run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+        })
+        const original = await readFile(installed.installed, "utf8")
+        const script = `
+          import { installDeviceService } from ${JSON.stringify(new URL("./service.ts", import.meta.url).href)}
+          await installDeviceService({
+            entrypoint: ${JSON.stringify(entrypoint)},
+            platform: ${JSON.stringify(platform)},
+            home: ${JSON.stringify(directory)},
+            runner: { run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) },
+          })
+        `
+        await expect(
+          promisify(execFile)("/bin/sh", [
+            "-c",
+            'ulimit -f 0; exec "$@"',
+            "cohall-service-write",
+            process.execPath,
+            "--input-type=module",
+            "--eval",
+            script,
+          ]),
+        ).rejects.toMatchObject({ stderr: expect.stringContaining("EFBIG") })
+        expect(await readFile(installed.installed, "utf8")).toBe(original)
+        expect(await readdir(dirname(installed.installed))).toEqual([
+          platform === "linux" ? "cohall-device.service" : "com.cohall.device.plist",
+        ])
+        const replacementConfig = join(directory, "replacement.json")
+        vi.stubEnv("COHALL_CONFIG", replacementConfig)
+        await installDeviceService({
+          entrypoint,
+          platform,
+          home: directory,
+          runner: {
+            run: async () => {
+              expect(await readFile(installed.installed, "utf8")).toContain(replacementConfig)
+              return { exitCode: 0, stdout: "", stderr: "" }
+            },
+          },
+        })
+      } finally {
         await rm(directory, { recursive: true, force: true })
       }
     },

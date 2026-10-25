@@ -1,5 +1,5 @@
 import { execFile, type ExecFileException } from "node:child_process"
-import { chmod, mkdir, writeFile } from "node:fs/promises"
+import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join } from "node:path"
 import { configurationPath } from "./config.ts"
@@ -236,8 +236,14 @@ export const installDeviceService = async (
     ...(uid === undefined ? {} : { uid }),
   })
   await mkdir(dirname(plan.file.path), { recursive: true, mode: 0o700 })
-  await writeFile(plan.file.path, plan.file.content, { mode: plan.file.mode })
-  await chmod(plan.file.path, plan.file.mode)
+  const temporary = `${plan.file.path}.${process.pid}.tmp`
+  try {
+    await writeFile(temporary, plan.file.content, { mode: plan.file.mode })
+    await chmod(temporary, plan.file.mode)
+    await rename(temporary, plan.file.path)
+  } finally {
+    await rm(temporary, { force: true })
+  }
   for (const [index, command] of plan.commands.entries()) {
     await checked(runner, command.command, command.arguments, platform === "darwin" && index === 0)
   }
