@@ -46,9 +46,10 @@ The task keeps its original start time; its trace records the new acknowledgment
 Requests without an ID continue to create a new task each time.
 
 Use a device UUID or `@device-uuid/bot-id` from `cohall bots` for retries. These
-targets bypass live name discovery when a request ID is supplied, so the original
-task can still be recovered after its target is forgotten or stops advertising
-the provider. Names need discovery on each call. Qualified Bot names such as
+targets bypass live name discovery, including submissions without a request ID.
+With a request ID, the original task can still be recovered after its target is
+forgotten or stops advertising the provider. Unknown device UUIDs return the
+relay's target error. Names need discovery on each call. Qualified Bot names such as
 `@device-uuid/Research` also work with request IDs while the Bot is still advertised.
 With a request ID, a thread follow-up must select a target or provider explicitly.
 Select the Bot explicitly

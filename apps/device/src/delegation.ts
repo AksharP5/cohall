@@ -215,7 +215,7 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
       devices: [],
     })
   const directTarget = (() => {
-    if (options.requestId === undefined || options.target === undefined) return undefined
+    if (options.target === undefined) return undefined
     const value = options.target.replace(/^@/, "")
     const separator = value.indexOf("/")
     const id = Schema.decodeUnknownOption(DeviceId)(
