@@ -10,6 +10,7 @@ import { Schema } from "effect"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
 import { expect, it, vi } from "vitest"
@@ -22,6 +23,72 @@ const killProviderGroup = (pid: number): void => {
     if (!(cause instanceof Error && "code" in cause && cause.code === "ESRCH")) throw cause
   }
 }
+
+it.skipIf(process.platform === "win32").each([false, true])(
+  "stops gateway discovery during worker shutdown with response headers sent: %s",
+  async (headersSent) => {
+    const directory = await mkdtemp(join(tmpdir(), "cohall-gateway-stop-"))
+    const gateway = createServer((request, response) => {
+      request.resume()
+      if (headersSent) {
+        response.writeHead(200, { "content-type": "application/json" })
+        response.write("[")
+      }
+    })
+    await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve))
+    const gatewayAddress = gateway.address()
+    if (gatewayAddress === null || typeof gatewayAddress === "string")
+      throw new Error("Missing gateway test port")
+    const gatewayPath = join(directory, "gateway.json")
+    await writeFile(gatewayPath, JSON.stringify({ port: gatewayAddress.port }))
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+    await once(relay, "listening")
+    const relayAddress = relay.address()
+    if (relayAddress === null || typeof relayAddress === "string")
+      throw new Error("Missing relay test port")
+    relay.on("connection", (socket) => {
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({ _tag: "Connected", serverVersion: "test", connectedAt: now() }),
+        ),
+      )
+    })
+    const requested = once(gateway, "request", { signal: AbortSignal.timeout(10_000) })
+    const worker = spawn(process.execPath, ["bin/cohall.js", "device"], {
+      cwd: process.cwd(),
+      stdio: "ignore",
+      env: {
+        PATH: process.env.PATH,
+        COHALL_CONFIG: join(directory, "config.json"),
+        COHALL_RELAY_URL: `http://127.0.0.1:${relayAddress.port}`,
+        COHALL_DEVICE_TOKEN: "shutdown-test-token",
+        COHALL_DEVICE_ID: makeDeviceId(),
+        COHALL_DEVICE_WORKSPACES_JSON: JSON.stringify([directory]),
+        COHALL_DEVICE_PROVIDERS: "grok-bot",
+        COHALL_GROK_GATEWAY: gatewayPath,
+      },
+    })
+    const exited = once(worker, "exit")
+    try {
+      await requested
+      const stopped = once(worker, "exit", { signal: AbortSignal.timeout(5_000) })
+      worker.kill("SIGTERM")
+      expect(await stopped).toEqual([0, null])
+    } finally {
+      if (worker.exitCode === null && worker.signalCode === null) {
+        worker.kill("SIGKILL")
+        await exited
+      }
+      for (const socket of relay.clients) socket.terminate()
+      gateway.closeAllConnections()
+      await Promise.all([
+        new Promise<void>((resolve) => relay.close(() => resolve())),
+        new Promise<void>((resolve) => gateway.close(() => resolve())),
+      ])
+      await rm(directory, { recursive: true, force: true })
+    }
+  },
+)
 
 it.skipIf(process.platform === "win32").each(["SIGTERM", "SIGINT"] as const)(
   "stops the provider before the standalone worker exits on %s",

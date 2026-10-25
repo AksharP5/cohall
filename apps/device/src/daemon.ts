@@ -698,6 +698,7 @@ const connect = (
           connectionDeadline = setTimeout(() => socket.terminate(), 45_000)
         }
         socket.on("ping", resetConnectionDeadline)
+        const discovery = new AbortController()
         let bots: ReadonlyArray<Bot> = []
         let refreshing = false
         const refreshBots = async (): Promise<void> => {
@@ -709,7 +710,7 @@ const connect = (
             return
           }
           refreshing = true
-          bots = await discoverGrokBots(configuration.grokGateway).catch(() => [])
+          bots = await discoverGrokBots(configuration.grokGateway, discovery.signal).catch(() => [])
           refreshing = false
           if (!closed) {
             send(
@@ -741,6 +742,7 @@ const connect = (
             return
           }
           closed = true
+          discovery.abort()
           clearTimeout(connectionDeadline)
           clearInterval(heartbeat)
           if (state.socket === socket) {

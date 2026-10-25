@@ -143,9 +143,12 @@ const rpc = async <S extends Schema.ConstraintDecoder<unknown>>(
   }
 }
 
-export const discoverGrokBots = async (path: string): Promise<ReadonlyArray<Bot>> => {
+export const discoverGrokBots = async (
+  path: string,
+  signal?: AbortSignal,
+): Promise<ReadonlyArray<Bot>> => {
   const connection = await readConnection(path)
-  const roster = await rpc(connection, "listAgents", {}, Roster)
+  const roster = await rpc(connection, "listAgents", {}, Roster, signal)
   const bots = roster.filter((agent) => agent.isGroup !== true)
   if (bots.length > 256) throw new Error("Grok Bot discovery exceeds Cohall's limit of 256 bots")
   if (new Set(bots.map((bot) => bot.id)).size !== bots.length) {
