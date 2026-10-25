@@ -681,6 +681,9 @@ export const runRelay = async (): Promise<void> => {
       await run(
         Effect.gen(function* () {
           const store = yield* RelayStore.Service
+          // Disconnect cleanup may have failed before this work was requeued.
+          yield* store.requeueTasksFor(device.id)
+          yield* store.requeueOperationsFor(device.id)
           yield* store.upsertDevice(device)
         }),
       )

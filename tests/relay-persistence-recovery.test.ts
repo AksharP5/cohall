@@ -239,3 +239,180 @@ it("reconnects to replay terminal replies after temporary persistence failures",
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+it("replays work after task or operation disconnect cleanup could not persist", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cohall-disconnect-recovery-"))
+  const reservation = createServer()
+  const sockets: Array<WebSocket> = []
+  let relay: ReturnType<typeof spawn> | undefined
+  let database: Database | undefined
+  try {
+    reservation.listen(0, "127.0.0.1")
+    await once(reservation, "listening")
+    const address = reservation.address()
+    if (address === null || typeof address === "string") throw new Error("Expected test port")
+    await new Promise<void>((resolve) => reservation.close(() => resolve()))
+    const token = "disconnect-recovery-owned-test-token".padEnd(64, "0")
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    relay = spawn(process.execPath, ["apps/relay/src/main.ts"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        COHALL_RELAY_HOST: "127.0.0.1",
+        COHALL_RELAY_PORT: String(address.port),
+        COHALL_DATA_DIR: directory,
+        COHALL_TOKEN: token,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    })
+    let errors = ""
+    relay.stderr?.on("data", (chunk: Buffer) => {
+      errors += chunk.toString()
+    })
+    await vi.waitFor(async () => expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true), {
+      timeout: 10_000,
+    })
+    const client = RelayClient.make({ baseUrl, token })
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "disconnect-worker",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "arm64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    const connectWorker = async () => {
+      const socket = new WebSocket(`${baseUrl.replace("http", "ws")}/ws/device`)
+      sockets.push(socket)
+      const events: Array<SocketEvent> = []
+      socket.on("message", (data) => {
+        const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(data.toString()))
+        events.push(event)
+        if (event._tag === "Connected") socket.send(JSON.stringify({ _tag: "DeviceHello", device }))
+      })
+      await once(socket, "open")
+      socket.send(JSON.stringify({ _tag: "Authenticate", token }))
+      await vi.waitFor(async () => {
+        expect(events.some((event) => event._tag === "Connected")).toBe(true)
+        expect((await Effect.runPromise(client.devices()))[0]?.status).toBe("online")
+      })
+      return { socket, events }
+    }
+    let worker = await connectWorker()
+    const task = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, prompt: "Recover active turn" }),
+    )
+    worker.socket.send(JSON.stringify({ _tag: "TaskAccepted", taskId: task.id, runId: task.runId }))
+    await vi.waitFor(async () =>
+      expect((await Effect.runPromise(client.getTask(task.id))).status).toBe("running"),
+    )
+    const running = await Effect.runPromise(client.getTask(task.id))
+    const followup = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, prompt: "Wait for recovery" }),
+    )
+    expect(followup.status).toBe("queued")
+    database = new Database(join(directory, "cohall.db"))
+    const disconnectDuringFailure = async (db: Database, table: "tasks" | "device_operations") => {
+      db.exec(`CREATE TRIGGER fail_disconnect BEFORE UPDATE ON ${table}
+        WHEN OLD.status = 'running' AND NEW.status = 'queued' BEGIN
+          SELECT RAISE(FAIL, 'injected ${table} disconnect persistence failure');
+        END`)
+      const closed = once(worker.socket, "close")
+      worker.socket.terminate()
+      await closed
+      await vi.waitFor(() =>
+        expect(errors).toContain(`injected ${table} disconnect persistence failure`),
+      )
+      db.exec("DROP TRIGGER fail_disconnect")
+    }
+    await disconnectDuringFailure(database, "tasks")
+    expect((await Effect.runPromise(client.getTask(task.id))).status).toBe("running")
+    worker = await connectWorker()
+    await vi.waitFor(() =>
+      expect(worker.events).toContainEqual({
+        _tag: "TaskAssigned",
+        task: expect.objectContaining({
+          id: task.id,
+          runId: task.runId,
+          startedAt: running.startedAt,
+        }),
+      }),
+    )
+    expect((await Effect.runPromise(client.getTask(followup.id))).status).toBe("queued")
+    worker.socket.send(JSON.stringify({ _tag: "TaskAccepted", taskId: task.id, runId: task.runId }))
+    await vi.waitFor(async () =>
+      expect(await Effect.runPromise(client.getTask(task.id))).toMatchObject({
+        status: "running",
+        startedAt: running.startedAt,
+      }),
+    )
+    worker.socket.send(
+      JSON.stringify({
+        _tag: "TaskFinished",
+        taskId: task.id,
+        runId: task.runId,
+        result: "Recovered",
+      }),
+    )
+    await vi.waitFor(async () =>
+      expect((await Effect.runPromise(client.getTask(followup.id))).status).toBe("assigned"),
+    )
+    const assigned = await Effect.runPromise(client.getTask(followup.id))
+    await Effect.runPromise(client.cancelTask(followup.id))
+    worker.socket.send(
+      JSON.stringify({ _tag: "TaskCancelled", taskId: followup.id, runId: assigned.runId }),
+    )
+    await vi.waitFor(async () =>
+      expect((await Effect.runPromise(client.getTask(followup.id))).status).toBe("cancelled"),
+    )
+
+    const [operation] = await Effect.runPromise(
+      client.createUpgradeOperations({ target: "latest", restart: false }),
+    )
+    if (operation === undefined) throw new Error("Expected an upgrade operation")
+    worker.socket.send(JSON.stringify({ _tag: "OperationAccepted", operationId: operation.id }))
+    await vi.waitFor(async () =>
+      expect(await Effect.runPromise(client.operations())).toContainEqual(
+        expect.objectContaining({ id: operation.id, status: "running" }),
+      ),
+    )
+    await disconnectDuringFailure(database, "device_operations")
+    worker = await connectWorker()
+    await vi.waitFor(() =>
+      expect(worker.events).toContainEqual({
+        _tag: "OperationAssigned",
+        operation: expect.objectContaining({ id: operation.id }),
+      }),
+    )
+    const queued = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, prompt: "After maintenance" }),
+    )
+    expect(queued.status).toBe("queued")
+    worker.socket.send(
+      JSON.stringify({ _tag: "OperationFinished", operationId: operation.id, result: "Recovered" }),
+    )
+    await vi.waitFor(async () =>
+      expect((await Effect.runPromise(client.getTask(queued.id))).status).toBe("assigned"),
+    )
+    expect(await Effect.runPromise(client.operations())).toContainEqual(
+      expect.objectContaining({ id: operation.id, status: "completed" }),
+    )
+    expect((await Effect.runPromise(client.getTask(task.id))).status).toBe("completed")
+    expect((await Effect.runPromise(client.getTask(followup.id))).status).toBe("cancelled")
+  } finally {
+    for (const socket of sockets) socket.terminate()
+    if (relay !== undefined && relay.exitCode === null) {
+      const exited = once(relay, "exit")
+      relay.kill("SIGKILL")
+      await exited
+    }
+    database?.close()
+    reservation.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
