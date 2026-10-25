@@ -20,6 +20,8 @@ result with `cohall status <task-id>` or `task_status`, then use
 call acknowledges its result automatically.
 
 Cancelling an MCP `delegate` or `wait_task` request stops its wait and polling.
+Closing the host's MCP input stream also stops active waits and shuts down the
+Cohall MCP process.
 Accepted work continues. To stop coding work, use `cancel_task` or a task deadline.
 Later completions stay in the inbox.
 

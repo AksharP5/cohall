@@ -18,6 +18,7 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Effect, Schema } from "effect"
 import * as z from "zod/v4"
+import { once } from "node:events"
 import { writeFile } from "node:fs/promises"
 import type { ClientConfiguration } from "./config.ts"
 import {
@@ -372,5 +373,8 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
       output(await Effect.runPromise(threadContext(client, ThreadId.make(thread_id)))),
   )
 
+  const disconnected = once(process.stdin, "end")
   await server.connect(createMcpHostDiagnostics(server.server))
+  await disconnected
+  await server.close()
 }
