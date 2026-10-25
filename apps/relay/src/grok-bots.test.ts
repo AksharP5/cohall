@@ -211,7 +211,7 @@ it("adds bot discovery and task columns without changing CLI sessions or history
     await Effect.runPromise(store.finishTask(task.id, device.id, "Legacy result", "legacy-session"))
     await original.dispose()
     database.exec(`
-      DROP INDEX tasks_inbox;
+      DROP INDEX tasks_unseen_inbox;
       ALTER TABLE devices DROP COLUMN bots_json;
       ALTER TABLE tasks DROP COLUMN bot_id;
       ALTER TABLE tasks DROP COLUMN requester_id;

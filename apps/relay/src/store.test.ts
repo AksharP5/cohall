@@ -933,7 +933,8 @@ it("keeps completion inboxes private to each client and retains acknowledgements
 })
 
 it("reveals additional completions as older inbox entries are acknowledged", async () => {
-  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  const database = new Database(":memory:")
+  const runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
   try {
     const store = await runtime.runPromise(RelayStore.Service)
     const device = Device.make({
@@ -956,7 +957,17 @@ it("reveals additional completions as older inbox entries are acknowledged", asy
       )
       await Effect.runPromise(store.finishTask(task.id, device.id, "Done"))
     }
+    const queries = vi.spyOn(database, "query")
     const firstPage = await Effect.runPromise(store.inboxFor("owner"))
+    const inboxQuery = queries.mock.calls.find(([sql]) => sql.includes("AS prompt_preview"))?.[0]
+    queries.mockRestore()
+    if (inboxQuery === undefined) throw new Error("Expected an inbox query")
+    const plan = database
+      .query<{ readonly detail: string }>(`EXPLAIN QUERY PLAN ${inboxQuery}`)
+      .all("owner")
+      .map((row) => row.detail)
+    expect(plan).not.toContain("USE TEMP B-TREE FOR ORDER BY")
+    expect(plan.some((detail) => detail.includes("USING INDEX tasks_unseen_inbox"))).toBe(true)
     expect(firstPage.items).toHaveLength(20)
     expect(firstPage.hasMore).toBe(true)
     const first = firstPage.items[0]
@@ -968,6 +979,83 @@ it("reveals additional completions as older inbox entries are acknowledged", asy
     expect(nextPage.items).not.toContainEqual(expect.objectContaining({ id: first.id }))
   } finally {
     await runtime.dispose()
+    database.close()
+  }
+})
+
+it("migrates the inbox index without changing mixed-state ordering or visibility", async () => {
+  const database = new Database(":memory:")
+  let runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "inbox-target",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "offline",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const seed = await Effect.runPromise(
+      store.createDelegation({ prompt: "Queued work" }, device.id, "owner"),
+    )
+    const id = (suffix: number) => `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`
+    const question = { id: id(100), question: "Which branch?", at: "2026-10-01T00:00:00.000Z" }
+    const insert = database.query(`INSERT INTO tasks (
+      id, thread_id, prompt, provider, status, requester_id, completion_seen_at,
+      target_device_id, created_at, updated_at, completed_at, clarifications_json
+    ) SELECT ?, thread_id, prompt, provider, ?, ?, ?, target_device_id, created_at, ?, ?, ?
+      FROM tasks WHERE id = ?`)
+    const earlier = "2026-10-01T00:00:01.000Z"
+    const later = "2026-10-01T00:00:02.000Z"
+    const latest = "2026-10-01T00:00:03.000Z"
+    insert.run(
+      id(4),
+      "needs_input",
+      "owner",
+      null,
+      earlier,
+      null,
+      JSON.stringify([question]),
+      seed.id,
+    )
+    insert.run(id(3), "cancelled", "owner", null, latest, null, null, seed.id)
+    insert.run(id(1), "completed", "owner", null, latest, later, null, seed.id)
+    insert.run(id(2), "failed", "owner", null, latest, earlier, null, seed.id)
+    insert.run(id(5), "completed", "another-requester", null, earlier, earlier, null, seed.id)
+    insert.run(id(6), "completed", "owner", earlier, earlier, earlier, null, seed.id)
+    const expected = {
+      items: [
+        expect.objectContaining({ id: id(2), status: "failed", completedAt: earlier }),
+        expect.objectContaining({ id: id(4), status: "needs_input", inputRequest: question }),
+        expect.objectContaining({ id: id(1), status: "completed", completedAt: later }),
+        expect.objectContaining({ id: id(3), status: "cancelled", completedAt: latest }),
+      ],
+      hasMore: false,
+    }
+    database.exec(`DROP INDEX tasks_unseen_inbox;
+      CREATE INDEX tasks_inbox ON tasks(requester_id, completion_seen_at, completed_at)`)
+    expect(await Effect.runPromise(store.inboxFor("owner"))).toEqual(expected)
+    await runtime.dispose()
+
+    for (let opening = 0; opening < 2; opening += 1) {
+      runtime = ManagedRuntime.make(RelayStore.layerFromDatabase(database))
+      const reopened = await runtime.runPromise(RelayStore.Service)
+      expect(await Effect.runPromise(reopened.inboxFor("owner"))).toEqual(expected)
+      const indexes = database.query<{ readonly name: string }>("PRAGMA index_list(tasks)").all()
+      expect(indexes.map((index) => index.name)).toContain("tasks_unseen_inbox")
+      expect(indexes.map((index) => index.name)).not.toContain("tasks_inbox")
+      await runtime.dispose()
+    }
+  } finally {
+    await runtime.dispose()
+    database.close()
   }
 })
 
