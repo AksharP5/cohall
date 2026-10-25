@@ -410,7 +410,7 @@ Describe what a worker is useful for so agents can choose the right device:
 
 ```bash
 cohall configure --description 'iOS builds and simulator testing'
-cohall service restart
+cohall service install
 ```
 
 Descriptions appear in `cohall devices`, `doctor --all`, and MCP `list_devices`.
