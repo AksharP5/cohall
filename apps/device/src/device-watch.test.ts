@@ -1,8 +1,9 @@
-import { RelayDecodeError, RelayRequestError } from "@cohall/client"
+import { RelayClient, RelayDecodeError, RelayRequestError } from "@cohall/client"
 import { DeviceOverview, makeDeviceId, Timestamp } from "@cohall/protocol"
 import { Effect, Fiber } from "effect"
 import { TestClock } from "effect/testing"
-import { expect, it } from "vitest"
+import { createServer } from "node:http"
+import { expect, it, vi } from "vitest"
 import { renderDeviceWatch, watchDevices, type DeviceWatchUpdate } from "./device-watch.ts"
 
 const time = Date.parse("2026-10-08T00:10:00Z")
@@ -84,6 +85,56 @@ it("keeps identically named devices distinguishable", () => {
   ]
   const output = renderDeviceWatch({ devices, updatedAt: time }, "0.12.0")
   for (const target of devices) expect(output).toContain(target.id.slice(0, 8))
+})
+
+it("refreshes again after the relay connection closes during a response body", async () => {
+  let requests = 0
+  let disconnect: (() => void) | undefined
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "application/json")
+    if (++requests === 1) {
+      response.write("[")
+      disconnect = () => response.destroy()
+      return
+    }
+    response.end(JSON.stringify([device]))
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const originalFetch = globalThis.fetch
+  const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (...arguments_) => {
+    const response = await originalFetch(...arguments_)
+    // Close only after the client receives headers, so this exercises body reading.
+    disconnect?.()
+    disconnect = undefined
+    return response
+  })
+  const controller = new AbortController()
+  const updates: Array<DeviceWatchUpdate> = []
+  try {
+    const address = server.address()
+    if (address === null || typeof address === "string") throw new Error("Missing test port")
+    const client = RelayClient.make({
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      token: "test",
+    })
+    await Effect.runPromise(
+      watchDevices(client, 0.01, (update) => {
+        updates.push(update)
+        if ("devices" in update) controller.abort()
+      }).pipe(Effect.timeout("2 seconds")),
+      { signal: controller.signal },
+    ).catch(() => undefined)
+    expect(updates).toEqual([
+      { error: expect.stringContaining("terminated") },
+      { devices: [device], updatedAt: expect.any(Number) },
+    ])
+    expect(requests).toBe(2)
+  } finally {
+    controller.abort()
+    fetch.mockRestore()
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
 })
 
 it.each([

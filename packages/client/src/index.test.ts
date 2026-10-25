@@ -305,6 +305,35 @@ it("keeps the 2 MiB limit for ordinary JSON responses", async () => {
   }
 })
 
+it.each([{ operation: "deviceOverview" }, { operation: "exchangePairing" }])(
+  "reports a broken $operation body as a network failure",
+  async ({ operation }) => {
+    const response = new Response(
+      new ReadableStream({
+        pull() {
+          throw new TypeError("terminated")
+        },
+      }),
+    )
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(response)
+    try {
+      const result =
+        operation === "deviceOverview"
+          ? Effect.runPromise(
+              make({ baseUrl: "http://relay.test", token: "test" }).deviceOverview(),
+            )
+          : Effect.runPromise(exchangePairing("http://relay.test", { token: "test" }))
+      await expect(result).rejects.toMatchObject({
+        _tag: "RelayClient.RequestError",
+        operation: `RelayClient.${operation}`,
+        message: "terminated",
+      })
+    } finally {
+      fetch.mockRestore()
+    }
+  },
+)
+
 it.each([
   { status: 200, operation: "getTask" },
   { status: 503, operation: "getTask" },
