@@ -2812,8 +2812,11 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
       if (!taskColumns.some((column) => column.name === "completion_seen_at")) {
         db.exec("ALTER TABLE tasks ADD COLUMN completion_seen_at TEXT")
       }
-      db.exec(`CREATE INDEX IF NOT EXISTS tasks_inbox
-        ON tasks(requester_id, completion_seen_at, completed_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS tasks_unseen_inbox
+        ON tasks(requester_id, COALESCE(completed_at, updated_at), id)
+        WHERE completion_seen_at IS NULL
+          AND status IN ('needs_input', 'completed', 'failed', 'cancelled')`)
+      db.exec("DROP INDEX IF EXISTS tasks_inbox")
       if (!taskColumns.some((column) => column.name === "dispatched_at")) {
         db.transaction(() => {
           db.exec("ALTER TABLE tasks ADD COLUMN dispatched_at TEXT")
