@@ -13,6 +13,7 @@ import {
 } from "@cohall/protocol"
 import { Effect, Fiber } from "effect"
 import { TestClock } from "effect/testing"
+import { createServer } from "node:http"
 import { describe, expect, it, vi } from "vitest"
 import { ClientConfiguration } from "./config.ts"
 import {
@@ -180,6 +181,127 @@ it("preserves a keyed Bot request conflict when discovery is unavailable", async
       }),
     ),
   ).rejects.toMatchObject({ status: 409, message: "Different input" })
+})
+
+it.each([
+  { target: device.id, botId: undefined },
+  { target: `@${device.id}`, botId: undefined },
+  { target: `@${device.id}/research-id`, botId: "research-id" },
+])("submits directly to $target without discovering device rosters", async ({ target, botId }) => {
+  const relay = {
+    ...client(),
+    devices: vi.fn(() =>
+      Effect.fail(new RelayRequestError({ operation: "devices", message: "Unavailable" })),
+    ),
+  }
+  const result = await Effect.runPromise(
+    createDelegation(relay, configuration, {
+      prompt: "Review the project",
+      context: "Keep the public API unchanged",
+      threadId: task.threadId,
+      target,
+    }),
+  )
+  expect(relay.devices).not.toHaveBeenCalled()
+  expect(relay.createTask).toHaveBeenCalledExactlyOnceWith({
+    prompt: "Review the project",
+    context: "Keep the public API unchanged",
+    threadId: task.threadId,
+    targetDeviceId: device.id,
+    ...(botId === undefined ? {} : { botId, provider: "grok-bot" }),
+  })
+  expect(result).toMatchObject({
+    targetDeviceId: device.id,
+    provider: botId === undefined ? "codex" : "grok-bot",
+    status: "queued",
+  })
+})
+
+it.each([404, 409])("resolves an ordinary qualified Bot name after HTTP %s", async (status) => {
+  const relay = client()
+  const createTask = vi.fn((input: CreateTaskInput) =>
+    input.botId === "research-id"
+      ? relay.createTask(input)
+      : Effect.fail(
+          new RelayRequestError({ operation: "createTask", status, message: "Bot unavailable" }),
+        ),
+  )
+  await Effect.runPromise(
+    createDelegation({ ...relay, createTask }, configuration, {
+      prompt: "Find a project",
+      target: `@${device.id}/Research`,
+    }),
+  )
+  expect(relay.devices).toHaveBeenCalledTimes(1)
+  expect(createTask.mock.calls.map(([input]) => input.botId)).toEqual(["Research", "research-id"])
+  expect(createTask).toHaveBeenLastCalledWith({
+    prompt: "Find a project",
+    targetDeviceId: device.id,
+    provider: "grok-bot",
+    botId: "research-id",
+  })
+})
+
+it.each([
+  { status: 404, message: `Unknown target device ${device.id}` },
+  { status: 409, message: "This worker does not advertise the requested provider" },
+])("preserves the relay's HTTP $status direct device error", async ({ status, message }) => {
+  const relay = client()
+  const createTask = vi.fn(() =>
+    Effect.fail(new RelayRequestError({ operation: "createTask", status, message })),
+  )
+  await expect(
+    Effect.runPromise(
+      createDelegation({ ...relay, createTask }, configuration, {
+        prompt: "Review",
+        target: `@${device.id}`,
+        provider: "claude-code",
+      }),
+    ),
+  ).rejects.toMatchObject({ operation: "createTask", status, message })
+  expect(relay.devices).not.toHaveBeenCalled()
+  expect(createTask).toHaveBeenCalledTimes(1)
+})
+
+it("submits an ordinary device ID to a legacy relay without requesting newer endpoints", async () => {
+  const paths: Array<string> = []
+  const server = createServer(async (request, response) => {
+    paths.push(`${request.method} ${request.url}`)
+    response.setHeader("content-type", "application/json")
+    if (request.method !== "POST" || request.url !== "/api/tasks") {
+      response.writeHead(404).end(JSON.stringify({ error: "Route not found" }))
+      return
+    }
+    const chunks: Array<Buffer> = []
+    for await (const chunk of request) chunks.push(chunk)
+    const input = JSON.parse(Buffer.concat(chunks).toString()) as unknown
+    expect(input).toEqual({ prompt: "Review", targetDeviceId: device.id, provider: "opencode" })
+    response.end(
+      JSON.stringify({ ...task, provider: "opencode", botId: undefined, status: "queued" }),
+    )
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  try {
+    const address = server.address()
+    if (address === null || typeof address === "string") throw new Error("Missing test port")
+    const relay = RelayClient.make({ baseUrl: `http://127.0.0.1:${address.port}`, token: "test" })
+    const result = await Effect.runPromise(
+      createDelegation(relay, configuration, {
+        prompt: "Review",
+        target: `@${device.id}`,
+        provider: "opencode",
+      }),
+    )
+    expect(result).toMatchObject({
+      targetDeviceId: device.id,
+      provider: "opencode",
+      status: "queued",
+    })
+    expect(paths).toEqual(["POST /api/tasks"])
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
 })
 
 it("returns successful work even when inbox acknowledgement is unavailable", async () => {
