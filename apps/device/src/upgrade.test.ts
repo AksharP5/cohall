@@ -360,13 +360,19 @@ describe("latest upgrades", () => {
     },
   )
 
-  it.each(["npm", "bun", "pnpm"] as const)(
-    "pins a newer latest version before installing with %s",
-    async (manager) => {
+  it.each([
+    ["npm", ""],
+    ["bun", ""],
+    ["pnpm", "10.28.1"],
+    ["pnpm", "11.0.9"],
+  ] as const)(
+    "pins a newer latest version before installing with %s %s",
+    async (manager, pnpmVersion) => {
       const { root, entrypoint, metadata } = await installation("1.2.3-rc.1", manager)
       const invocations: Array<string> = []
+      const lookupDirectories: Array<string | undefined> = []
       const runner: CommandRunner = {
-        run: async (command, arguments_) => {
+        run: async (command, arguments_, _timeout, _environment, cwd) => {
           const invocation = [command, ...arguments_].join(" ")
           invocations.push(invocation)
           if (command === "bun" && arguments_[1] === "ls")
@@ -376,10 +382,13 @@ describe("latest upgrades", () => {
             }
           if (command === "pnpm" && arguments_[0] === "root")
             return { ...success(), stdout: join(root, "pnpm", "global", "5", "node_modules") }
+          if (command === "pnpm" && arguments_.includes("--version"))
+            return { ...success(), stdout: pnpmVersion }
           if (arguments_[0] === "--version") {
             return { exitCode: 0, stdout: "1.2.15\n", stderr: "" }
           }
           if (arguments_.includes("view")) {
+            lookupDirectories.push(cwd)
             return { exitCode: 0, stdout: '"1.2.3"', stderr: "" }
           }
           if (command === manager) {
@@ -402,6 +411,15 @@ describe("latest upgrades", () => {
       })
 
       expect(result).toMatchObject({ upgraded: true, installed_version: "1.2.3" })
+      expect(lookupDirectories).toEqual([
+        manager === "pnpm" ? join(root, "pnpm", "global", "5") : undefined,
+      ])
+      if (manager === "pnpm")
+        expect(invocations).toContain(
+          pnpmVersion === "10.28.1"
+            ? "pnpm view @akshar5/cohall@latest version --json"
+            : "pnpm view --ignore-workspace @akshar5/cohall@latest version --json",
+        )
       const install = packageInstallCommand(
         {
           ...packageInstallation(await realpath(entrypoint)),

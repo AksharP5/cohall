@@ -77,6 +77,7 @@ export interface CommandRunner {
     arguments_: ReadonlyArray<string>,
     timeoutMs?: number,
     environment?: Readonly<Record<string, string>>,
+    cwd?: string,
   ) => Promise<CommandResult>
 }
 
@@ -106,6 +107,7 @@ export interface CommandInvocation {
   readonly arguments: ReadonlyArray<string>
   readonly allowFailure?: boolean
   readonly environment?: Readonly<Record<string, string>>
+  readonly cwd?: string
 }
 
 const RestartReceipt = Schema.Struct({
@@ -728,8 +730,9 @@ export const serviceCandidates = (
 }
 
 const defaultRunner: CommandRunner = {
-  run: async (command, arguments_, timeoutMs = 300_000, environment) => {
+  run: async (command, arguments_, timeoutMs = 300_000, environment, cwd) => {
     const result = await execa(command, arguments_, {
+      ...(cwd === undefined ? {} : { cwd }),
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: timeoutMs,
@@ -758,6 +761,7 @@ const checked = async (
     invocation.arguments,
     timeoutMs,
     invocation.environment,
+    invocation.cwd,
   )
   if (result.exitCode === 0 || invocation.allowFailure === true) {
     return result
@@ -1029,6 +1033,7 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
   let resolvedTarget = target
   if (target === "latest") {
     packageManagerExecutable = await resolvePackageManager()
+    let lookupFlags = ["--global"]
     if (installation.manager === "bun") {
       const information = await checked(
         runner,
@@ -1041,6 +1046,21 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
         )
       }
     }
+    if (installation.manager === "pnpm") {
+      const information = await checked(
+        runner,
+        {
+          command: packageManagerExecutable,
+          arguments: ["--ignore-workspace", "--version"],
+          environment: pnpmEnvironment(),
+          ...(installation.globalRoot === undefined ? {} : { cwd: installation.globalRoot }),
+        },
+        10_000,
+      )
+      // pnpm 10 forwards view arguments to npm; pnpm 11 implements view itself.
+      lookupFlags =
+        compareVersions(information.stdout.trim(), "11.0.0") < 0 ? [] : ["--ignore-workspace"]
+    }
     const lookup = await checked(
       runner,
       {
@@ -1048,13 +1068,14 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
         arguments: [
           ...(installation.manager === "bun" ? ["pm"] : []),
           "view",
-          ...(installation.manager === "pnpm" ? [] : ["--global"]),
+          ...lookupFlags,
           ...(installation.prefix === undefined ? [] : ["--prefix", installation.prefix]),
           `${packageName}@latest`,
           "version",
           "--json",
         ],
         ...(installation.manager === "pnpm" ? { environment: pnpmEnvironment() } : {}),
+        ...(installation.globalRoot === undefined ? {} : { cwd: installation.globalRoot }),
       },
       30_000,
     )
