@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.12.7](https://github.com/AksharP5/cohall/compare/v0.12.6...v0.12.7) (2026-10-25)
+
+
+### Bug Fixes
+
+* **client:** recover device watch after interrupted responses ([#228](https://github.com/AksharP5/cohall/issues/228)) ([b6cf546](https://github.com/AksharP5/cohall/commit/b6cf5464633596fa202e086b383796c4505343a3))
+* **device:** stop stalled gateway discovery during shutdown ([#233](https://github.com/AksharP5/cohall/issues/233)) ([c2b3edb](https://github.com/AksharP5/cohall/commit/c2b3edbfce6408e420762edd92f876e55741481a))
+* **mcp:** stop polling when the host disconnects ([#235](https://github.com/AksharP5/cohall/issues/235)) ([d0fe22a](https://github.com/AksharP5/cohall/commit/d0fe22a7a6071c9a09e8f1863bf62c04a0898e63))
+* **providers:** preserve relative config across workspaces ([#213](https://github.com/AksharP5/cohall/issues/213)) ([5119b62](https://github.com/AksharP5/cohall/commit/5119b62cb1efc31a77a19518c1d3790576b98532))
+* **relay:** recover queued work after storage errors ([#224](https://github.com/AksharP5/cohall/issues/224)) ([582640b](https://github.com/AksharP5/cohall/commit/582640bac703ab9b321dfa8c168324e55de6e255))
+* **service:** keep Windows workers available on battery ([#226](https://github.com/AksharP5/cohall/issues/226)) ([6c7ae16](https://github.com/AksharP5/cohall/commit/6c7ae16ec75f81d75a7afeb33a976fe5e28000b7))
+* **service:** preserve working definitions after failed writes ([#222](https://github.com/AksharP5/cohall/issues/222)) ([ff83d57](https://github.com/AksharP5/cohall/commit/ff83d5799cdebb12ee82f5cfea18a5ac107b34c4))
+* **upgrade:** keep pnpm lookups out of project settings ([#230](https://github.com/AksharP5/cohall/issues/230)) ([4c1b048](https://github.com/AksharP5/cohall/commit/4c1b048fa545f6bc9620ab8ef0de1013690a46bf))
+* **upgrade:** restore latest upgrades with npm 12 ([#214](https://github.com/AksharP5/cohall/issues/214)) ([6378625](https://github.com/AksharP5/cohall/commit/6378625473d9cf8845f58e9feba83ebf00358612))
+
+
+### Performance Improvements
+
+* **cli:** cut configuration startup by 26% ([#237](https://github.com/AksharP5/cohall/issues/237)) ([42d37eb](https://github.com/AksharP5/cohall/commit/42d37eb3d4b833b5fa7e0e23daee920a5107e785))
+* **cli:** cut help and version startup by 94% ([#220](https://github.com/AksharP5/cohall/issues/220)) ([5b0a4ab](https://github.com/AksharP5/cohall/commit/5b0a4ab2e5e9c81f60f906e45475f0d4e2a8ba8b))
+* **device:** skip inventory downloads for direct targets ([#239](https://github.com/AksharP5/cohall/issues/239)) ([832a357](https://github.com/AksharP5/cohall/commit/832a357d3949ba0d0dfd82b09cf3454d467f40b6))
+* **relay:** cut completion persistence time by 88% ([#218](https://github.com/AksharP5/cohall/issues/218)) ([d5dea7d](https://github.com/AksharP5/cohall/commit/d5dea7d8cf9b80613286ac7ff24aa78af7b5d118))
+* **relay:** cut inbox latency by 91% with 10k retained tasks ([#241](https://github.com/AksharP5/cohall/issues/241)) ([7fddc9a](https://github.com/AksharP5/cohall/commit/7fddc9a5e09c2390e929e7d17e35b9fc332c0eaa))
+
 ## [0.12.6](https://github.com/AksharP5/cohall/compare/v0.12.5...v0.12.6) (2026-10-17)
 
 
