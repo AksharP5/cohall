@@ -725,6 +725,15 @@ export const runRelay = async (): Promise<void> => {
         switch (event._tag) {
           case "DeviceHeartbeat":
             if (event.deviceId === deviceId) {
+              const sessionId = hub.sessionId(socket)
+              if (sessionId !== undefined) {
+                const session = yield* store.renewAuthSession(sessionId)
+                if (session === undefined) {
+                  socket.close(4003, "Session expired or revoked")
+                  return
+                }
+                hub.updateSessionExpiry(socket, session.expiresAt)
+              }
               yield* store.heartbeat(
                 deviceId,
                 event.status === "busy" ? "busy" : "online",

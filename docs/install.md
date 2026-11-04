@@ -189,6 +189,12 @@ host connections. The self-test lists tools without calling one or requiring
 the relay. To verify your harness, ask it to call `list_devices` and inspect
 `mcp_host` using the same config path; see [MCP host verification](integrations.md#verify-the-mcp-host).
 
+Paired credentials expire after 90 days of inactivity. Successful client
+authentication and valid device heartbeats renew their own credentials for another
+90 days. No re-pairing is needed while they remain active; expiry, revocation, and
+device forgetting still prevent access. This requires an updated relay, but no
+client or worker update. Already expired credentials require a fresh pairing.
+
 Configuration locations:
 
 - Linux: `${XDG_CONFIG_HOME:-~/.config}/cohall/config.json`

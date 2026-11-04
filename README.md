@@ -143,6 +143,12 @@ worker again to enable source attribution and that routing preference. Forgettin
 a device revokes both associated credentials. Client-only pairings have no worker
 identity.
 
+Credentials expire after 90 days of inactivity. Successful client authentication
+and valid worker heartbeats renew their respective credentials automatically,
+without changing device identities or completion inboxes. Unused credentials
+still expire, and expired or revoked credentials cannot renew themselves.
+Upgrade the relay to enable renewal for existing credentials before they expire.
+
 ### 3. Keep the device available
 
 ```bash

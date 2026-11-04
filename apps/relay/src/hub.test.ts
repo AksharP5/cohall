@@ -1,5 +1,5 @@
-import { AuthSessionId, DeviceId, SocketEvent, makeTaskId } from "@cohall/protocol"
-import { expect, it } from "vitest"
+import { AuthSessionId, DeviceId, SocketEvent, Timestamp, makeTaskId } from "@cohall/protocol"
+import { expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import { Hub, type ConnectionSocket } from "./hub.ts"
 
@@ -39,9 +39,34 @@ it("rejects a revoked socket before its close handshake finishes", () => {
   expect(hub.isAuthorized(connection)).toBe(true)
 
   hub.closeSession(sessionId)
+  hub.updateSessionExpiry(connection, Timestamp.make("2100-01-01T00:00:00.000Z"))
 
   expect(hub.isAuthorized(connection)).toBe(false)
   expect(hub.detach(connection)).toBe(deviceId)
+})
+
+it("keeps a renewed socket authorized beyond its original expiry and enforces the new deadline", () => {
+  vi.useFakeTimers({ toFake: ["Date"] })
+  try {
+    vi.setSystemTime("2030-03-31T00:00:00.000Z")
+    const hub = new Hub()
+    const connection = socket()
+    connection.close = vi.fn()
+    const sessionId = AuthSessionId.make("11111111-1111-4111-8111-111111111111")
+    hub.attach(connection, {
+      sessionId,
+      expiresAt: Timestamp.make("2030-04-01T00:00:00.000Z"),
+    })
+    hub.updateSessionExpiry(connection, Timestamp.make("2030-06-29T00:00:00.000Z"))
+    vi.setSystemTime("2030-04-02T00:00:00.000Z")
+    expect(hub.isAuthorized(connection)).toBe(true)
+    expect(hub.sessionId(connection)).toBe(sessionId)
+    vi.setSystemTime("2030-06-29T00:00:00.000Z")
+    expect(hub.isAuthorized(connection)).toBe(false)
+    expect(connection.close).toHaveBeenCalledWith(4003, "Session expired")
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 it("bounds owner sockets and accepts one registration per socket", () => {

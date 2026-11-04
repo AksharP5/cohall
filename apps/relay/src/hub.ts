@@ -64,6 +64,17 @@ export class Hub {
     return this.#principals.get(socket)?.boundDeviceId
   }
 
+  sessionId(socket: ConnectionSocket): AuthSessionId | undefined {
+    return this.#principals.get(socket)?.sessionId
+  }
+
+  updateSessionExpiry(socket: ConnectionSocket, expiresAt: Timestamp): void {
+    const principal = this.#principals.get(socket)
+    if (principal !== undefined) {
+      this.#principals.set(socket, { ...principal, expiresAt })
+    }
+  }
+
   registerDevice(deviceId: DeviceId, socket: ConnectionSocket): boolean {
     if (this.#deviceIds.has(socket)) {
       return false

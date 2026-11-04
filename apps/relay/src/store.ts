@@ -1,5 +1,6 @@
 import {
   AuthSession,
+  AuthSessionId,
   ConnectionRole,
   Device,
   DeviceOverview,
@@ -47,7 +48,6 @@ import {
   taskDeadlineError,
   now,
   taskSlot,
-  type AuthSessionId,
   type AttachmentDirection,
   type AttachmentName as AttachmentNameType,
   type ConnectionRole as ConnectionRoleName,
@@ -370,6 +370,10 @@ export interface Interface {
   readonly authenticateSession: (
     token: string,
     role: ConnectionRoleName,
+  ) => Effect.Effect<AuthSession | undefined, PersistenceError>
+  /** Renew only sessions belonging to an already authenticated connection. */
+  readonly renewAuthSession: (
+    sessionId: AuthSessionId,
   ) => Effect.Effect<AuthSession | undefined, PersistenceError>
   readonly listAuthSessions: () => Effect.Effect<ReadonlyArray<AuthSession>, PersistenceError>
   readonly revokeAuthSession: (
@@ -2452,9 +2456,11 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return PairingCredential.make({ token, expiresAt: Timestamp.make(expiresAt) })
   })
 
+  const sessionLifetimeMs = 90 * 24 * 60 * 60 * 1_000
+
   const exchangePairing = Effect.fn("RelayStore.exchangePairing")(function* (token: string) {
     const timestamp = now()
-    const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1_000).toISOString()
+    const expiresAt = new Date(Date.parse(timestamp) + sessionLifetimeMs).toISOString()
     const created = yield* Effect.try({
       try: () =>
         db.transaction(() => {
@@ -2516,6 +2522,25 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return PairingResult.make({ credentials })
   })
 
+  const renewAuthSession = Effect.fn("RelayStore.renewAuthSession")(function* (
+    sessionId: AuthSessionId,
+  ) {
+    const timestamp = now()
+    const expiresAt = new Date(Date.parse(timestamp) + sessionLifetimeMs).toISOString()
+    const row = yield* Effect.try({
+      try: () =>
+        db
+          .query<AuthSessionRow, [string, string, string, string]>(
+            `UPDATE auth_sessions SET last_seen_at = ?, expires_at = ?
+             WHERE id = ? AND revoked_at IS NULL AND expires_at > ?
+             RETURNING *`,
+          )
+          .get(timestamp, expiresAt, sessionId, timestamp),
+      catch: operationError("RelayStore.renewAuthSession"),
+    })
+    return row === null ? undefined : yield* authSessionFromRow(row)
+  })
+
   const authenticateSession = Effect.fn("RelayStore.authenticateSession")(function* (
     token: string,
     role: ConnectionRoleName,
@@ -2533,14 +2558,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     if (row === null || !rolesFromRow(row).includes(role)) {
       return undefined
     }
-    const lastSeenAt = now()
-    yield* Effect.try({
-      try: () =>
-        db.query("UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?").run(lastSeenAt, row.id),
-      catch: operationError("RelayStore.authenticateSession.touch"),
-    })
-    const session = yield* authSessionFromRow(row)
-    return AuthSession.make({ ...session, lastSeenAt })
+    return yield* renewAuthSession(AuthSessionId.make(row.id))
   })
 
   const listAuthSessions = Effect.fn("RelayStore.listAuthSessions")(function* () {
@@ -2681,6 +2699,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     createPairing,
     exchangePairing,
     authenticateSession,
+    renewAuthSession,
     listAuthSessions,
     revokeAuthSession,
   })
