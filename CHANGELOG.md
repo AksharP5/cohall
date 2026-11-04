@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.8](https://github.com/AksharP5/cohall/compare/v0.12.7...v0.12.8) (2026-11-04)
+
+
+### Bug Fixes
+
+* **auth:** keep active devices paired automatically ([#242](https://github.com/AksharP5/cohall/issues/242)) ([9811828](https://github.com/AksharP5/cohall/commit/98118285728a05cb6bac8bca5e97ec99631f20ce))
+
 ## [0.12.7](https://github.com/AksharP5/cohall/compare/v0.12.6...v0.12.7) (2026-10-25)
 
 
