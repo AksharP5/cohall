@@ -85,15 +85,19 @@ sandbox is replaced, retain the configuration through the host's private
 persistent storage or issue a new pairing token. Cohall cannot preserve a file
 the host discards.
 
-Client credentials expire 90 days after pairing. Before expiry, collect and
-acknowledge completed work and record any outstanding task IDs. Have the relay
-owner create a new client-only pairing token, repeat `join` with that new token
-file, and run `doctor` again. Each pairing has a separate completion inbox;
-results from earlier pairings remain accessible through `status <task-id>` while
-the relay retains those tasks. Preserving the configuration does not extend the
-credential's expiry. Clarification answers require the original requester
-credential or relay owner; ask the owner to answer outstanding questions from
-an expired pairing.
+Client credentials expire after 90 days without successful authentication.
+Authenticated requests renew that window automatically, preserving the same
+credential, completion inbox, and ownership of outstanding clarification answers.
+Keeping the configuration file alone does not renew an unused credential.
+
+Expired or revoked credentials cannot renew themselves. For an expired pairing,
+have the relay owner create a new client-only pairing token, repeat `join` with
+that token file, and run `doctor` again. Each new pairing has a separate completion
+inbox; earlier results remain accessible through `status <task-id>` while the relay
+retains those tasks. Ask the owner to answer outstanding questions from an expired
+pairing. Upgrade the relay to enable automatic renewal for existing credentials
+before they expire; older relays use a fixed 90-day lifetime even for active
+credentials.
 
 ## Delegate and collect results
 
