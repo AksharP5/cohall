@@ -249,6 +249,121 @@ describe("Grok Bot gateway", () => {
     })
   })
 
+  it.each([502, 503, 504, "reset"] as const)(
+    "retries transient preflight failure %s with backoff before accepting the task",
+    async (failure) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+      const task = makeTask()
+      const attempts: Array<number> = []
+      const fixture = await gateway(({ method }, response) => {
+        if (method === "listAgents") return [bot]
+        if (method === "sendPrompt") {
+          replies.receipts.set(task.id, { result: "Gateway recovered" })
+          return { accepted: true }
+        }
+        expect(method).toBe("promptAcceptanceStatus")
+        attempts.push(Date.now())
+        if (attempts.length <= 2) {
+          if (failure === "reset") response.destroy()
+          else response.statusCode = failure
+          return {}
+        }
+        return { outcome: "not-found" }
+      })
+      const controller = new AbortController()
+      let done = false
+      const running = runGrokBot(fixture.path, task, controller.signal)
+      const observed = running.then(
+        (value) => {
+          done = true
+          return { value }
+        },
+        (error: unknown) => {
+          done = true
+          return { error }
+        },
+      )
+      try {
+        await vi.waitFor(() => expect(attempts).toHaveLength(1))
+        await vi.advanceTimersByTimeAsync(1000)
+        await vi.waitFor(() => expect(attempts).toHaveLength(2))
+        await vi.advanceTimersByTimeAsync(2000)
+        await vi.waitFor(() => expect(done).toBe(true), { timeout: 5000 })
+        await expect(observed).resolves.toEqual({ value: { result: "Gateway recovered" } })
+        expect(attempts).toHaveLength(4)
+        expect(attempts[1]! - attempts[0]!).toBeGreaterThanOrEqual(1000)
+        expect(attempts[2]! - attempts[1]!).toBeGreaterThanOrEqual(2000)
+        expect(fixture.calls.filter((call) => call.method === "sendPrompt")).toHaveLength(1)
+      } finally {
+        controller.abort()
+        await running.catch(() => undefined)
+      }
+    },
+  )
+
+  it.each([400, 401, 429, 500, "json", "schema"] as const)(
+    "does not retry permanent preflight failure %s",
+    async (failure) => {
+      const task = makeTask()
+      const fixture = await gateway((_request, response) => {
+        if (typeof failure === "number") response.statusCode = failure
+        if (failure === "json") response.end("not JSON: private-gateway-token")
+        return { invalid: "private-gateway-token" }
+      })
+      const error = await runGrokBot(fixture.path, task, new AbortController().signal).catch(
+        (cause: unknown) => String(cause),
+      )
+      expect(error).toContain(typeof failure === "number" ? `HTTP ${failure}` : "invalid")
+      expect(error).not.toContain("private-gateway-token")
+      expect(fixture.calls.map((call) => call.method)).toEqual(["promptAcceptanceStatus"])
+    },
+  )
+
+  it.each([2000, 30_000])("bounds preflight retries by %s ms", async (budget) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+    const task = makeTask()
+    const start = Date.now()
+    if (budget === 2000) replies.deadlines.set(task.id, start + budget)
+    const attempts: Array<number> = []
+    const fixture = await gateway((_request, response) => {
+      attempts.push(Date.now())
+      response.statusCode = 502
+      return {}
+    })
+    const controller = new AbortController()
+    let failure: unknown
+    const running = runGrokBot(fixture.path, task, controller.signal).catch((cause: unknown) => {
+      failure = cause
+    })
+    try {
+      await vi.waitFor(() => expect(attempts).toHaveLength(1))
+      await vi.advanceTimersByTimeAsync(1000)
+      await vi.waitFor(() => expect(attempts).toHaveLength(2))
+      if (budget === 30_000) {
+        for (const [delay, count] of [
+          [2000, 3],
+          [4000, 4],
+          [8000, 5],
+        ] as const) {
+          await vi.advanceTimersByTimeAsync(delay)
+          await vi.waitFor(() => expect(attempts).toHaveLength(count))
+        }
+      }
+      await vi.advanceTimersByTimeAsync(budget === 2000 ? 1000 : 15_000)
+      await vi.waitFor(() => expect(failure).toBeDefined())
+      expect(String(failure)).toContain(
+        budget === 2000 ? "Timed out waiting for the bot" : "Timed out checking Grok Bot",
+      )
+      expect(Date.now() - start).toBeGreaterThanOrEqual(budget)
+      expect(attempts).toHaveLength(budget === 2000 ? 2 : 5)
+      expect(attempts.every((time) => time < start + budget)).toBe(true)
+      expect(replies.dispatched.has(task.id)).toBe(false)
+    } finally {
+      controller.abort()
+      await running
+    }
+  })
+
   it.each(["accepted", "pending"])("resumes a %s prompt without sending again", async (status) => {
     const task = makeTask()
     const fixture = await gateway(() => {
