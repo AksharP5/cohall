@@ -30,6 +30,7 @@ import { upgrade, type UpgradeOptions, type UpgradeResult } from "./upgrade.ts"
 import { prepareTaskFiles, type TaskFiles } from "./task-attachments.ts"
 
 const maxQueuedRelayMessages = 8
+const heartbeatIntervalMs = 15_000
 
 type TaskTerminalEvent = Extract<
   SocketEvent,
@@ -724,7 +725,15 @@ const connect = (
             )
           }
         }
+        let previousHeartbeat = Date.now()
         const heartbeat = setInterval(() => {
+          const time = Date.now()
+          // Timer delays can pause with a sleeping VM while the relay drops its socket.
+          if (time - previousHeartbeat > heartbeatIntervalMs * 2) {
+            socket.terminate()
+            return
+          }
+          previousHeartbeat = time
           send(
             state,
             SocketEvent.make({
@@ -735,7 +744,7 @@ const connect = (
             }),
           )
           void refreshBots()
-        }, 15_000)
+        }, heartbeatIntervalMs)
         let queuedMessages = 0
         const close = (): void => {
           if (closed) {

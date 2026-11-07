@@ -134,6 +134,15 @@ of each worker. An hourly routine can restore availability after an update,
 but does not keep a suspended computer awake or guarantee an immediate restart.
 See [service behavior](services.md#startup-behavior).
 
+After a large forward wall-clock jump, the worker reconnects on its next
+15-second heartbeat instead of waiting for the stale-socket deadline. Read-only
+pre-dispatch acceptance checks retry network failures and HTTP 502, 503, and 504 with
+exponential backoff, within a shared 30-second budget and the saved reply deadline.
+Other pre-dispatch HTTP errors, invalid responses, and unknown acceptance durability
+still fail without sending the prompt. Post-dispatch reconciliation continues to
+await the existing receipt without resending. This recovery does not keep a
+suspended VM awake.
+
 Verify on the Bot computer:
 
 ```bash

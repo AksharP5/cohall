@@ -32,7 +32,15 @@ const Acceptance = Schema.Union([
   }),
 ])
 const SendResult = Schema.Struct({ accepted: Schema.Literal(true) })
-class GatewayError extends Error {}
+class GatewayError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message)
+  }
+}
+class GatewayNetworkError extends GatewayError {}
 
 const decode = <S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
@@ -106,8 +114,8 @@ const rpc = async <S extends Schema.ConstraintDecoder<unknown>>(
       signal: combined,
     })
     if (!response.ok) {
-      await response.body?.cancel()
-      throw new GatewayError(`Grok Bot ${method} failed (HTTP ${response.status})`)
+      await response.body?.cancel().catch(() => undefined)
+      throw new GatewayError(`Grok Bot ${method} failed (HTTP ${response.status})`, response.status)
     }
     if (response.body === null) throw new GatewayError("Grok Bot returned an empty response")
     const reader = response.body.getReader()
@@ -137,7 +145,9 @@ const rpc = async <S extends Schema.ConstraintDecoder<unknown>>(
     if (signal?.aborted)
       throw new Error("Stopped waiting for Grok Bot; its run may still be active")
     if (cause instanceof GatewayError) throw cause
-    throw new Error(`Grok Bot ${method} failed; check gateway availability and compatibility`)
+    throw new GatewayNetworkError(
+      `Grok Bot ${method} failed; check gateway availability and compatibility`,
+    )
   } finally {
     clearTimeout(deadline)
   }
@@ -260,7 +270,35 @@ export const runGrokBot = async (
   if (path === undefined)
     throw new Error("Configure this device's Grok Bot gateway discovery file first")
   const connection = await readConnection(path)
-  let acceptance = await lookup()
+  const preflightDeadline = Math.min(deadline, Date.now() + 30_000)
+  const preflight = () =>
+    Effect.runPromise(
+      Effect.tryPromise({
+        try: (lookupSignal) => {
+          requireTime(preflightDeadline)
+          return lookup(lookupSignal)
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.retry({
+          schedule: Schedule.exponential("1 second"),
+          while: (cause) =>
+            cause instanceof GatewayNetworkError ||
+            (cause instanceof GatewayError &&
+              (cause.status === 502 || cause.status === 503 || cause.status === 504)),
+        }),
+        Effect.timeoutOrElse({
+          duration: Math.max(0, preflightDeadline - Date.now()),
+          orElse: () =>
+            Effect.fail(new GatewayError("Timed out checking Grok Bot gateway task acceptance")),
+        }),
+      ),
+      { signal },
+    ).catch((cause: unknown) => {
+      requireTime(deadline)
+      throw cause
+    })
+  let acceptance = await preflight()
   if (acceptance.outcome === "unknown-durability")
     throw new Error(
       "Grok Bot cannot confirm whether this task was accepted; check its conversation before retrying",
@@ -274,7 +312,7 @@ export const runGrokBot = async (
       throw new Error("The selected Grok Bot no longer exists on this device")
     }
     requireTime(deadline)
-    acceptance = await lookup()
+    acceptance = await preflight()
     if (acceptance.outcome === "not-found") {
       requireTime(deadline)
       if (!(await claimBotDispatch(task.id, task.runId))) {

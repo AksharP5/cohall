@@ -153,6 +153,21 @@ it("reconnects when an accepted relay connection stops sending pings", async () 
   expect(relay.attempts()).toBe(2)
 })
 
+it("reconnects on the first heartbeat after a wall-clock jump", async () => {
+  vi.useFakeTimers({
+    toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  })
+  const relay = await startRelay()
+  await waitFor(relay.firstConnected)
+  vi.setSystemTime(Date.now() + 120_000)
+  await vi.advanceTimersByTimeAsync(15_000)
+  await waitFor(relay.firstClosed)
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  await vi.advanceTimersByTimeAsync(2_000)
+  await waitFor(relay.reconnected)
+  expect(relay.attempts()).toBe(2)
+})
+
 it("keeps a healthy connection open and clears its watchdog on shutdown", async () => {
   vi.useFakeTimers({
     toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
