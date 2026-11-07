@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.9](https://github.com/AksharP5/cohall/compare/v0.12.8...v0.12.9) (2026-11-07)
+
+
+### Bug Fixes
+
+* **device:** recover Grok Bot tasks after VM resume ([#244](https://github.com/AksharP5/cohall/issues/244)) ([5f6e749](https://github.com/AksharP5/cohall/commit/5f6e74999150e52b2ef0d69b6f74066bf5c29588))
+
 ## [0.12.8](https://github.com/AksharP5/cohall/compare/v0.12.7...v0.12.8) (2026-11-04)
 
 
