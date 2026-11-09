@@ -99,7 +99,45 @@ it("expires undispatched offline work and delivers interrupted-task cancellation
     const deviceId = credential.session.deviceId
     if (deviceId === undefined) throw new Error("Expected paired device ID")
     device = Device.make({ ...device, id: deviceId })
-    const original = await connect(credential.token)
+    let original = await connect(credential.token)
+    const unacked = await Effect.runPromise(
+      client.createTask({ targetDeviceId: device.id, botId, prompt: "Survive a frozen worker" }),
+    )
+    await vi.waitFor(() =>
+      expect(original.events).toContainEqual({
+        _tag: "TaskAssigned",
+        task: expect.objectContaining({ id: unacked.id }),
+      }),
+    )
+    const unackedClosed = once(original.socket, "close")
+    original.socket.terminate()
+    await unackedClosed
+    await vi.waitFor(async () => {
+      const queued = await Effect.runPromise(client.getTask(unacked.id))
+      expect(queued.status).toBe("queued")
+      expect(queued.startedAt).toBeUndefined()
+      expect(queued.completedAt).toBeUndefined()
+    })
+    original = await connect(credential.token)
+    await vi.waitFor(() =>
+      expect(original.events).toContainEqual({
+        _tag: "TaskAssigned",
+        task: expect.objectContaining({ id: unacked.id, runId: unacked.runId }),
+      }),
+    )
+    original.send({ _tag: "TaskAccepted", taskId: unacked.id })
+    original.send({ _tag: "TaskFinished", taskId: unacked.id, result: "Completed after reconnect" })
+    await vi.waitFor(async () => {
+      expect(await Effect.runPromise(client.getTask(unacked.id))).toMatchObject({
+        status: "completed",
+        result: "Completed after reconnect",
+      })
+    })
+    expect(
+      original.events.filter(
+        (event) => event._tag === "TaskAssigned" && event.task.id === unacked.id,
+      ),
+    ).toHaveLength(1)
     const bot = await Effect.runPromise(
       client.createTask({
         targetDeviceId: device.id,
