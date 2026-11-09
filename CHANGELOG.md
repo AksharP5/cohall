@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.10](https://github.com/AksharP5/cohall/compare/v0.12.9...v0.12.10) (2026-11-09)
+
+
+### Bug Fixes
+
+* **device:** wait for the Grok gateway after VM freezes ([#246](https://github.com/AksharP5/cohall/issues/246)) ([b4686d5](https://github.com/AksharP5/cohall/commit/b4686d575336cccb5baf4a7d9082615d8ea93945))
+
 ## [0.12.9](https://github.com/AksharP5/cohall/compare/v0.12.8...v0.12.9) (2026-11-07)
 
 
