@@ -136,12 +136,21 @@ See [service behavior](services.md#startup-behavior).
 
 After a large forward wall-clock jump, the worker reconnects on its next
 15-second heartbeat instead of waiting for the stale-socket deadline. Read-only
-pre-dispatch acceptance checks retry network failures and HTTP 502, 503, and 504 with
-exponential backoff, within a shared 30-second budget and the saved reply deadline.
+pre-dispatch acceptance and bot-roster checks retry network failures and HTTP 502,
+503, and 504 until the saved six-hour reply deadline. Backoff starts at one second
+and is capped at five seconds so the gateway can recover after a multi-minute VM
+freeze. Gateway discovery is reread on each attempt. Cancellation and explicit task
+deadlines still stop the wait.
 Other pre-dispatch HTTP errors, invalid responses, and unknown acceptance durability
 still fail without sending the prompt. Post-dispatch reconciliation continues to
 await the existing receipt without resending. This recovery does not keep a
 suspended VM awake.
+
+The relay requeues work interrupted by a device disconnect and redelivers it when
+the worker reconnects, including work the worker had not acknowledged. The same
+task identity and local dispatch receipt prevent a duplicate prompt. An offline
+relay status means the worker connection is absent; it does not prove the VM is
+powered off. Cohall uses relay status, not Tailscale's control-plane Online flag.
 
 Verify on the Bot computer:
 

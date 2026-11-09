@@ -269,28 +269,25 @@ export const runGrokBot = async (
   if (dispatched) return waitForReply(true)
   if (path === undefined)
     throw new Error("Configure this device's Grok Bot gateway discovery file first")
-  const connection = await readConnection(path)
-  const preflightDeadline = Math.min(deadline, Date.now() + 30_000)
-  const preflight = () =>
+  const readBeforeDispatch = <A>(read: (readSignal: AbortSignal) => Promise<A>) =>
     Effect.runPromise(
       Effect.tryPromise({
         try: (lookupSignal) => {
-          requireTime(preflightDeadline)
-          return lookup(lookupSignal)
+          requireTime(deadline)
+          return read(lookupSignal)
         },
         catch: (cause) => cause,
       }).pipe(
         Effect.retry({
-          schedule: Schedule.exponential("1 second"),
+          schedule: Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("5 seconds")]),
           while: (cause) =>
             cause instanceof GatewayNetworkError ||
             (cause instanceof GatewayError &&
               (cause.status === 502 || cause.status === 503 || cause.status === 504)),
         }),
         Effect.timeoutOrElse({
-          duration: Math.max(0, preflightDeadline - Date.now()),
-          orElse: () =>
-            Effect.fail(new GatewayError("Timed out checking Grok Bot gateway task acceptance")),
+          duration: Math.max(0, deadline - Date.now()),
+          orElse: () => Effect.fail(new GatewayError(timeoutMessage)),
         }),
       ),
       { signal },
@@ -298,7 +295,7 @@ export const runGrokBot = async (
       requireTime(deadline)
       throw cause
     })
-  let acceptance = await preflight()
+  let acceptance = await readBeforeDispatch(lookup)
   if (acceptance.outcome === "unknown-durability")
     throw new Error(
       "Grok Bot cannot confirm whether this task was accepted; check its conversation before retrying",
@@ -307,14 +304,17 @@ export const runGrokBot = async (
     const receipt = await readBotReply(task.id, task.runId)
     if (receipt !== undefined) return finishReply(receipt)
     requireTime(deadline)
-    const roster = await rpc(connection, "listAgents", {}, Roster, signal)
+    const roster = await readBeforeDispatch(async (readSignal) =>
+      rpc(await readConnection(path), "listAgents", {}, Roster, readSignal),
+    )
     if (!roster.some((row) => row.id === agentId && row.isGroup !== true)) {
       throw new Error("The selected Grok Bot no longer exists on this device")
     }
     requireTime(deadline)
-    acceptance = await preflight()
+    acceptance = await readBeforeDispatch(lookup)
     if (acceptance.outcome === "not-found") {
       requireTime(deadline)
+      const connection = await readConnection(path)
       if (!(await claimBotDispatch(task.id, task.runId))) {
         return waitForReply(true)
       }
