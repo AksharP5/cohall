@@ -326,6 +326,9 @@ export interface Interface {
     runId?: TaskRunId,
   ) => Effect.Effect<Task, PersistenceError>
   readonly requestCancellation: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
+  readonly cancelDescendants: (
+    taskId: TaskId,
+  ) => Effect.Effect<ReadonlyArray<Task>, PersistenceError>
   readonly requeueTasksFor: (deviceId: DeviceId) => Effect.Effect<void, PersistenceError>
   readonly createUpgradeOperations: (
     input: CreateUpgradeOperationsInput,
@@ -2385,6 +2388,38 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
         )
   })
 
+  const cancelDescendants = Effect.fn("RelayStore.cancelDescendants")(function* (taskId: TaskId) {
+    const rows = yield* Effect.try({
+      try: () =>
+        db
+          .query<TaskRow, [string]>(
+            `WITH RECURSIVE descendants(id) AS (
+               SELECT id FROM tasks WHERE parent_task_id = ?
+               UNION SELECT tasks.id FROM tasks JOIN descendants ON tasks.parent_task_id = descendants.id
+             )
+             SELECT tasks.* FROM tasks JOIN descendants USING (id)
+             WHERE tasks.status IN ('queued', 'assigned', 'running', 'needs_input')`,
+          )
+          .all(taskId),
+      catch: operationError("RelayStore.cancelDescendants"),
+    })
+    return yield* Effect.forEach(rows, (row) =>
+      taskFromRow(db, row).pipe(
+        Effect.flatMap((task) =>
+          requestCancellation(task.id).pipe(
+            // The Grok Bot gateway cannot stop a single request; a running Bot child finishes.
+            Effect.catchIf(
+              (cause) =>
+                task.provider === "grok-bot" &&
+                cause.message.startsWith("Stop this bot in Grok Bot"),
+              () => Effect.succeed(task),
+            ),
+          ),
+        ),
+      ),
+    )
+  })
+
   const requeueTasksFor = Effect.fn("RelayStore.requeueTasksFor")(function* (deviceId: DeviceId) {
     const timestamp = now()
     yield* Effect.try({
@@ -2703,6 +2738,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     acknowledgeCancellation: (taskId, deviceId, runId) =>
       terminal(taskId, deviceId, "cancelled", undefined, undefined, undefined, undefined, runId),
     requestCancellation,
+    cancelDescendants,
     requeueTasksFor,
     createUpgradeOperations,
     listOperations,

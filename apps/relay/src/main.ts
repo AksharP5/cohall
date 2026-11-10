@@ -263,6 +263,12 @@ export const resolveDelegation = (
         message: "A child task must use its parent's thread",
       })
     }
+    // A cancelled parent's children are cancelled too; don't let one start while it stops.
+    if (parent?.status === "cancelling" || parent?.status === "cancelled")
+      return yield* new RequestError({
+        status: 409,
+        message: "The parent task has been cancelled",
+      })
     const devices = yield* store
       .listDevices()
       .pipe(Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })))
@@ -1107,8 +1113,10 @@ export const runRelay = async (): Promise<void> => {
       if (request.method === "POST" && cancel?.[1] !== undefined) {
         const id = yield* pathId(TaskId, cancel[1])
         const updated = yield* store.requestCancellation(id)
-        if (updated.status === "cancelling") {
-          sendCancellation(updated)
+        if (updated.status === "cancelling") sendCancellation(updated)
+        if (updated.status === "cancelling" || updated.status === "cancelled") {
+          for (const child of yield* store.cancelDescendants(id))
+            if (child.status === "cancelling") sendCancellation(child)
         }
         return json(updated)
       }
