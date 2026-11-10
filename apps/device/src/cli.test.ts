@@ -256,7 +256,7 @@ it.each([true, false])(
 )
 
 it.each(["init", "join"] as const)(
-  "exchanges an explicit %s token file despite existing client credentials and unused roots",
+  "exchanges an explicit %s token file while keeping worker credentials and unused roots",
   async (command) => {
     const directory = await temporary()
     const configuration = await storeWorkerConfiguration(directory)
@@ -295,6 +295,7 @@ it.each(["init", "join"] as const)(
     )
     expect(await readStoredConfiguration()).toMatchObject({
       clientToken: "new-client-secret",
+      deviceToken: configuration.deviceToken,
       workspaces: configuration.workspaces,
       providers: configuration.providers,
     })

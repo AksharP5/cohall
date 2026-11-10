@@ -102,8 +102,8 @@ characters), and provider selection before reading a pairing token. A device
 installation. Re-running `cohall init` repairs the
 skill installation and reuses credentials when the selected relay has not
 changed. Keeping the default workspace retains all configured roots;
-`init --client-only` and `join --client-only` retain worker settings without
-revalidating unused workspace directories. Explicit `join --workspace` changes
+`init --client-only` and `join --client-only` retain worker settings and the
+saved device credential without revalidating unused workspace directories. Explicit `join --workspace` changes
 still require existing directories; `--providers` can override the provider selection. An explicit
 `--token-file` requests a new pairing exchange even when credentials are saved.
 `cohall join` remains the non-guided configuration primitive.
