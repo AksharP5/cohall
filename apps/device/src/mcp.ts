@@ -190,7 +190,9 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
         provider: z
           .enum(Provider.literals)
           .optional()
-          .describe("Inferred as grok-bot for a bot target; otherwise defaults to codex."),
+          .describe(
+            "Inferred as grok-bot for a bot target and as the thread's provider for a thread follow-up; otherwise defaults to codex.",
+          ),
         context: z
           .string()
           .max(131_072)

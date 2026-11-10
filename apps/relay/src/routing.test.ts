@@ -1,6 +1,7 @@
 import {
   AttachmentName,
   BotId,
+  decodeCreateTaskInput,
   Device,
   makeDeviceId,
   makeTaskId,
@@ -168,6 +169,37 @@ it("keeps untargeted thread follow-ups on the thread's device", async () => {
     expect(await runtime.runPromise(resolveDelegation(followUp))).toMatchObject({
       targetDeviceId: other.id,
     })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
+it("keeps thread follow-ups on the thread's provider unless they name another", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const worker = Device.make({ ...device("worker"), providers: ["codex", "opencode"] })
+    await Effect.runPromise(store.upsertDevice(worker))
+    const first = await Effect.runPromise(
+      store.createDelegation(
+        { prompt: "Find three ideas", provider: "opencode" },
+        worker.id,
+        "owner",
+      ),
+    )
+    const followUp = { prompt: "Expand the second idea", threadId: first.threadId }
+    // Decode as the relay does a request body, so a default added there cannot hide the thread's.
+    const provider = async (input: object) =>
+      (
+        await runtime.runPromise(
+          decodeCreateTaskInput(input).pipe(
+            Effect.flatMap((decoded) => resolveDelegation(decoded)),
+          ),
+        )
+      ).input.provider
+    expect(await provider(followUp)).toBe("opencode")
+    expect(await provider({ ...followUp, targetDeviceId: worker.id })).toBe("opencode")
+    expect(await provider({ ...followUp, provider: "codex" })).toBe("codex")
   } finally {
     await runtime.dispose()
   }

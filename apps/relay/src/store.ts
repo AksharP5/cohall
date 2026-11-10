@@ -366,10 +366,13 @@ export interface Interface {
     deviceId: DeviceId,
     provider: Provider,
   ) => Effect.Effect<string | undefined, PersistenceError>
-  /** The device that ran the thread's latest top-level coding turn. */
-  readonly threadDevice: (
+  /** The device and provider that ran the thread's latest top-level coding turn. */
+  readonly threadTurn: (
     threadId: ThreadId,
-  ) => Effect.Effect<DeviceId | undefined, PersistenceError>
+  ) => Effect.Effect<
+    { readonly deviceId: DeviceId; readonly provider: Provider } | undefined,
+    PersistenceError
+  >
   readonly createPairing: (
     input: CreatePairingInput,
   ) => Effect.Effect<PairingCredential, PersistenceError>
@@ -2468,19 +2471,25 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return row?.session_id
   })
 
-  const threadDevice = Effect.fn("RelayStore.threadDevice")(function* (threadId: ThreadId) {
-    const row = yield* Effect.try({
-      try: () =>
-        db
-          .query<{ readonly target_device_id: DeviceId }, [string]>(
-            `SELECT target_device_id FROM tasks
+  const threadTurn = Effect.fn("RelayStore.threadTurn")(function* (threadId: ThreadId) {
+    return yield* Effect.try({
+      try: () => {
+        const row = db
+          .query<{ readonly target_device_id: DeviceId; readonly provider: string }, [string]>(
+            `SELECT target_device_id, provider FROM tasks
              WHERE thread_id = ? AND parent_task_id IS NULL AND provider <> 'grok-bot'
              ORDER BY created_at DESC, rowid DESC LIMIT 1`,
           )
-          .get(threadId),
-      catch: operationError("RelayStore.threadDevice"),
+          .get(threadId)
+        return row === null
+          ? undefined
+          : {
+              deviceId: row.target_device_id,
+              provider: Schema.decodeUnknownSync(Provider)(row.provider),
+            }
+      },
+      catch: operationError("RelayStore.threadTurn"),
     })
-    return row?.target_device_id
   })
 
   const createPairing = Effect.fn("RelayStore.createPairing")(function* (
@@ -2751,7 +2760,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     failOperation,
     requeueOperationsFor,
     sessionFor,
-    threadDevice,
+    threadTurn,
     createPairing,
     exchangePairing,
     authenticateSession,
