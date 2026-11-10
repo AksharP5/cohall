@@ -421,6 +421,22 @@ it.each([
   expect(handles[0]?.fd).toBe(-1)
 })
 
+it("accepts option values that begin with a dash but not a missing value", async () => {
+  await temporary()
+  const reply = vi.spyOn(BotReplies, "writeBotReply").mockResolvedValue(undefined)
+  vi.spyOn(console, "log").mockImplementation(() => undefined)
+
+  await runCli("reply", [taskId, "--message", "- Tests pass\n- Ready to merge"])
+  expect(reply).toHaveBeenCalledWith(
+    taskId,
+    { result: "- Tests pass\n- Ready to merge" },
+    undefined,
+  )
+  await expect(runCli("reply", [taskId, "--message", "--error", "failed"])).rejects.toThrow(
+    "--message requires a value",
+  )
+})
+
 it("preserves UTF-8 short reads and closes the input file on Windows and Unix", async () => {
   const directory = await temporary()
   const path = join(directory, "message.txt")
