@@ -47,6 +47,7 @@ interface State {
   stopping: boolean
   supportsAttachments: boolean
   supportsClarification: boolean
+  rejection: string | undefined
   processing: Promise<void>
   readonly terminal: Map<string, TaskTerminalEvent>
   readonly queue: Array<Task>
@@ -798,6 +799,7 @@ const connect = (
                 }).pipe(Effect.flatMap(decodeSocketEvent)),
               )
               if (event._tag === "Connected") {
+                state.rejection = undefined
                 state.supportsAttachments = event.taskAttachments === true
                 state.supportsClarification = event.taskClarification === true
                 state.socket = socket
@@ -866,7 +868,15 @@ const connect = (
               queuedMessages = Math.max(0, queuedMessages - 1)
             })
         })
-        socket.once("close", close)
+        socket.once("close", (code, reason) => {
+          // The relay rejects credentials by closing the socket; say why the worker stays offline.
+          const rejection = code >= 4000 ? `${reason.toString()} (${code})` : undefined
+          if (rejection !== undefined && rejection !== state.rejection) {
+            state.rejection = rejection
+            console.error(`Relay connection closed: ${rejection}`)
+          }
+          close()
+        })
         socket.once("error", () => socket.close())
       }),
     catch: (cause) =>
@@ -883,6 +893,7 @@ export const runDaemon = (
     stopping: false,
     supportsAttachments: false,
     supportsClarification: false,
+    rejection: undefined,
     processing: Promise.resolve(),
     terminal: new Map(),
     queue: [],
