@@ -732,7 +732,13 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     noPositionals(arguments_, command)
     print({
       cli_skill: "npx -y @akshar5/cohall skill install all",
-      codex_mcp: "codex mcp add cohall -- npx -y @akshar5/cohall mcp",
+      // Codex starts MCP servers without the caller's environment unless env_vars names it.
+      codex_mcp: [
+        "[mcp_servers.cohall]",
+        'command = "npx"',
+        'args = ["-y", "@akshar5/cohall", "mcp"]',
+        'env_vars = ["COHALL_CONFIG", "COHALL_THREAD_ID", "COHALL_TASK_ID", "COHALL_TASK_RUN_ID"]',
+      ].join("\n"),
       claude_mcp:
         "claude mcp add --transport stdio --scope user cohall -- npx -y @akshar5/cohall mcp",
       stdio_config: {

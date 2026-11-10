@@ -274,17 +274,23 @@ self-contained task.
 
 ## Codex MCP
 
-```bash
-codex mcp add cohall -- npx -y @akshar5/cohall mcp
-```
-
-Equivalent `~/.codex/config.toml`:
+Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.cohall]
 command = "npx"
 args = ["-y", "@akshar5/cohall", "mcp"]
+env_vars = ["COHALL_CONFIG", "COHALL_THREAD_ID", "COHALL_TASK_ID", "COHALL_TASK_RUN_ID"]
 ```
+
+Codex starts MCP servers with only a few basic environment variables.
+`env_vars` passes the Cohall configuration path and, during delegated work, the
+task, turn, and thread IDs that `task_request_input`, `task_progress`, and
+`delegate` inherit. Without it, those tools in a delegated Codex task ask for a
+task ID, and a nested `delegate` is not linked to its parent, so work sent back
+to the same device waits behind the parent until the wait times out.
+`codex mcp add cohall -- npx -y @akshar5/cohall mcp` creates the entry without
+`env_vars`; add that line afterward.
 
 ## Claude Code MCP
 

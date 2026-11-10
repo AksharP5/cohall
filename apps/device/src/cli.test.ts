@@ -6,11 +6,17 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, expect, it, vi } from "vitest"
+import { Effect } from "effect"
 import * as z from "zod/v4"
 import { DeviceId } from "@cohall/protocol"
 import * as BotReplies from "./bot-replies.ts"
 import { runCli } from "./cli.ts"
-import { StoredConfiguration, readStoredConfiguration, writeStoredConfiguration } from "./config.ts"
+import {
+  StoredConfiguration,
+  loadClientConfiguration,
+  readStoredConfiguration,
+  writeStoredConfiguration,
+} from "./config.ts"
 
 vi.mock("../../../skills/cohall/SKILL.md", () => ({ default: "test skill" }))
 vi.mock("../../../docs/onboarding.md", () => ({ default: "test onboarding guide" }))
@@ -90,6 +96,41 @@ it("sets, reports, retains, and clears device specialties without changing other
   await expect(runCli("configure", ["--description", "x".repeat(513)])).rejects.toThrow("512")
   await runCli("configure", ["--description", ""])
   expect(await readStoredConfiguration()).toEqual({ ...original, model: "another-model" })
+})
+
+it("lets a Codex-launched MCP server inherit the delegated task", async () => {
+  const directory = await temporary()
+  await storeWorkerConfiguration(directory)
+  const output = vi.spyOn(console, "log").mockImplementation(() => undefined)
+  await runCli("integrations", [])
+  const { codex_mcp } = z
+    .object({ codex_mcp: z.string() })
+    .parse(JSON.parse(String(output.mock.lastCall?.[0])))
+  // The TOML string array on this line is also valid JSON.
+  const envVars = z
+    .array(z.string())
+    .parse(JSON.parse(codex_mcp.match(/^env_vars = (.+)$/m)?.[1] ?? "[]"))
+  const runId = "22222222-2222-4222-8222-222222222222"
+  const threadId = "33333333-3333-4333-8333-333333333333"
+  const provider: Record<string, string | undefined> = {
+    COHALL_CONFIG: process.env.COHALL_CONFIG,
+    COHALL_THREAD_ID: threadId,
+    COHALL_TASK_ID: taskId,
+    COHALL_TASK_RUN_ID: runId,
+    COHALL_RELAY_URL: undefined,
+    COHALL_CLIENT_TOKEN: undefined,
+  }
+  // Codex gives MCP servers only basic variables plus the names listed in env_vars.
+  for (const [name, value] of Object.entries(provider)) {
+    vi.stubEnv(name, envVars.includes(name) ? value : undefined)
+  }
+  expect(await Effect.runPromise(loadClientConfiguration)).toEqual({
+    relayUrl: "https://relay.example",
+    token: "client-secret",
+    mcpThreadId: threadId,
+    mcpTaskId: taskId,
+    mcpTaskRunId: runId,
+  })
 })
 
 it("prints one compact JSON snapshot when a device watch is redirected", async () => {
