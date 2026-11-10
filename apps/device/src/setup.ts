@@ -55,18 +55,18 @@ export const joinRelay = async (options: JoinOptions): Promise<JoinResult> => {
 
   const {
     clientToken: _retainedClientToken,
-    deviceToken: _retainedDeviceToken,
+    deviceToken: retainedDeviceToken,
     ...configurationDraft
   } = draft
+  // A client-only pairing repairs client access; it must not disconnect this machine's worker.
+  const deviceToken = options.clientOnly ? retainedDeviceToken : deviceCredential?.token
   const configuration = StoredConfiguration.make({
     ...configurationDraft,
     deviceId: options.clientOnly
       ? configurationDraft.deviceId
       : (deviceCredential?.session.deviceId ?? configurationDraft.deviceId),
     ...(clientToken === undefined ? {} : { clientToken }),
-    ...(options.clientOnly || deviceCredential === undefined
-      ? {}
-      : { deviceToken: deviceCredential.token }),
+    ...(deviceToken === undefined ? {} : { deviceToken }),
   })
   await writeStoredConfiguration(configuration)
   return {
