@@ -289,6 +289,7 @@ Add to `~/.codex/config.toml`:
 command = "npx"
 args = ["-y", "@akshar5/cohall", "mcp"]
 env_vars = ["COHALL_CONFIG", "COHALL_THREAD_ID", "COHALL_TASK_ID", "COHALL_TASK_RUN_ID"]
+tool_timeout_sec = 960
 ```
 
 Codex starts MCP servers with only a few basic environment variables.
@@ -297,8 +298,16 @@ task, turn, and thread IDs that `task_request_input`, `task_progress`, and
 `delegate` inherit. Without it, those tools in a delegated Codex task ask for a
 task ID, and a nested `delegate` is not linked to its parent, so work sent back
 to the same device waits behind the parent until the wait times out.
+Codex also ends an MCP tool call after 300 seconds by default, while `delegate`
+and `wait_task` wait up to 900 seconds. `tool_timeout_sec` lets those waits
+finish; raise it above any larger `timeout_seconds` you pass.
 `codex mcp add cohall -- npx -y @akshar5/cohall mcp` creates the entry without
-`env_vars`; add that line afterward.
+`env_vars` or `tool_timeout_sec`; add those lines afterward.
+
+When a host ends a `delegate` call early, the agent receives no task ID, but
+the task keeps running and its result later appears in `completion_inbox`.
+Pass a `request_id` so a retry returns the original task instead of starting
+the work again.
 
 ## Claude Code MCP
 
