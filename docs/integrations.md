@@ -133,6 +133,7 @@ and waits poll the relay; Cohall does not wake a requester to deliver a question
 
 `--timeout` and MCP `timeout_seconds` limit how long the requester waits.
 The limit covers task-status lookup and polling, including slow responses.
+After the first status, polling continues through relay restarts and gateway errors.
 Timing out stops the wait; accepted work continues and later completions stay in the inbox.
 To stop coding work at a fixed time, give `delegate` a future UTC timestamp:
 

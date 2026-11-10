@@ -143,6 +143,29 @@ it.each(["initial lookup", "poll"] as const)(
   },
 )
 
+it("keeps waiting through a relay restart but stops on a rejected credential", async () => {
+  const outage = new RelayRequestError({ operation: "getTask", message: "fetch failed" })
+  const rejected = new RelayRequestError({ operation: "getTask", status: 401, message: "Denied" })
+  const waitThrough = (failure: RelayRequestError) => {
+    const responses = [Effect.fail(failure), Effect.succeed(task)]
+    const relay = { ...client(), getTask: () => responses.shift() ?? Effect.succeed(task) }
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const waiting = yield* waitForTask(
+          relay,
+          Task.make({ ...task, status: "running" }),
+          30,
+        ).pipe(Effect.forkChild)
+        yield* TestClock.adjust("2 seconds")
+        return yield* Fiber.join(waiting)
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+  }
+
+  await expect(waitThrough(outage)).resolves.toMatchObject({ status: "completed" })
+  await expect(waitThrough(rejected)).rejects.toMatchObject({ status: 401 })
+})
+
 it("requires an explicit target or provider for keyed thread follow-ups", async () => {
   const relay = client([], [task])
   await expect(
