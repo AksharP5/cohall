@@ -112,7 +112,7 @@ it("prefers an idle device unless a busy one holds the workspace", async () => {
   }
 })
 
-it("keeps untargeted thread follow-ups on the thread's online device", async () => {
+it("keeps untargeted thread follow-ups on the thread's device", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {
     const store = await runtime.runPromise(RelayStore.Service)
@@ -128,6 +128,22 @@ it("keeps untargeted thread follow-ups on the thread's online device", async () 
       targetDeviceId: original.id,
     })
     await Effect.runPromise(store.upsertDevice({ ...original, status: "offline" }))
+    await expect(runtime.runPromise(resolveDelegation(followUp))).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("Pass --target @b-original"),
+    })
+    expect(
+      await runtime.runPromise(resolveDelegation({ ...followUp, targetDeviceId: other.id })),
+    ).toMatchObject({ targetDeviceId: other.id })
+    // With no online alternative, the follow-up still waits for the thread's device.
+    await Effect.runPromise(store.upsertDevice({ ...other, status: "offline" }))
+    expect(await runtime.runPromise(resolveDelegation(followUp))).toMatchObject({
+      targetDeviceId: original.id,
+    })
+    await Effect.runPromise(store.upsertDevice(other))
+    await Effect.runPromise(
+      store.upsertDevice({ ...original, status: "offline", providers: ["grok-bot"] }),
+    )
     expect(await runtime.runPromise(resolveDelegation(followUp))).toMatchObject({
       targetDeviceId: other.id,
     })

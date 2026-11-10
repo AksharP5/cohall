@@ -7,8 +7,10 @@ entry point per task.
 When no target is selected, automatic routing prefers online devices and matching
 workspace roots and capabilities. Between otherwise equal devices, it picks an
 idle one over one already running a task. A thread follow-up prefers the device
-that ran the thread's latest turn while it is online, so its provider session
-resumes.
+that ran the thread's latest turn, so its provider session resumes. If that
+device is offline, the relay rejects the follow-up with 409 instead of starting
+a new session on another device. Target it to queue the follow-up, or target
+another device to start fresh.
 Workspace matching uses the target device's path rules, including Windows drive
 letters and separators. The worker validates workspace access before starting
 the task.

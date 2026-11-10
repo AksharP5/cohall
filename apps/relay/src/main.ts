@@ -216,8 +216,8 @@ const scoreDevice = (
     (needsBrowser && device.capabilities.some((capability) => capability.id === "browser-session")
       ? 40
       : 0) +
-    // Follow-ups resume the thread's provider session on its device, unless it is offline
-    // or another device holds the requested workspace.
+    // Follow-ups resume the thread's provider session on its device, unless another
+    // device holds the requested workspace.
     (threadDeviceId === device.id ? 70 : 0) +
     (sourceDeviceId === device.id ? -5 : 0)
   )
@@ -410,6 +410,14 @@ export const resolveDelegation = (
                 : input.botId === undefined
                   ? `No Cohall device advertises the ${provider} provider`
                   : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,
+      })
+    }
+    // Another device would start a fresh provider session without the thread's history.
+    const threadDevice = candidates.find((device) => device.id === threadDeviceId)
+    if (threadDevice?.status === "offline" && threadDevice.id !== selected.id) {
+      return yield* new RequestError({
+        status: 409,
+        message: `This thread ran on ${threadDevice.name}, which is offline. Pass --target @${threadDevice.name} to queue the follow-up for it, or target another device to start a new session without the thread's history`,
       })
     }
     return { input: resolvedInput, targetDeviceId: selected.id }
