@@ -332,7 +332,16 @@ export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
     if (task === undefined) task = yield* client.getTask(id)
     while (!isTerminalTask(task) && task.status !== "needs_input") {
       yield* Effect.sleep("1 second")
-      task = yield* client.getTask(id)
+      const known: Task = task
+      // Accepted tasks survive relay restarts and proxy outages; the wait timeout bounds them.
+      task = yield* client.getTask(id).pipe(
+        Effect.catchIf(
+          (cause) =>
+            cause instanceof RelayRequestError &&
+            (cause.status === undefined || [502, 503, 504].includes(cause.status)),
+          () => Effect.succeed(known),
+        ),
+      )
     }
     return task
   }).pipe(
