@@ -316,7 +316,10 @@ Cohall rejects the follow-up instead of starting over on another device; pass
 Queued follow-ups pick up the preceding turn's session when they start,
 including after a worker restart. If the provider no longer has that session,
 for example after its history was cleared, the turn starts a new session and
-its result says that earlier turns were not available.
+its result says that earlier turns were not available. OpenCode resumes a
+session only in the directory where it started, so an OpenCode follow-up in a
+different workspace, or one whose session is no longer among that project's 100
+most recently updated, also starts a new session.
 
 Delegated child tasks inherit their parent's thread. Coding children also inherit
 the parent's deadline unless they set an earlier one. Cohall routes them away

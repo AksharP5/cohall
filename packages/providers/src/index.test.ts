@@ -271,6 +271,39 @@ it.skipIf(process.platform === "win32").each([
   },
 )
 
+it.skipIf(process.platform === "win32")(
+  "resumes an OpenCode session only in the directory that created it",
+  async () => {
+    // Real OpenCode keeps working in the session's own directory and never exits.
+    const directory = await providerFixture(
+      "opencode",
+      `
+    if (process.argv.includes("list")) {
+      console.log(JSON.stringify([
+        { id: "here", directory: process.cwd() },
+        { id: "elsewhere", directory: "/elsewhere" },
+      ]))
+    } else {
+      const session = process.argv.includes("--session")
+        ? process.argv[process.argv.indexOf("--session") + 1]
+        : undefined
+      const text = session === undefined ? "Started" : "Resumed " + session
+      console.log(JSON.stringify({ type: "text", sessionID: session ?? "new", part: { text } }))
+    }
+  `,
+    )
+    const turn = (sessionId: string) =>
+      Effect.runPromise(
+        run({ provider: "opencode", threadId: "test", prompt: "test", cwd: directory, sessionId }),
+      )
+
+    await expect(turn("here")).resolves.toEqual({ result: "Resumed here", sessionId: "here" })
+    const moved = await turn("elsewhere")
+    expect(moved.sessionId).toBe("new")
+    expect(moved.result).toMatch(/^Started\n\n\[Started a new opencode session: /)
+  },
+)
+
 const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknown>) => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-provider-events-"))
   directories.push(directory)

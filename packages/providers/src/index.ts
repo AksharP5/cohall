@@ -2,7 +2,7 @@ import { Provider, type Provider as ProviderName } from "@cohall/protocol"
 import { Effect, Schema } from "effect"
 import { execa } from "execa"
 import { accessSync, constants, statSync } from "node:fs"
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
 import { delimiter, extname, isAbsolute, join, resolve } from "node:path"
 import { execFile } from "node:child_process"
@@ -824,32 +824,79 @@ const missingSession = {
   opencode: (message: string) => message.trimEnd().endsWith("Session not found"),
 } satisfies Record<CliProvider, (message: string, sessionId: string) => boolean>
 
+// OpenCode resumes a session in the directory that created it, not the task's workspace: it
+// never exits when the two differ and fails when that directory is gone. Its list holds the
+// workspace project's 100 most recently updated sessions, so an older one also starts over.
+const openCodeSessionIn = (cwd: string, sessionId: string): Effect.Effect<boolean, ProviderError> =>
+  Effect.tryPromise({
+    try: async (signal) => {
+      const executable = findExecutable(executables.opencode)
+      // Let the turn itself report a missing CLI.
+      if (executable === undefined) return true
+      const [directory, { stdout }] = await Promise.all([
+        realpath(cwd),
+        execa(executable, ["session", "list", "--format", "json"], {
+          cwd,
+          env: providerEnvironment(),
+          extendEnv: false,
+          stdin: "ignore",
+          cancelSignal: signal,
+        }),
+      ])
+      // OpenCode prints nothing when the project has no sessions.
+      const sessions: unknown = JSON.parse(stdout || "[]")
+      return (
+        Array.isArray(sessions) &&
+        sessions.some(
+          (session) =>
+            record(session)?.id === sessionId && record(session)?.directory === directory,
+        )
+      )
+    },
+    catch: (cause) =>
+      new ProviderRunError({
+        provider: "opencode",
+        message: (cause instanceof Error ? cause.message : String(cause)).slice(0, 16_384),
+      }),
+  })
+
 /**
- * Runs one provider turn, resuming `sessionId` when given. Providers prune old sessions, and a
- * worker can move to another machine or account, so a turn whose session is gone starts a new
- * session and says so in its result rather than failing every later turn of the thread.
+ * Runs one provider turn, resuming `sessionId` when given. Providers prune old sessions, a worker
+ * can move to another machine or account, and an OpenCode session belongs to one directory, so a
+ * turn that cannot resume its session starts a new one and says so in its result rather than
+ * failing every later turn of the thread.
  */
 export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError> => {
   const { sessionId, ...fresh } = options
-  return runOnce(options).pipe(
-    Effect.catchIf(
-      (error) =>
-        sessionId !== undefined &&
-        error._tag === "CohallProvider.RunError" &&
-        missingSession[options.provider](error.message, sessionId),
-      () =>
-        runOnce({
-          ...fresh,
-          prompt: `Earlier turns of this thread are no longer available on this device. If this task depends on them, say so or request input instead of guessing.\n\n${options.prompt}`,
-        }).pipe(
-          Effect.map((turn) => {
-            const notice = `\n\n[Started a new ${executables[options.provider]} session: this thread's previous session no longer exists on this device, so this turn did not see earlier turns.]`
-            return {
-              ...turn,
-              result: `${turn.result.slice(0, maxResultBytes - notice.length)}${notice}`,
-            }
-          }),
-        ),
+  if (sessionId === undefined) return runOnce(options)
+  const startOver = runOnce({
+    ...fresh,
+    prompt: `Earlier turns of this thread are no longer available on this device. If this task depends on them, say so or request input instead of guessing.\n\n${options.prompt}`,
+  }).pipe(
+    Effect.map((turn) => {
+      const notice = `\n\n[Started a new ${executables[options.provider]} session: this thread's previous session is not available for this workspace on this device, so this turn did not see earlier turns.]`
+      return {
+        ...turn,
+        result: `${turn.result.slice(0, maxResultBytes - notice.length)}${notice}`,
+      }
+    }),
+  )
+  const resumable =
+    options.provider === "opencode"
+      ? openCodeSessionIn(options.cwd, sessionId)
+      : Effect.succeed(true)
+  return resumable.pipe(
+    Effect.flatMap((resume) =>
+      resume
+        ? runOnce(options).pipe(
+            Effect.catchIf(
+              (error) =>
+                error._tag === "CohallProvider.RunError" &&
+                missingSession[options.provider](error.message, sessionId),
+              () => startOver,
+            ),
+          )
+        : startOver,
     ),
   )
 }
