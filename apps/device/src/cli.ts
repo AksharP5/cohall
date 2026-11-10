@@ -414,7 +414,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         {
           clientOnly,
           workspaces: values(arguments_, "workspace"),
-          cwd: process.cwd(),
+          ...(interactive ? { cwd: process.cwd() } : {}),
           ...(relayUrl === undefined ? {} : { relayUrl }),
           ...(tokenFile === undefined ? {} : { readToken: () => pairingToken(arguments_) }),
           ...(deviceName === undefined ? {} : { deviceName }),
