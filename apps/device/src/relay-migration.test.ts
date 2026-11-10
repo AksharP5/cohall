@@ -4,7 +4,7 @@ import { Effect } from "effect"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { createServer } from "node:http"
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -41,6 +41,8 @@ describe("relay migration", () => {
     const target = join(root, "target")
     await mkdir(source)
     const database = new DatabaseSync(join(source, "cohall.db"))
+    // The relay keeps its database in WAL mode.
+    database.exec("PRAGMA journal_mode = WAL")
     database.exec("CREATE TABLE sample (value TEXT NOT NULL); INSERT INTO sample VALUES ('kept')")
     database.close()
     const token = "\\".repeat(512)
@@ -53,6 +55,7 @@ describe("relay migration", () => {
       process.env.COHALL_DATA_DIR = source
       const backedUp = await backupRelay(backup)
       expect(backedUp.warning).toContain("credentials")
+      expect((await readdir(backup)).sort()).toEqual(["cohall.db", "manifest.json", "owner-token"])
 
       process.env.COHALL_DATA_DIR = target
       const restored = await restoreRelay(backup)
