@@ -453,6 +453,7 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
         taskId: task.id,
         prompt: promptFor(task, configuration.name, state.supportsClarification, files),
         cwd: workspace.cwd,
+        ...(files === undefined ? {} : { filesDirectory: files.directory }),
         beforeSpawn: workspace.validate,
         ...(sessionId === undefined ? {} : { sessionId }),
         ...(task.runId === undefined ? {} : { runId: task.runId }),

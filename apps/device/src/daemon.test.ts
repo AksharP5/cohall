@@ -912,6 +912,8 @@ describe("device relay connection", () => {
         })
         const output = options.prompt.match(/^Output directory: (.+)$/m)?.[1]
         if (output === undefined) throw new Error("Missing output directory")
+        if (options.filesDirectory !== dirname(output))
+          throw new Error("Task files are not shared with the provider")
         await writeFile(join(output, "report.txt"), "answer")
         return { result: "Done" }
       }),

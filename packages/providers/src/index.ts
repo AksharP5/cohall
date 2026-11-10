@@ -32,6 +32,8 @@ export interface RunOptions {
   readonly runId?: string
   readonly prompt: string
   readonly cwd: string
+  /** Task file directory outside cwd that the provider must be able to read and write. */
+  readonly filesDirectory?: string
   readonly beforeSpawn?: () => Promise<void>
   readonly sessionId?: string
   readonly model?: string
@@ -229,6 +231,7 @@ const claudeCommand = (options: RunOptions): ReadonlyArray<string> => [
   "-p",
   "--output-format",
   "json",
+  ...(options.filesDirectory === undefined ? [] : ["--add-dir", options.filesDirectory]),
   ...(options.model === undefined ? [] : ["--model", options.model]),
   ...(options.sessionId === undefined ? [] : ["--resume", options.sessionId]),
 ]
@@ -247,6 +250,7 @@ const opencodeCommand = (options: RunOptions, promptPath: string): ReadonlyArray
 interface PreparedCommand {
   readonly command: ReadonlyArray<string>
   readonly input?: string
+  readonly env?: NodeJS.ProcessEnv
   readonly cleanup: () => Promise<void>
 }
 
@@ -274,6 +278,16 @@ const prepareCommand = async (options: RunOptions): Promise<PreparedCommand> => 
         await writeFile(promptPath, options.prompt, { mode: 0o600 })
         return {
           command: opencodeCommand(options, promptPath),
+          // Without approval, OpenCode rejects paths outside the workspace in non-interactive runs.
+          ...(options.filesDirectory === undefined || process.env.OPENCODE_PERMISSION !== undefined
+            ? {}
+            : {
+                env: {
+                  OPENCODE_PERMISSION: JSON.stringify({
+                    external_directory: { [join(options.filesDirectory, "*")]: "allow" },
+                  }),
+                },
+              }),
           cleanup: () => rm(directory, { recursive: true, force: true }),
         }
       } catch (cause) {
@@ -617,6 +631,7 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
           cwd: options.cwd,
           env: {
             ...providerEnvironment(),
+            ...prepared.env,
             COHALL_PROVIDER: options.provider,
             COHALL_THREAD_ID: options.threadId,
             ...(options.taskId === undefined ? {} : { COHALL_TASK_ID: options.taskId }),
