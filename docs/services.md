@@ -320,6 +320,9 @@ cohall trace <task-id>
 cohall trace <task-id> --follow
 ```
 
+After the first trace, `--follow` keeps polling through relay restarts and
+gateway errors until the task finishes.
+
 Traces omit prompts, final results, credentials, and provider session IDs. They
 include progress and clarification text; inspect those fields before sharing.
 
