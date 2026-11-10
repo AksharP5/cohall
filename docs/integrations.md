@@ -5,9 +5,11 @@ that prefer native tool discovery. Both create the same relay tasks; use one
 entry point per task.
 
 When no target is selected, automatic routing prefers online devices and matching
-workspace roots and capabilities. Workspace matching uses the target device's
-path rules, including Windows drive letters and separators. The worker validates
-workspace access before starting the task.
+workspace roots and capabilities. A thread follow-up prefers the device that ran
+the thread's latest turn while it is online, so its provider session resumes.
+Workspace matching uses the target device's path rules, including Windows drive
+letters and separators. The worker validates workspace access before starting
+the task.
 
 CLI prompt and context files are limited to 128 KiB each. Message files allow
 512 KiB and at most 131072 characters. Cohall enforces these limits while reading,

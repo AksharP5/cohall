@@ -310,7 +310,8 @@ worker before using deadlines. Named Grok Bots do not support them.
 See [task deadlines](docs/integrations.md#task-deadlines) for details.
 
 Reuse the returned `thread_id` for follow-ups so the target resumes its provider
-session. Queued follow-ups pick up the preceding turn's session when they start,
+session. Without `--target`, a follow-up prefers that device while it is online.
+Queued follow-ups pick up the preceding turn's session when they start,
 including after a worker restart.
 
 Delegated child tasks inherit their parent's thread. Cohall routes them away

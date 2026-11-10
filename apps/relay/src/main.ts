@@ -193,6 +193,7 @@ const scoreDevice = (
   device: Device,
   input: CreateTaskInput,
   sourceDeviceId: DeviceIdType | undefined,
+  threadDeviceId: DeviceIdType | undefined,
 ): number => {
   const prompt = `${input.prompt} ${input.context ?? ""}`.toLowerCase()
   const needsXcode = /\b(xcode|ios|macos|swiftui|app store)\b/.test(prompt)
@@ -214,6 +215,9 @@ const scoreDevice = (
     (needsBrowser && device.capabilities.some((capability) => capability.id === "browser-session")
       ? 40
       : 0) +
+    // Follow-ups resume the thread's provider session on its device, unless it is offline
+    // or another device holds the requested workspace.
+    (threadDeviceId === device.id ? 70 : 0) +
     (sourceDeviceId === device.id ? -5 : 0)
   )
 }
@@ -350,11 +354,20 @@ export const resolveDelegation = (
         message: `Bot ${input.botId} is advertised by more than one device; select a device`,
       })
     }
+    const threadDeviceId =
+      parent === undefined && input.threadId !== undefined && provider !== "grok-bot"
+        ? yield* store
+            .threadDevice(input.threadId)
+            .pipe(
+              Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })),
+            )
+        : undefined
     const selected = candidates
       .filter((device) => !blocked.has(device.id))
       .sort(
         (left, right) =>
-          scoreDevice(right, input, sourceDeviceId) - scoreDevice(left, input, sourceDeviceId),
+          scoreDevice(right, input, sourceDeviceId, threadDeviceId) -
+          scoreDevice(left, input, sourceDeviceId, threadDeviceId),
       )[0]
     if (selected === undefined) {
       return yield* new RequestError({
