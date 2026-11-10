@@ -112,6 +112,27 @@ it("prefers an idle device unless a busy one holds the workspace", async () => {
   }
 })
 
+it("treats a device as busy as soon as the relay dispatches work to it", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    // Workers report busy on their next heartbeat; the relay already knows it dispatched work.
+    const first = device("a-first")
+    const second = device("b-second")
+    await Effect.runPromise(store.upsertDevice(first))
+    await Effect.runPromise(store.upsertDevice(second))
+    const task = await Effect.runPromise(
+      store.createDelegation({ prompt: "Run the test suite" }, first.id, "owner"),
+    )
+    await Effect.runPromise(store.assignTask(task.id))
+    expect(
+      await runtime.runPromise(resolveDelegation({ prompt: "Run the lint suite" })),
+    ).toMatchObject({ targetDeviceId: second.id })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("keeps untargeted thread follow-ups on the thread's device", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {

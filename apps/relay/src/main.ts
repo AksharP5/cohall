@@ -194,6 +194,7 @@ const scoreDevice = (
   input: CreateTaskInput,
   sourceDeviceId: DeviceIdType | undefined,
   threadDeviceId: DeviceIdType | undefined,
+  occupied: ReadonlySet<DeviceIdType>,
 ): number => {
   const prompt = `${input.prompt} ${input.context ?? ""}`.toLowerCase()
   const needsXcode = /\b(xcode|ios|macos|swiftui|app store)\b/.test(prompt)
@@ -210,7 +211,11 @@ const scoreDevice = (
     })
   return (
     // Idle devices win ties; workspace, capability and thread matches still outrank load.
-    (device.status === "online" ? 100 : device.status === "busy" ? 90 : 0) +
+    (device.status === "offline"
+      ? 0
+      : device.status === "busy" || occupied.has(device.id)
+        ? 90
+        : 100) +
     (matchesWorkspace ? 80 : 0) +
     (needsXcode && device.capabilities.some((capability) => capability.id === "xcode") ? 60 : 0) +
     (needsBrowser && device.capabilities.some((capability) => capability.id === "browser-session")
@@ -390,12 +395,22 @@ export const resolveDelegation = (
               Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })),
             )
         : undefined
+    // Workers report busy on a 15-second heartbeat; the relay already knows what it dispatched.
+    const occupied = new Set(
+      (yield* store
+        .deviceOverview()
+        .pipe(
+          Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })),
+        ))
+        .filter((device) => device.active + device.cancelling > 0)
+        .map((device) => device.id),
+    )
     const selected = candidates
       .filter((device) => !blocked.has(device.id))
       .sort(
         (left, right) =>
-          scoreDevice(right, input, sourceDeviceId, threadDeviceId) -
-          scoreDevice(left, input, sourceDeviceId, threadDeviceId),
+          scoreDevice(right, input, sourceDeviceId, threadDeviceId, occupied) -
+          scoreDevice(left, input, sourceDeviceId, threadDeviceId, occupied),
       )[0]
     if (selected === undefined) {
       return yield* new RequestError({
