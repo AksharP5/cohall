@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.12.13](https://github.com/AksharP5/cohall/compare/v0.12.12...v0.12.13) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cli:** keep following traces through relay restarts ([#279](https://github.com/AksharP5/cohall/issues/279)) ([2c2b48c](https://github.com/AksharP5/cohall/commit/2c2b48c36aab293101c8750388c04488e4d8e644))
+* **device:** stop overdue work promptly after the device wakes from sleep ([#286](https://github.com/AksharP5/cohall/issues/286)) ([018a506](https://github.com/AksharP5/cohall/commit/018a506a222981c0b7ca4ea1a09819b6f57726b2))
+* **mcp:** keep OpenCode waiting for delegated work past 60 seconds ([#296](https://github.com/AksharP5/cohall/issues/296)) ([e014f31](https://github.com/AksharP5/cohall/commit/e014f31f4290b5008a7f1fad1a030bd5f5847741))
+* **mcp:** let Codex wait for delegated work past 5 minutes ([#298](https://github.com/AksharP5/cohall/issues/298)) ([c6dfc72](https://github.com/AksharP5/cohall/commit/c6dfc72236e31107254ae0ad93d12157ccbb9caf))
+* **providers:** keep thread follow-ups working after the provider loses its session ([#292](https://github.com/AksharP5/cohall/issues/292)) ([2f78cc4](https://github.com/AksharP5/cohall/commit/2f78cc485c798d89b690713bb8e422b02b573b64))
+* **providers:** run OpenCode in the task workspace when the worker was started from a terminal ([#294](https://github.com/AksharP5/cohall/issues/294)) ([b0f1655](https://github.com/AksharP5/cohall/commit/b0f1655e41cef99355ee49a3024f4d4e3c028e7d))
+* **providers:** stop OpenCode follow-ups from hanging when the workspace changes ([#300](https://github.com/AksharP5/cohall/issues/300)) ([e725951](https://github.com/AksharP5/cohall/commit/e725951a009fbd4b07f61f9febef310f02eecb30))
+* **relay:** keep delegated child tasks within their parent's deadline ([#277](https://github.com/AksharP5/cohall/issues/277)) ([8f14865](https://github.com/AksharP5/cohall/commit/8f14865195eedae69f46d9052f6e1829c44f44be))
+* **relay:** keep relay backups to the three documented files ([#281](https://github.com/AksharP5/cohall/issues/281)) ([b4396a1](https://github.com/AksharP5/cohall/commit/b4396a1e059423a96bc26383583706283ef82149))
+* **relay:** reject untargeted follow-ups while the thread's device is offline ([#290](https://github.com/AksharP5/cohall/issues/290)) ([79a3514](https://github.com/AksharP5/cohall/commit/79a35143bffe16b2a12e43f3269c84e6b43c4377))
+* **relay:** route untargeted work to idle devices before busy ones ([#283](https://github.com/AksharP5/cohall/issues/283)) ([422799d](https://github.com/AksharP5/cohall/commit/422799dd7d52c08118f6449f7f75d3b3e361c04b))
+* **relay:** stop delegated child tasks when their parent is cancelled ([#288](https://github.com/AksharP5/cohall/issues/288)) ([06a3b1a](https://github.com/AksharP5/cohall/commit/06a3b1af07a9499ec2bb842f929bb32183a629fc))
+
 ## [0.12.12](https://github.com/AksharP5/cohall/compare/v0.12.11...v0.12.12) (2026-11-10)
 
 
