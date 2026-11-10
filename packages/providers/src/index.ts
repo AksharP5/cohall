@@ -59,6 +59,9 @@ const providerEnvironment = (): NodeJS.ProcessEnv => ({
   ...Object.fromEntries(
     Object.entries(process.env).filter(([name]) => {
       const key = platform() === "win32" ? name.toUpperCase() : name
+      // OpenCode works in $PWD over its real working directory, so the worker's own would send
+      // it outside the task workspace.
+      if (key === "PWD") return false
       return !key.startsWith("COHALL_") || key === "COHALL_CONFIG"
     }),
   ),

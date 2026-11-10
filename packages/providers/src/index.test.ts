@@ -396,6 +396,24 @@ it.skipIf(process.platform === "win32")(
   },
 )
 
+it.skipIf(process.platform === "win32")(
+  "runs OpenCode in the task workspace when the worker was started from another directory",
+  async () => {
+    // Like OpenCode itself, the fixture works in $PWD when it is set.
+    const directory = await providerFixture(
+      "opencode",
+      `console.log(JSON.stringify({ type: "text", part: { text: process.env.PWD ?? process.cwd() } }))`,
+    )
+    vi.stubEnv("PWD", tmpdir())
+
+    await expect(
+      Effect.runPromise(
+        run({ provider: "opencode", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).resolves.toEqual({ result: directory })
+  },
+)
+
 const openCodeText = (messageId: string, partId: string, content: string) => ({
   type: "text",
   timestamp: 1,
