@@ -150,7 +150,8 @@ accepts `expiresAt`. Task results return `expires_at`; relay task records and
 traces use `expiresAt`. Omit the field for work without a deadline.
 
 The deadline covers queueing, execution, and time awaiting clarification.
-Restarting or resuming a task keeps its original deadline. An expired task
+Coding tasks delegated from it inherit the deadline unless they set an earlier
+one. Restarting or resuming a task keeps its original deadline. An expired task
 fails with `Task deadline exceeded`. Tasks awaiting their first dispatch fail
 without contacting the worker. Tasks that may have reached a worker stay
 `cancelling` until it confirms termination. An offline worker
