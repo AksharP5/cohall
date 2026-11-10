@@ -86,6 +86,31 @@ it("explains when matching workers need file attachment support", async () => {
   }
 })
 
+it("prefers an idle device unless a busy one holds the workspace", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const busy = Device.make({
+      ...device("a-busy"),
+      status: "busy",
+      workspaces: [{ path: "/work/app", label: "App" }],
+    })
+    const idle = device("b-idle")
+    await Effect.runPromise(store.upsertDevice(busy))
+    await Effect.runPromise(store.upsertDevice(idle))
+    expect(
+      await runtime.runPromise(resolveDelegation({ prompt: "Summarize the changelog" })),
+    ).toMatchObject({ targetDeviceId: idle.id })
+    expect(
+      await runtime.runPromise(
+        resolveDelegation({ prompt: "Fix the build", workspace: "/work/app/src" }),
+      ),
+    ).toMatchObject({ targetDeviceId: busy.id })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("keeps untargeted thread follow-ups on the thread's online device", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {
