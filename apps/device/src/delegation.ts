@@ -23,7 +23,7 @@ import {
   type TaskTrace,
   type ThreadId as ThreadIdType,
 } from "@cohall/protocol"
-import { Effect, Schedule, Schema } from "effect"
+import { Effect, Schema } from "effect"
 import type { ClientConfiguration } from "./config.ts"
 
 export class DeviceSelectionError extends Schema.TaggedErrorClass<DeviceSelectionError>()(
@@ -321,6 +321,11 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
   )
 })
 
+// Known tasks survive relay restarts and proxy outages, so polls keep their last state.
+const isRelayOutage = (cause: unknown): boolean =>
+  cause instanceof RelayRequestError &&
+  (cause.status === undefined || [502, 503, 504].includes(cause.status))
+
 export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
   client: RelayClient,
   initial: Task | TaskId,
@@ -333,15 +338,10 @@ export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
     while (!isTerminalTask(task) && task.status !== "needs_input") {
       yield* Effect.sleep("1 second")
       const known: Task = task
-      // Accepted tasks survive relay restarts and proxy outages; the wait timeout bounds them.
-      task = yield* client.getTask(id).pipe(
-        Effect.catchIf(
-          (cause) =>
-            cause instanceof RelayRequestError &&
-            (cause.status === undefined || [502, 503, 504].includes(cause.status)),
-          () => Effect.succeed(known),
-        ),
-      )
+      // The wait timeout bounds polling through an outage.
+      task = yield* client
+        .getTask(id)
+        .pipe(Effect.catchIf(isRelayOutage, () => Effect.succeed(known)))
     }
     return task
   }).pipe(
@@ -377,12 +377,13 @@ export const followTaskTrace = Effect.fn("Cohall.followTaskTrace")(function* (
       return Effect.sync(() => onTrace(trace))
     }),
   )
-  return yield* poll.pipe(
-    Effect.repeat({
-      until: (trace) => terminalTaskStatuses.has(trace.status),
-      schedule: Schedule.spaced("1 second"),
-    }),
-  )
+  let trace = yield* poll
+  while (!terminalTaskStatuses.has(trace.status)) {
+    yield* Effect.sleep("1 second")
+    const known: TaskTrace = trace
+    trace = yield* poll.pipe(Effect.catchIf(isRelayOutage, () => Effect.succeed(known)))
+  }
+  return trace
 })
 
 export const threadContext = Effect.fn("Cohall.threadContext")(function* (

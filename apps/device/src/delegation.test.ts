@@ -6,6 +6,7 @@ import {
   Task,
   TaskId,
   TaskRequestId,
+  TaskTrace,
   ThreadContext,
   ThreadId,
   Timestamp,
@@ -19,6 +20,7 @@ import { ClientConfiguration } from "./config.ts"
 import {
   acknowledgedTaskResult,
   createDelegation,
+  followTaskTrace,
   listBots,
   taskResult,
   waitForTask,
@@ -164,6 +166,51 @@ it("keeps waiting through a relay restart but stops on a rejected credential", a
 
   await expect(waitThrough(outage)).resolves.toMatchObject({ status: "completed" })
   await expect(waitThrough(rejected)).rejects.toMatchObject({ status: 401 })
+})
+
+it("follows a trace through a relay restart but stops on a rejected credential", async () => {
+  const trace = (status: Task["status"]) =>
+    TaskTrace.make({
+      taskId: task.id,
+      threadId: task.threadId,
+      status,
+      provider: "codex",
+      targetDevice: device,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      events: [],
+      truncated: false,
+    })
+  const followThrough = (failure: RelayRequestError) => {
+    const responses = [
+      Effect.succeed(trace("running")),
+      Effect.fail(failure),
+      Effect.succeed(trace("completed")),
+    ]
+    // Like the real client, each run of the returned effect is a new request.
+    const traceTask = () => Effect.suspend(() => responses.shift() ?? Effect.die("Polled again"))
+    const relay = { ...client(), traceTask }
+    const statuses: Array<string> = []
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const following = yield* followTaskTrace(relay, task.id, (value) =>
+          statuses.push(value.status),
+        ).pipe(Effect.forkChild)
+        yield* TestClock.adjust("2 seconds")
+        yield* Fiber.join(following)
+        return statuses
+      }).pipe(Effect.provide(TestClock.layer())),
+    )
+  }
+
+  await expect(
+    followThrough(new RelayRequestError({ operation: "traceTask", message: "fetch failed" })),
+  ).resolves.toEqual(["running", "completed"])
+  await expect(
+    followThrough(
+      new RelayRequestError({ operation: "traceTask", status: 401, message: "Denied" }),
+    ),
+  ).rejects.toMatchObject({ status: 401 })
 })
 
 it("requires an explicit target or provider for keyed thread follow-ups", async () => {
