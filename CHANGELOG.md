@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.12.14](https://github.com/AksharP5/cohall/compare/v0.12.13...v0.12.14) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cli:** show client-only, name, and token-file setup options in help ([#306](https://github.com/AksharP5/cohall/issues/306)) ([b8e43f4](https://github.com/AksharP5/cohall/commit/b8e43f42db648ce50e3d90fbee1fb11f95d3ed2c))
+* **relay:** keep thread follow-ups on the thread's provider ([#309](https://github.com/AksharP5/cohall/issues/309)) ([31d9229](https://github.com/AksharP5/cohall/commit/31d922967af51d85e71aa7c7bad2997a331b8910))
+* **relay:** spread back-to-back untargeted tasks across idle devices ([#304](https://github.com/AksharP5/cohall/issues/304)) ([cca2289](https://github.com/AksharP5/cohall/commit/cca2289003197c6ca650778b145274dd7a6911cf))
+* **setup:** require a workspace when setting up a device without a terminal ([#302](https://github.com/AksharP5/cohall/issues/302)) ([2af7fef](https://github.com/AksharP5/cohall/commit/2af7fefd62d7d906aa50e27730618c55472291d3))
+
 ## [0.12.13](https://github.com/AksharP5/cohall/compare/v0.12.12...v0.12.13) (2026-11-10)
 
 
