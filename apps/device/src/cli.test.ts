@@ -133,6 +133,16 @@ it("lets a Codex-launched MCP server inherit the delegated task", async () => {
   })
 })
 
+it("lets Codex wait out a default Cohall MCP wait", async () => {
+  const output = vi.spyOn(console, "log").mockImplementation(() => undefined)
+  await runCli("integrations", [])
+  const { codex_mcp } = z
+    .object({ codex_mcp: z.string() })
+    .parse(JSON.parse(String(output.mock.lastCall?.[0])))
+  // MCP delegate and wait_task default to a documented 900-second wait.
+  expect(Number(codex_mcp.match(/^tool_timeout_sec = (\d+)$/m)?.[1])).toBeGreaterThan(900)
+})
+
 it("prints one compact JSON snapshot when a device watch is redirected", async () => {
   await temporary()
   const overview = [{ name: "worker" }]

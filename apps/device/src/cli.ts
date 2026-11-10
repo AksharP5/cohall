@@ -738,6 +738,8 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         'command = "npx"',
         'args = ["-y", "@akshar5/cohall", "mcp"]',
         'env_vars = ["COHALL_CONFIG", "COHALL_THREAD_ID", "COHALL_TASK_ID", "COHALL_TASK_RUN_ID"]',
+        // Codex ends tool calls after 300 seconds by default; Cohall waits up to 900.
+        "tool_timeout_sec = 960",
       ].join("\n"),
       claude_mcp:
         "claude mcp add --transport stdio --scope user cohall -- npx -y @akshar5/cohall mcp",
