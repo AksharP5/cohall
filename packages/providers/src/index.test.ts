@@ -173,6 +173,32 @@ it.skipIf(process.platform === "win32")(
   },
 )
 
+it.skipIf(process.platform === "win32").each([
+  [
+    "claude-code",
+    (files: string) => ({ args: ["-p", "--output-format", "json", "--add-dir", files] }),
+  ],
+  [
+    "opencode",
+    (files: string) => ({
+      permission: JSON.stringify({ external_directory: { [join(files, "*")]: "allow" } }),
+    }),
+  ],
+] as const)("lets %s use task files outside its workspace", async (provider, expected) => {
+  const directory = await providerFixture(
+    provider === "claude-code" ? "claude" : provider,
+    `
+    const access = JSON.stringify({ args: process.argv.slice(2), permission: process.env.OPENCODE_PERMISSION })
+    console.log(JSON.stringify(${provider === "claude-code"} ? { result: access } : { type: "text", part: { text: access } }))
+  `,
+  )
+  const files = join(directory, "task-files")
+  const response = await Effect.runPromise(
+    run({ provider, threadId: "test", prompt: "test", cwd: directory, filesDirectory: files }),
+  )
+  expect(JSON.parse(response.result)).toMatchObject(expected(files))
+})
+
 const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknown>) => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-provider-events-"))
   directories.push(directory)

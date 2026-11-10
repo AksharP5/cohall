@@ -64,6 +64,7 @@ export const readInputAttachments = async (
 }
 
 export interface TaskFiles {
+  readonly directory: string
   readonly input: string
   readonly output: string
   readonly inputNames: ReadonlyArray<string>
@@ -100,6 +101,7 @@ export const prepareTaskFiles = Effect.fn("TaskFiles.prepare")(function* (
     }).pipe(Effect.uninterruptible)
   }
   return {
+    directory: root,
     input,
     output,
     inputNames,

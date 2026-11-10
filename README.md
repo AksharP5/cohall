@@ -267,8 +267,9 @@ for MCP, limits, and worker instructions.
 
 Attach up to two explicit files to a coding task. Each file may be up to 256 KiB.
 The target receives them as temporary files and can return up to two files by
-writing them to the output directory named in its task prompt. List task files
-or download a file using the task ID:
+writing them to the output directory named in its task prompt. Claude Code
+returns files only when its own permission settings allow file edits. List task
+files or download a file using the task ID:
 
 ```bash
 cohall delegate --target @macbook --attach ./screenshot.png \
