@@ -209,7 +209,8 @@ const scoreDevice = (
       return child !== ".." && !child.startsWith(`..${paths.sep}`) && !paths.isAbsolute(child)
     })
   return (
-    (device.status === "offline" ? 0 : 100) +
+    // Idle devices win ties; workspace, capability and thread matches still outrank load.
+    (device.status === "online" ? 100 : device.status === "busy" ? 90 : 0) +
     (matchesWorkspace ? 80 : 0) +
     (needsXcode && device.capabilities.some((capability) => capability.id === "xcode") ? 60 : 0) +
     (needsBrowser && device.capabilities.some((capability) => capability.id === "browser-session")
