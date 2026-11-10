@@ -564,15 +564,59 @@ const processExists = (pid: number): boolean => {
   }
 }
 
-const waitForProcessGroup = async (pid: number, timeoutMs: number): Promise<boolean> => {
+const waitForProcessGroups = async (
+  groups: ReadonlyArray<number>,
+  timeoutMs: number,
+): Promise<boolean> => {
   const deadline = Date.now() + timeoutMs
-  while (processExists(pid)) {
+  while (groups.some(processExists)) {
     if (Date.now() >= deadline) {
       return false
     }
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   return true
+}
+
+// Provider tools such as OpenCode's shell start commands in their own sessions, outside the
+// provider's process group. Find their groups while they are still descendants of the provider.
+const processGroups = (pid: number): Promise<ReadonlyArray<number>> =>
+  new Promise((resolve) => {
+    execFile("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid="], (error, stdout) => {
+      const children = new Map<number, Array<{ readonly pid: number; readonly pgid: number }>>()
+      for (const line of error === null ? stdout.split("\n") : []) {
+        const [child, parent, pgid] = line.trim().split(/\s+/).map(Number)
+        if (child === undefined || parent === undefined || pgid === undefined) continue
+        children.set(parent, [...(children.get(parent) ?? []), { pid: child, pgid }])
+      }
+      const groups = new Set([pid])
+      const pending = [pid]
+      for (let parent = pending.pop(); parent !== undefined; parent = pending.pop()) {
+        for (const child of children.get(parent) ?? []) {
+          if (child.pgid > 1) groups.add(child.pgid)
+          pending.push(child.pid)
+        }
+      }
+      resolve([...groups])
+    })
+  })
+
+const signalGroups = (groups: ReadonlyArray<number>, signal: NodeJS.Signals): void => {
+  for (const group of groups) {
+    try {
+      process.kill(-group, signal)
+    } catch (cause) {
+      if (
+        typeof cause === "object" &&
+        cause !== null &&
+        "code" in cause &&
+        cause.code === "ESRCH"
+      ) {
+        continue
+      }
+      throw cause
+    }
+  }
 }
 
 const terminateWindowsTree = (pid: number): Promise<void> =>
@@ -591,19 +635,13 @@ const terminateProcessTree = async (pid: number): Promise<void> => {
     await terminateWindowsTree(pid)
     return
   }
-  try {
-    process.kill(-pid, "SIGTERM")
-  } catch (cause) {
-    if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === "ESRCH") {
-      return
-    }
-    throw cause
-  }
-  if (await waitForProcessGroup(pid, 5_000)) {
+  const groups = await processGroups(pid)
+  signalGroups(groups, "SIGTERM")
+  if (await waitForProcessGroups(groups, 5_000)) {
     return
   }
-  process.kill(-pid, "SIGKILL")
-  await waitForProcessGroup(pid, 1_000)
+  signalGroups(groups, "SIGKILL")
+  await waitForProcessGroups(groups, 1_000)
 }
 
 const settlePromise = <A>(promise: Promise<A>) =>

@@ -500,9 +500,10 @@ for (const provider of ["codex", "opencode"] as const) {
   })
 }
 
-it.skipIf(process.platform === "win32")(
-  "cancellation waits for the provider process tree to terminate",
-  async () => {
+// OpenCode runs shell commands in their own session, outside the provider's process group.
+it.skipIf(process.platform === "win32").each([false, true])(
+  "cancellation waits for the provider process tree to terminate (detached child: %s)",
+  async (detached) => {
     const directory = await mkdtemp(join(tmpdir(), "cohall-provider-tree-"))
     directories.push(directory)
     const childPidPath = join(directory, "child.pid")
@@ -513,7 +514,7 @@ it.skipIf(process.platform === "win32")(
 const { spawn } = require("node:child_process")
 const { writeFileSync } = require("node:fs")
 process.on("SIGTERM", () => setTimeout(() => process.exit(0), 100))
-const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", detached: ${detached} })
 writeFileSync(process.env.PROVIDER_CHILD_PID, JSON.stringify({ parent: process.pid, child: child.pid }))
 setInterval(() => {}, 1000)
 `,
