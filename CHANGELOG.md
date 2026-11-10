@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.12.11](https://github.com/AksharP5/cohall/compare/v0.12.10...v0.12.11) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cli:** accept Markdown lists and other dash-led option values ([#253](https://github.com/AksharP5/cohall/issues/253)) ([0299b48](https://github.com/AksharP5/cohall/commit/0299b483fbb3cdd54e601edf1188aa838ed2c561))
+* **providers:** let Claude Code and OpenCode read and return task files ([#249](https://github.com/AksharP5/cohall/issues/249)) ([b41a8bc](https://github.com/AksharP5/cohall/commit/b41a8bc0029957d3fc7ad2f217e0b27d37a8eee9))
+* **relay:** explain which devices block all-device upgrades ([#257](https://github.com/AksharP5/cohall/issues/257)) ([76c864f](https://github.com/AksharP5/cohall/commit/76c864f27df5ff378e83a0077180ae6b6808b702))
+* **tasks:** keep waiting for results through relay restarts ([#255](https://github.com/AksharP5/cohall/issues/255)) ([02bafb2](https://github.com/AksharP5/cohall/commit/02bafb2d809befd59fe1651ad9d75027e7ba17c9))
+* **upgrade:** restart Linux workers once during all-device upgrades ([#251](https://github.com/AksharP5/cohall/issues/251)) ([469636d](https://github.com/AksharP5/cohall/commit/469636dd419a1b3d958fe6218974d946998e1217))
+
 ## [0.12.10](https://github.com/AksharP5/cohall/compare/v0.12.9...v0.12.10) (2026-11-09)
 
 
