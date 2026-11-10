@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.12](https://github.com/AksharP5/cohall/compare/v0.12.11...v0.12.12) (2026-11-10)
+
+
+### Bug Fixes
+
+* **client:** show why the relay could not be reached ([#269](https://github.com/AksharP5/cohall/issues/269)) ([9fec7e3](https://github.com/AksharP5/cohall/commit/9fec7e35e18b2720ed28002d8920741b2c8aaa62))
+* **device:** log why the relay rejects the worker connection ([#267](https://github.com/AksharP5/cohall/issues/267)) ([5b9f224](https://github.com/AksharP5/cohall/commit/5b9f2249d95bb640958cc95d51cbd261706788dc))
+* **mcp:** let Codex pass delegated task IDs to Cohall MCP ([#271](https://github.com/AksharP5/cohall/issues/271)) ([cf1d77a](https://github.com/AksharP5/cohall/commit/cf1d77a82722fe60ceb37534ab5566e49a397414))
+* **providers:** read Claude Code results when verbose output is on ([#275](https://github.com/AksharP5/cohall/issues/275)) ([7b5092b](https://github.com/AksharP5/cohall/commit/7b5092b44037c50fdd8fd2e9b02191acfca7841f))
+* **providers:** stop OpenCode shell commands when a task is cancelled ([#273](https://github.com/AksharP5/cohall/issues/273)) ([0b915c1](https://github.com/AksharP5/cohall/commit/0b915c1a10dd1696d6f85c2a1907e5c5699f92b4))
+* **relay:** keep untargeted thread follow-ups on the thread's device ([#262](https://github.com/AksharP5/cohall/issues/262)) ([0a86ec3](https://github.com/AksharP5/cohall/commit/0a86ec3b5602536b2f2e9c5822f52ada09627f6c))
+* **setup:** keep the worker credential when repairing client access ([#265](https://github.com/AksharP5/cohall/issues/265)) ([8673caf](https://github.com/AksharP5/cohall/commit/8673caf2df9efcb4ace3df3eba4ed75d2e5d04a6))
+
 ## [0.12.11](https://github.com/AksharP5/cohall/compare/v0.12.10...v0.12.11) (2026-11-10)
 
 
