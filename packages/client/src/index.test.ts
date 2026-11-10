@@ -59,6 +59,17 @@ it("reads compact device status without fetching full rosters and rejects unsupp
   }
 })
 
+it("explains why the relay could not be reached", async () => {
+  const server = createServer()
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const { port } = server.address() as AddressInfo
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  const client = make({ baseUrl: `http://127.0.0.1:${port}`, token: "test" })
+  await expect(Effect.runPromise(client.devices())).rejects.toThrow(
+    `fetch failed: connect ECONNREFUSED 127.0.0.1:${port}`,
+  )
+})
+
 it("assembles large device pages and restores name ordering", async () => {
   const description =
     "A research assistant for planning, documentation, review, and implementation. "

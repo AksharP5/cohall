@@ -170,6 +170,17 @@ const responseMessage = async (response: Response, operation: string): Promise<s
     : `${response.status} ${response.statusText}`.trim()
 }
 
+const requestError = (operation: string, cause: unknown): RelayClientError => {
+  if (cause instanceof RelayRequestError || cause instanceof RelayDecodeError) return cause
+  if (!(cause instanceof Error)) return new RelayRequestError({ operation, message: String(cause) })
+  // fetch reports every network failure as "fetch failed" and keeps the reason in its cause.
+  const reason = cause.cause instanceof Error ? cause.cause.message : ""
+  return new RelayRequestError({
+    operation,
+    message: reason === "" ? cause.message : `${cause.message}: ${reason}`,
+  })
+}
+
 export const make = (options: RelayClientOptions): Interface => {
   const baseUrl = normalizeBaseUrl(options.baseUrl)
 
@@ -201,13 +212,7 @@ export const make = (options: RelayClientOptions): Interface => {
           }
           return jsonBody(response, operation, maxResponseBytes)
         },
-        catch: (cause) =>
-          cause instanceof RelayRequestError || cause instanceof RelayDecodeError
-            ? cause
-            : new RelayRequestError({
-                operation,
-                message: cause instanceof Error ? cause.message : String(cause),
-              }),
+        catch: (cause) => requestError(operation, cause),
       })
       return yield* Schema.decodeUnknownEffect(schema)(json).pipe(
         Effect.mapError((cause) => new RelayDecodeError({ operation, message: String(cause) })),
@@ -414,13 +419,7 @@ export const make = (options: RelayClientOptions): Interface => {
           }
           return bytes
         },
-        catch: (cause) =>
-          cause instanceof RelayRequestError || cause instanceof RelayDecodeError
-            ? cause
-            : new RelayRequestError({
-                operation: "RelayClient.readAttachment",
-                message: cause instanceof Error ? cause.message : String(cause),
-              }),
+        catch: (cause) => requestError("RelayClient.readAttachment", cause),
       }),
     inbox: () => request("RelayClient.inbox", "/api/inbox", TaskInbox),
     acknowledgeCompletion: (taskId) =>
@@ -505,13 +504,7 @@ export const exchangePairing = (
         }
         return jsonBody(response, operation)
       },
-      catch: (cause) =>
-        cause instanceof RelayRequestError || cause instanceof RelayDecodeError
-          ? cause
-          : new RelayRequestError({
-              operation,
-              message: cause instanceof Error ? cause.message : String(cause),
-            }),
+      catch: (cause) => requestError(operation, cause),
     })
     return yield* Schema.decodeUnknownEffect(PairingResult)(json).pipe(
       Effect.mapError((cause) => new RelayDecodeError({ operation, message: String(cause) })),
