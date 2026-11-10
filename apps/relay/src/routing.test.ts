@@ -86,6 +86,30 @@ it("explains when matching workers need file attachment support", async () => {
   }
 })
 
+it("keeps untargeted thread follow-ups on the thread's online device", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const other = device("a-other")
+    const original = device("b-original")
+    await Effect.runPromise(store.upsertDevice(other))
+    await Effect.runPromise(store.upsertDevice(original))
+    const first = await Effect.runPromise(
+      store.createDelegation({ prompt: "Find three ideas" }, original.id, "owner"),
+    )
+    const followUp = { prompt: "Expand the second idea", threadId: first.threadId }
+    expect(await runtime.runPromise(resolveDelegation(followUp))).toMatchObject({
+      targetDeviceId: original.id,
+    })
+    await Effect.runPromise(store.upsertDevice({ ...original, status: "offline" }))
+    expect(await runtime.runPromise(resolveDelegation(followUp))).toMatchObject({
+      targetDeviceId: other.id,
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("routes child tasks away from their parent and inherits only that parent's thread", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {

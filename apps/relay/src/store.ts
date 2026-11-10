@@ -363,6 +363,10 @@ export interface Interface {
     deviceId: DeviceId,
     provider: Provider,
   ) => Effect.Effect<string | undefined, PersistenceError>
+  /** The device that ran the thread's latest top-level coding turn. */
+  readonly threadDevice: (
+    threadId: ThreadId,
+  ) => Effect.Effect<DeviceId | undefined, PersistenceError>
   readonly createPairing: (
     input: CreatePairingInput,
   ) => Effect.Effect<PairingCredential, PersistenceError>
@@ -2429,6 +2433,21 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return row?.session_id
   })
 
+  const threadDevice = Effect.fn("RelayStore.threadDevice")(function* (threadId: ThreadId) {
+    const row = yield* Effect.try({
+      try: () =>
+        db
+          .query<{ readonly target_device_id: DeviceId }, [string]>(
+            `SELECT target_device_id FROM tasks
+             WHERE thread_id = ? AND parent_task_id IS NULL AND provider <> 'grok-bot'
+             ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+          )
+          .get(threadId),
+      catch: operationError("RelayStore.threadDevice"),
+    })
+    return row?.target_device_id
+  })
+
   const createPairing = Effect.fn("RelayStore.createPairing")(function* (
     input: CreatePairingInput,
   ) {
@@ -2696,6 +2715,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     failOperation,
     requeueOperationsFor,
     sessionFor,
+    threadDevice,
     createPairing,
     exchangePairing,
     authenticateSession,
