@@ -99,3 +99,80 @@ it("stops a coding run at its deadline while disconnected and replays its acknow
     provider.mockRestore()
   }
 }, 8_000)
+
+it("stops a coding run soon after the device wakes past its deadline", async () => {
+  vi.useFakeTimers({
+    toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  })
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>((resolve) => server.once("listening", resolve))
+  const address = server.address()
+  if (address === null || typeof address === "string") throw new Error("Missing server address")
+  const deviceId = DeviceId.make(crypto.randomUUID())
+  const task = Task.make({
+    id: makeTaskId(),
+    threadId: makeThreadId(),
+    targetDeviceId: deviceId,
+    runId: TaskRunId.make(crypto.randomUUID()),
+    prompt: "Keep working",
+    provider: "codex",
+    status: "assigned",
+    createdAt: now(),
+    updatedAt: now(),
+    expiresAt: Timestamp.make(new Date(Date.now() + 10 * 60_000).toISOString()),
+  })
+  const controller = new AbortController()
+  const started = Promise.withResolvers<void>()
+  let stopped = false
+  const provider = vi.spyOn(Providers, "run").mockImplementation(() =>
+    Effect.sync(() => started.resolve()).pipe(
+      Effect.andThen(Effect.never),
+      Effect.onInterrupt(() =>
+        Effect.sync(() => {
+          stopped = true
+        }),
+      ),
+    ),
+  )
+  server.on("connection", (socket) => {
+    socket.on("message", (message) => {
+      const event = Schema.decodeUnknownSync(SocketEvent)(JSON.parse(message.toString()))
+      if (event._tag === "Authenticate")
+        socket.send(
+          JSON.stringify({
+            _tag: "Connected",
+            serverVersion: "test",
+            connectedAt: now(),
+            taskDeadlines: true,
+          }),
+        )
+      if (event._tag === "DeviceHello") socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+    })
+  })
+  const daemon = Effect.runPromise(
+    runDaemon(
+      DeviceConfiguration.make({
+        relayUrl: `http://127.0.0.1:${address.port}`,
+        token: "device-token",
+        id: deviceId,
+        name: "sleeping-worker",
+        workspaces: [process.cwd()],
+      }),
+    ),
+    { signal: controller.signal },
+  ).catch(() => {})
+  try {
+    await started.promise
+    // Timers pause while the host sleeps, but the wall clock keeps moving.
+    vi.setSystemTime(Date.now() + 60 * 60_000)
+    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.waitFor(() => expect(stopped).toBe(true))
+  } finally {
+    controller.abort()
+    await daemon
+    for (const socket of server.clients) socket.terminate()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    provider.mockRestore()
+    vi.useRealTimers()
+  }
+})

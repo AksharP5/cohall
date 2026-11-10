@@ -378,7 +378,8 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
       controller.abort()
       return
     }
-    deadlineTimer = setTimeout(enforceDeadline, Math.min(remaining, 2_147_483_647))
+    // Timers pause while the host sleeps, so recheck the wall clock regularly.
+    deadlineTimer = setTimeout(enforceDeadline, Math.min(remaining, heartbeatIntervalMs))
   }
   enforceDeadline()
   send(
