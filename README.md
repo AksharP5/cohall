@@ -310,7 +310,9 @@ worker before using deadlines. Named Grok Bots do not support them.
 See [task deadlines](docs/integrations.md#task-deadlines) for details.
 
 Reuse the returned `thread_id` for follow-ups so the target resumes its provider
-session. Without `--target`, a follow-up prefers that device while it is online.
+session. Without `--target`, a follow-up prefers that device. If it is offline,
+Cohall rejects the follow-up instead of starting over on another device; pass
+`--target` to queue it for that device or to start a new session on another.
 Queued follow-ups pick up the preceding turn's session when they start,
 including after a worker restart.
 
