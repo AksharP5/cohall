@@ -230,6 +230,47 @@ it.skipIf(process.platform === "win32")(
   },
 )
 
+// Each CLI's real output for `resume` of a session it no longer has.
+it.skipIf(process.platform === "win32").each([
+  [
+    "codex",
+    "Error: thread/resume: thread/resume failed: no rollout found for thread id gone (code -32600)",
+    { type: "thread.started", thread_id: "new" },
+    { type: "item.completed", item: { type: "agent_message", text: "Done." } },
+  ],
+  [
+    "claude-code",
+    "No conversation found with session ID: gone",
+    { result: "Done.", session_id: "new" },
+  ],
+  [
+    "opencode",
+    "\u001b[91m\u001b[1mError: \u001b[0mSession not found",
+    { type: "text", sessionID: "new", part: { text: "Done." } },
+  ],
+] as const)(
+  "starts a new %s session when the thread's saved session no longer exists",
+  async (provider, missing, ...events) => {
+    const directory = await providerFixture(
+      provider === "claude-code" ? "claude" : provider,
+      `
+    if (process.argv.includes("gone")) {
+      process.stderr.write(${JSON.stringify(missing)})
+      process.exit(1)
+    }
+    for (const event of ${JSON.stringify(events)}) console.log(JSON.stringify(event))
+  `,
+    )
+    const turn = await Effect.runPromise(
+      run({ provider, threadId: "test", prompt: "test", cwd: directory, sessionId: "gone" }),
+    )
+    expect(turn.sessionId).toBe("new")
+    expect(turn.result).toMatch(
+      /^Done\.\n\n\[Started a new \w+ session: .+ did not see earlier turns\.\]$/,
+    )
+  },
+)
+
 const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknown>) => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-provider-events-"))
   directories.push(directory)

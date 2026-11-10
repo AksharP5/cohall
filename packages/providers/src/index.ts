@@ -653,7 +653,7 @@ const settlePromise = <A>(promise: Promise<A>) =>
     (error: unknown) => ({ _tag: "Failure", error }) as const,
   )
 
-export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError> =>
+const runOnce = (options: RunOptions): Effect.Effect<RunResult, ProviderError> =>
   Effect.callback((resume, signal) => {
     const running = (async () => {
       const executable = findExecutable(executables[options.provider])
@@ -810,3 +810,43 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
       ),
     )
   })
+
+// What each CLI prints, before doing any work, when asked to resume a session it no longer has.
+// OpenCode's message names no session, so it must be the whole error rather than part of one.
+const missingSession = {
+  codex: (message: string, sessionId: string) =>
+    message.includes(`no rollout found for thread id ${sessionId}`),
+  "claude-code": (message: string, sessionId: string) =>
+    message.includes(`No conversation found with session ID: ${sessionId}`),
+  opencode: (message: string) => message.trimEnd().endsWith("Session not found"),
+} satisfies Record<CliProvider, (message: string, sessionId: string) => boolean>
+
+/**
+ * Runs one provider turn, resuming `sessionId` when given. Providers prune old sessions, and a
+ * worker can move to another machine or account, so a turn whose session is gone starts a new
+ * session and says so in its result rather than failing every later turn of the thread.
+ */
+export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError> => {
+  const { sessionId, ...fresh } = options
+  return runOnce(options).pipe(
+    Effect.catchIf(
+      (error) =>
+        sessionId !== undefined &&
+        error._tag === "CohallProvider.RunError" &&
+        missingSession[options.provider](error.message, sessionId),
+      () =>
+        runOnce({
+          ...fresh,
+          prompt: `Earlier turns of this thread are no longer available on this device. If this task depends on them, say so or request input instead of guessing.\n\n${options.prompt}`,
+        }).pipe(
+          Effect.map((turn) => {
+            const notice = `\n\n[Started a new ${executables[options.provider]} session: this thread's previous session no longer exists on this device, so this turn did not see earlier turns.]`
+            return {
+              ...turn,
+              result: `${turn.result.slice(0, maxResultBytes - notice.length)}${notice}`,
+            }
+          }),
+        ),
+    ),
+  )
+}
