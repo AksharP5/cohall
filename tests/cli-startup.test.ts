@@ -56,6 +56,9 @@ it("prints version and help without loading runtime dependencies", async () => {
     const help = await execute(process.execPath, [entrypoint, "--help"])
     expect(help.stdout).toContain("Usage:")
     expect(help.stdout).toContain("cohall delegate")
+    // Client-only setup is how requesters without a worker join; help must show it.
+    expect(help.stdout).toContain("[--client-only | --service]")
+    expect(help.stdout).toContain("(--workspace <path> | --client-only)")
     for (const args of [[], ["help"], ["-h"], ["device", "--help"], ["mcp", "help"]]) {
       const result = await execute(process.execPath, [entrypoint, ...args])
       expect(result.stdout).toBe(help.stdout)

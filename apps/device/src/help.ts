@@ -2,10 +2,13 @@ const help = `Cohall connects agents running on your own devices.
 
 Usage:
   cohall onboard
-  cohall init [--relay url] [--workspace path] [--providers list] [--service]
-  cohall join --relay <url> --workspace <path> [--providers list] [--token-file <path>]
+  cohall init [--relay url] [--name name] [--workspace path] [--providers list]
+              [--client-only | --service] [--token-file <path>]
+  cohall join --relay <url> (--workspace <path> | --client-only) [--name name]
+              [--providers list] [--token-file <path>]
   cohall configure [--relay url] [--name name] [--description text] [--workspace path]
                    [--providers codex,opencode|auto] [--model id]
+                   [--sandbox read-only|workspace-write|danger-full-access]
                    [--grok-gateway path]
   cohall config
   cohall devices [--watch [--interval seconds]]
