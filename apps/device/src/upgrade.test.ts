@@ -1465,6 +1465,62 @@ describe("managed service upgrades", () => {
     expect(invocations.some((invocation) => invocation.includes(" restart "))).toBe(false)
   })
 
+  it("restarts a delegated worker once when systemd stops its restart command", async () => {
+    const root = await temporaryDirectory()
+    const entrypoint = join(root, "lib/node_modules/@akshar5/cohall/bin/cohall.js")
+    const metadata = join(dirname(dirname(entrypoint)), "package.json")
+    const statePath = join(root, "upgrade-restart.json")
+    await mkdir(dirname(entrypoint), { recursive: true })
+    await writeFile(entrypoint, "")
+    await npmGlobalCommand(entrypoint, "linux")
+    await writeFile(metadata, JSON.stringify({ name: packageName, version: "1.2.2" }))
+    const restarts: Array<string> = []
+    const runner: CommandRunner = {
+      run: async (command, arguments_) => {
+        if (arguments_.includes("is-active"))
+          return {
+            exitCode: arguments_.includes("cohall-device.service") ? 0 : 3,
+            stdout: "",
+            stderr: "",
+          }
+        if (arguments_.includes("show"))
+          return {
+            exitCode: 0,
+            stdout: `{ path=${entrypoint} ; argv[]=${entrypoint} device ; }`,
+            stderr: "",
+          }
+        if (command === "npm")
+          await writeFile(metadata, JSON.stringify({ name: packageName, version: "1.2.3" }))
+        if (arguments_.includes("restart")) {
+          restarts.push(arguments_.join(" "))
+          // Stopping the worker's unit also terminates the systemctl client it started.
+          return { exitCode: 1, stdout: "", stderr: "", error: "Command was killed with SIGTERM" }
+        }
+        return success()
+      },
+    }
+    const options = {
+      target: "1.2.3",
+      restart: true,
+      dryRun: false,
+      delegated: true,
+      entrypoint,
+      platform: "linux" as const,
+      uid: 1000,
+      statePath,
+      runner,
+      resolveExecutable,
+    }
+    await expect(upgrade({ ...options, currentVersion: "1.2.2" })).rejects.toThrow("SIGTERM")
+
+    // The relay redelivers the unfinished operation to the replacement worker.
+    const resumed = await upgrade({ ...options, currentVersion: "1.2.3" })
+
+    expect(restarts).toEqual(["--user restart cohall-device.service"])
+    expect(resumed.services_restarted).toEqual(["systemd-user:cohall-device.service"])
+    await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
   it.each([true, false])(
     "verifies device restart recovery with delegated=%s",
     async (delegated) => {

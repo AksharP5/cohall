@@ -891,14 +891,18 @@ const restartServices = async (
         await checked(runner, invocation, 60_000)
       }
     } catch (cause) {
-      current = {
-        version: current.version,
-        fromVersion: current.fromVersion,
-        packageManager: current.packageManager,
-        pendingServices: current.pendingServices,
-        restartedServices: current.restartedServices,
+      // systemd stops this worker's own restart command along with the worker. Keep the marker so
+      // the replacement worker confirms the restart instead of restarting itself again.
+      if (!(service.device && preserveDeviceReceipt)) {
+        current = {
+          version: current.version,
+          fromVersion: current.fromVersion,
+          packageManager: current.packageManager,
+          pendingServices: current.pendingServices,
+          restartedServices: current.restartedServices,
+        }
+        await writeReceipt(statePath, current)
       }
-      await writeReceipt(statePath, current)
       throw cause
     }
     if (service.device && preserveDeviceReceipt) {
