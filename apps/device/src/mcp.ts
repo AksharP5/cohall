@@ -14,8 +14,11 @@ import {
   maxProgressNoteBytes,
   ThreadId,
   version,
+  type Task,
 } from "@cohall/protocol"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js"
+import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js"
 import { Effect, Schema } from "effect"
 import * as z from "zod/v4"
 import { once } from "node:events"
@@ -43,6 +46,30 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     token: configuration.token,
   })
   const server = new McpServer({ name: "cohall", version })
+
+  // MCP SDK hosts such as OpenCode end a request after 60 seconds unless progress arrives.
+  const waitReportingProgress = (
+    task: Task | TaskId,
+    timeoutSeconds: number,
+    { signal, _meta, sendNotification }: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  ) => {
+    const waiting = Effect.runPromise(waitForTask(client, task, timeoutSeconds), { signal })
+    const progressToken = _meta?.progressToken
+    if (progressToken === undefined) return waiting
+    const message = `Waiting for task ${typeof task === "string" ? task : task.id}`
+    let progress = 0
+    const report = () => {
+      progress += 1
+      // A closed host connection ends the wait separately; a lost heartbeat changes nothing.
+      sendNotification({
+        method: "notifications/progress",
+        params: { progressToken, progress, message },
+      }).catch(() => undefined)
+    }
+    report()
+    const heartbeat = setInterval(report, 20_000)
+    return waiting.finally(() => clearInterval(heartbeat))
+  }
 
   server.registerTool(
     "task_request_input",
@@ -214,8 +241,9 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
         timeout_seconds,
         deadline,
       },
-      { signal },
+      extra,
     ) => {
+      const { signal } = extra
       const attachments = await readInputAttachments(attachment_paths ?? [])
       const task = await Effect.runPromise(
         createDelegation(client, configuration, {
@@ -236,9 +264,7 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
         }),
         { signal },
       )
-      const completed = wait
-        ? await Effect.runPromise(waitForTask(client, task, timeout_seconds), { signal })
-        : task
+      const completed = wait ? await waitReportingProgress(task, timeout_seconds, extra) : task
       return output(
         wait ? await acknowledgedTaskResult(client, completed, signal) : taskResult(completed),
       )
@@ -339,15 +365,8 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
         timeout_seconds: z.number().int().min(5).max(86_400).default(900),
       },
     },
-    async ({ task_id, timeout_seconds }, { signal }) => {
-      return output(
-        taskResult(
-          await Effect.runPromise(waitForTask(client, TaskId.make(task_id), timeout_seconds), {
-            signal,
-          }),
-        ),
-      )
-    },
+    async ({ task_id, timeout_seconds }, extra) =>
+      output(taskResult(await waitReportingProgress(TaskId.make(task_id), timeout_seconds, extra))),
   )
 
   server.registerTool(

@@ -1,5 +1,6 @@
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import type { Progress } from "@modelcontextprotocol/sdk/types.js"
 import {
   Device,
   Task,
@@ -164,6 +165,23 @@ it.each(["delegate", "wait_task"] as const)(
     })
   },
 )
+
+it("reports progress during an MCP wait so SDK host timeouts can reset", async () => {
+  await withRelay("wait_task", async ({ client, task, poll, complete }) => {
+    const progress = Promise.withResolvers<Progress>()
+    const call = client.callTool(
+      { name: "wait_task", arguments: { task_id: task.id, timeout_seconds: 5 } },
+      undefined,
+      { onprogress: progress.resolve },
+    )
+    expect(await progress.promise).toMatchObject({ message: `Waiting for task ${task.id}` })
+    await poll
+    complete()
+    expect(await call).toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("Finished") }],
+    })
+  })
+})
 
 it("still acknowledges a completed synchronous MCP delegation", async () => {
   await withRelay("delegate", async ({ client, task, poll, complete, acknowledged }) => {

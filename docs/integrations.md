@@ -25,6 +25,9 @@ result with `cohall status <task-id>` or `task_status`, then use
 `cohall inbox ack <task-id>` or `acknowledge_completion` to remove it from the inbox. A synchronous `delegate`
 call acknowledges its result automatically.
 
+While MCP `delegate` or `wait_task` waits, Cohall sends a progress notification
+every 20 seconds when the host requests progress. Hosts that reset their request
+timeout on progress, including OpenCode, keep waiting past their 60-second default.
 Cancelling an MCP `delegate` or `wait_task` request stops its wait and polling.
 Closing the host's MCP input stream also stops active waits and shuts down the
 Cohall MCP process.
