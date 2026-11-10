@@ -70,12 +70,17 @@ Read them through a hidden terminal prompt, stdin, or a private token file.
 3. Run guided setup with the confirmed address:
 
    ```bash
-   cohall init --relay https://your-relay.example
+   cohall init --relay https://your-relay.example \
+     --workspace "$HOME/dev" --providers codex
    ```
 
-   A terminal prompts for the pairing token without echoing it. Scripts and
-   agents without an interactive terminal supply it on stdin or with
+   Use the workspace roots and providers chosen in step 2. A terminal prompts
+   for omitted values and for the pairing token without echoing it. Scripts and
+   agents without an interactive terminal supply the token on stdin or with
    `--token-file`; see the [pairing examples](https://github.com/AksharP5/cohall/blob/main/docs/install.md#pair-a-machine).
+   Without a terminal, nothing else is prompted: a new device setup requires
+   `--workspace`, the device name defaults to the hostname, and providers to
+   `auto`.
    Client-only setup adds `--client-only` and uses a client-only pairing.
    `init` writes configuration and installs the Cohall skill for Codex,
    Claude Code, and OpenCode. It preserves existing settings during repair.

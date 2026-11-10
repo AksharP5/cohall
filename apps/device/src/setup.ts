@@ -122,7 +122,8 @@ export interface GuidedSetupOptions {
   readonly deviceName?: string
   readonly workspaces: ReadonlyArray<string>
   readonly providers?: string
-  readonly cwd: string
+  /** Offered as the workspace root only when someone can confirm it at a terminal. */
+  readonly cwd?: string
 }
 
 export interface GuidedSetupInput {
@@ -157,7 +158,11 @@ export const guidedSetupInput = async (
     (options.clientOnly || credentials.deviceToken !== undefined)
   let workspaces = options.clientOnly ? (existing?.workspaces ?? []) : options.workspaces
   if (!options.clientOnly && workspaces.length === 0) {
-    const root = await prompter.answer("Workspace root", existing?.workspaces[0] ?? options.cwd)
+    const fallback = existing?.workspaces[0] ?? options.cwd
+    if (fallback === undefined) {
+      throw new Error("At least one --workspace is required to set up a device without a terminal")
+    }
+    const root = await prompter.answer("Workspace root", fallback)
     workspaces =
       existing !== undefined && root === existing.workspaces[0] ? existing.workspaces : [root]
   }

@@ -306,6 +306,14 @@ it.each([true, false])(
   },
 )
 
+it("requires a workspace for a new device set up without a terminal", async () => {
+  await temporary()
+  await expect(runCli("init", ["--relay", "https://relay.example"])).rejects.toThrow(
+    "At least one --workspace is required to set up a device without a terminal",
+  )
+  expect(await readStoredConfiguration()).toBeUndefined()
+})
+
 it.each(["init", "join"] as const)(
   "exchanges an explicit %s token file while keeping worker credentials and unused roots",
   async (command) => {

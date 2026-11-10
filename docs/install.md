@@ -95,7 +95,9 @@ Pairing also returns `join_instructions`: a copyable agent setup brief for the
 selected role and relay. It contains no pairing token; transfer that separately.
 
 When run in a terminal, omitted relay, name, workspace, provider, and token
-values are prompted. A fresh setup validates the relay URL, device name (1–128
+values are prompted. Without a terminal, nothing is prompted: a new device
+setup requires `--workspace`, the device name defaults to the hostname, and
+providers to `auto`. A fresh setup validates the relay URL, device name (1–128
 characters), and provider selection before reading a pairing token. A device
 `join` also requires at least one workspace first.
 `init` and `join` reuse a saved address but never assume a local relay for a new
