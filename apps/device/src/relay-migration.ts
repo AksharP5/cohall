@@ -152,6 +152,13 @@ export const backupRelay = async (destinationInput: string): Promise<RelayBackup
     } finally {
       database.close()
     }
+    // A WAL-mode copy grows -wal and -shm files whenever it is opened read-only.
+    const copy = new DatabaseSync(databasePath)
+    try {
+      copy.exec("PRAGMA journal_mode = DELETE")
+    } finally {
+      copy.close()
+    }
     verifyDatabase(databasePath)
     const token = await ownerToken(sourceDirectory)
     assertOwnerToken(token)
