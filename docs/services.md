@@ -139,10 +139,20 @@ backup API so the snapshot is consistent while the old relay is running.
 cohall relay backup ./cohall-relay-backup
 ```
 
-Run that command with the same `COHALL_DATA_DIR` and operating-system account
-as the relay service. The destination must be new and its parent must be
+Run that command with the same `COHALL_DATA_DIR` and `COHALL_TOKEN` as the
+relay service. The destination must be new and its parent must be
 operator-owned or a sticky shared directory. Copy the resulting directory to
 the new host over a private channel.
+
+The packaged Linux relay reads its owner token from `/etc/cohall/relay.env`,
+which only root can read. Back it up as root with that environment loaded, then
+return any SQLite files the backup created to the service account so the relay
+can still start:
+
+```bash
+sudo sh -c 'set -a; . /etc/cohall/relay.env; exec cohall relay backup /root/cohall-relay-backup'
+sudo chown -R cohall:cohall /var/lib/cohall
+```
 
 The backup contains exactly three files:
 
@@ -160,17 +170,23 @@ owner credential and sensitive task history, so encrypt it at rest when the
 storage or transfer channel is not already protected.
 
 On the new host, install Cohall and restore into the new service's data
-directory before starting it:
+directory before starting it. For the packaged Linux relay, create
+`/etc/cohall/relay.env` first. Restore needs to create `/var/lib/cohall` inside
+root-owned `/var/lib`, so run it as root, then give the directory to the
+service account:
 
 ```bash
-COHALL_DATA_DIR=/var/lib/cohall cohall relay restore ./cohall-relay-backup
+sudo sh -c 'set -a; . /etc/cohall/relay.env; exec cohall relay restore /root/cohall-relay-backup'
+sudo chown -R cohall:cohall /var/lib/cohall
 ```
+
+A relay that runs as an ordinary user backs up and restores as that user, with
+`COHALL_DATA_DIR` set to its data directory.
 
 The target data directory must not already exist. Restore refuses to overwrite
 one, rejects symlinked members, copies into a private staging directory, verifies
 the staged file checksums and SQLite integrity, and publishes the restored
-directory atomically. Run the command as the service account so the resulting
-files have the correct owner. The restored `owner-token` file supplies the
+directory atomically. The restored `owner-token` file supplies the
 owner credential when `COHALL_TOKEN` is unset; if the new service explicitly
 sets that variable, it must use the same value.
 
