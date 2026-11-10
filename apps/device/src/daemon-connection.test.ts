@@ -25,7 +25,7 @@ const waitFor = async <A>(promise: Promise<A>): Promise<A> => {
   }
 }
 
-const startRelay = async (stall?: "upgrade" | "authentication") => {
+const startRelay = async (stall?: "upgrade" | "authentication" | "rejection") => {
   const server = createServer()
   const websocketServer = new WebSocketServer({ noServer: true })
   const sockets = new Set<Duplex>()
@@ -68,6 +68,10 @@ const startRelay = async (stall?: "upgrade" | "authentication") => {
         if (typeof event !== "object" || event === null || !("_tag" in event)) return
         if (event._tag === "Authenticate") {
           if (first) firstAuthentication.resolve()
+          if (stall === "rejection") {
+            connection.close(4003, "Authentication failed")
+            return
+          }
           if (first && stall === "authentication") return
           connection.send(
             JSON.stringify({ _tag: "Connected", serverVersion: "test", connectedAt: now() }),
@@ -138,6 +142,22 @@ it.each(["upgrade", "authentication"] as const)(
     expect(relay.attempts()).toBe(2)
   },
 )
+
+it("explains a rejected credential once while retrying", async () => {
+  vi.useFakeTimers({
+    toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  })
+  const errors = vi.spyOn(console, "error").mockImplementation(() => undefined)
+  const relay = await startRelay("rejection")
+  await waitFor(relay.firstClosed)
+  for (let attempt = 2; attempt <= 3; attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await vi.advanceTimersByTimeAsync(2_000)
+    await vi.waitFor(() => expect(relay.attempts()).toBe(attempt))
+  }
+  await relay.stop()
+  expect(errors.mock.calls).toEqual([["Relay connection closed: Authentication failed (4003)"]])
+})
 
 it("reconnects when an accepted relay connection stops sending pings", async () => {
   vi.useFakeTimers({
