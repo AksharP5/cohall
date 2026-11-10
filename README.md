@@ -314,7 +314,9 @@ session. Without `--target`, a follow-up prefers that device. If it is offline,
 Cohall rejects the follow-up instead of starting over on another device; pass
 `--target` to queue it for that device or to start a new session on another.
 Queued follow-ups pick up the preceding turn's session when they start,
-including after a worker restart.
+including after a worker restart. If the provider no longer has that session,
+for example after its history was cleared, the turn starts a new session and
+its result says that earlier turns were not available.
 
 Delegated child tasks inherit their parent's thread. Coding children also inherit
 the parent's deadline unless they set an earlier one. Cohall routes them away
