@@ -671,11 +671,12 @@ export const decodeAnswerTaskInput = Schema.decodeUnknownEffect(AnswerTaskInput)
 export const decodeExchangePairingInput = Schema.decodeUnknownEffect(ExchangePairingInput)
 export const decodeCreateTaskInput = (input: unknown) =>
   Schema.decodeUnknownEffect(CreateTaskInput)(input).pipe(
+    // The relay resolves an omitted coding provider, from the thread for a follow-up.
     Effect.map(
-      (task): CreateTaskInput => ({
-        ...task,
-        provider: task.provider ?? (task.botId === undefined ? "codex" : "grok-bot"),
-      }),
+      (task): CreateTaskInput =>
+        task.provider !== undefined || task.botId === undefined
+          ? task
+          : { ...task, provider: "grok-bot" },
     ),
   )
 export const decodeCreateUpgradeOperationsInput = Schema.decodeUnknownEffect(

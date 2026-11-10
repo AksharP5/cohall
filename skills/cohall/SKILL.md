@@ -64,7 +64,8 @@ Do not delegate ordinary local work when the other device provides no advantage.
    ```
 
    Coding providers are `codex`, `claude-code`, and `opencode`. Omit `--provider`
-   to use Codex on a computer; selecting a named bot infers `grok-bot`.
+   to use Codex on a computer, or the thread's provider for a follow-up;
+   selecting a named bot infers `grok-bot`.
    Omit `--target` only when Cohall may choose a matching computer.
 
    For a submission you may need to retry, generate and save a UUID v4 before

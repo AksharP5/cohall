@@ -277,7 +277,18 @@ export const resolveDelegation = (
     const devices = yield* store
       .listDevices()
       .pipe(Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })))
-    const provider = input.provider ?? (input.botId === undefined ? "codex" : "grok-bot")
+    // A follow-up resumes the thread's latest coding turn: its device and, unless it names
+    // another, its provider. Another provider has no session for the thread.
+    const threadTurn =
+      parent === undefined && input.threadId !== undefined && input.botId === undefined
+        ? yield* store
+            .threadTurn(input.threadId)
+            .pipe(
+              Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })),
+            )
+        : undefined
+    const provider =
+      input.provider ?? (input.botId === undefined ? (threadTurn?.provider ?? "codex") : "grok-bot")
     if (input.expiresAt !== undefined && provider === "grok-bot")
       return yield* new RequestError({
         status: 400,
@@ -299,7 +310,7 @@ export const resolveDelegation = (
     const deadlineSource = inheritsDeadline ? " inherited from the parent task" : ""
     const resolvedInput =
       parent === undefined
-        ? input
+        ? { ...input, provider }
         : {
             ...input,
             threadId: parent.threadId,
@@ -387,14 +398,7 @@ export const resolveDelegation = (
         message: `Bot ${input.botId} is advertised by more than one device; select a device`,
       })
     }
-    const threadDeviceId =
-      parent === undefined && input.threadId !== undefined && provider !== "grok-bot"
-        ? yield* store
-            .threadDevice(input.threadId)
-            .pipe(
-              Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })),
-            )
-        : undefined
+    const threadDeviceId = threadTurn?.deviceId
     // Workers report busy on a 15-second heartbeat; the relay already knows what it dispatched.
     const occupied = new Set(
       (yield* store

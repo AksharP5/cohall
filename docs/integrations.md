@@ -10,7 +10,8 @@ idle one over one already running a task. A thread follow-up prefers the device
 that ran the thread's latest turn, so its provider session resumes. If that
 device is offline, the relay rejects the follow-up with 409 instead of starting
 a new session on another device. Target it to queue the follow-up, or target
-another device to start fresh.
+another device to start fresh. Targeted or not, a follow-up without a provider
+uses the provider of the thread's latest turn.
 Workspace matching uses the target device's path rules, including Windows drive
 letters and separators. The worker validates workspace access before starting
 the task.
