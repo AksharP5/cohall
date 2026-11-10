@@ -318,7 +318,8 @@ Delegated child tasks inherit their parent's thread. Coding children also inheri
 the parent's deadline unless they set an earlier one. Cohall routes them away
 from unfinished ancestors using the same worker slot, and rejects an explicit
 target that would make them wait on an ancestor. A Bot can still delegate to
-Codex or a different Bot on its own computer.
+Codex or a different Bot on its own computer. Cancelling a task also cancels its
+unfinished child tasks; a running Bot child finishes its current turn.
 
 ## Talk to your Grok Bots
 
