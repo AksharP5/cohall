@@ -6,10 +6,11 @@ import {
   makeTaskId,
   makeThreadId,
   now,
+  Timestamp,
   version,
 } from "@cohall/protocol"
 import { Effect, ManagedRuntime } from "effect"
-import { expect, it } from "vitest"
+import { expect, it, vi } from "vitest"
 import { Database } from "./database.ts"
 import { resolveDelegation } from "./main.ts"
 import { RelayStore } from "./store.ts"
@@ -217,6 +218,46 @@ it("checks retained ancestors while allowing separate bot and CLI slots on one d
       ),
     ).rejects.toMatchObject({ status: 409 })
   } finally {
+    await runtime.dispose()
+  }
+})
+
+it("bounds a coding child by its parent's deadline", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const capabilities = [{ id: "task-deadlines", label: "Deadlines" }]
+    const source = Device.make({ ...device("a-source"), capabilities })
+    const peer = Device.make({ ...device("b-peer"), capabilities })
+    await Effect.runPromise(store.upsertDevice(source))
+    await Effect.runPromise(store.upsertDevice(peer))
+    const deadline = Timestamp.make(new Date(Date.now() + 60_000).toISOString())
+    const parent = await Effect.runPromise(
+      store.createDelegation({ prompt: "Parent", expiresAt: deadline }, source.id, "owner"),
+    )
+    const child = async (expiresAt?: number) =>
+      (
+        await runtime.runPromise(
+          resolveDelegation({
+            prompt: "Child",
+            parentTaskId: parent.id,
+            ...(expiresAt === undefined
+              ? {}
+              : { expiresAt: Timestamp.make(new Date(expiresAt).toISOString()) }),
+          }),
+        )
+      ).input.expiresAt
+    expect(await child()).toBe(deadline)
+    expect(await child(Date.parse(deadline) + 60_000)).toBe(deadline)
+    const earlier = Date.parse(deadline) - 30_000
+    expect(await child(earlier)).toBe(new Date(earlier).toISOString())
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse(deadline) + 1 })
+    await expect(child()).rejects.toMatchObject({
+      status: 409,
+      message: "The parent task's deadline has passed",
+    })
+  } finally {
+    vi.useRealTimers()
     await runtime.dispose()
   }
 })

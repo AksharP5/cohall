@@ -262,7 +262,6 @@ export const resolveDelegation = (
         message: "A child task must use its parent's thread",
       })
     }
-    const resolvedInput = parent === undefined ? input : { ...input, threadId: parent.threadId }
     const devices = yield* store
       .listDevices()
       .pipe(Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })))
@@ -272,6 +271,28 @@ export const resolveDelegation = (
         status: 400,
         message: "Task deadlines require a coding provider",
       })
+    // Coding children cannot outlive their parent's deadline; Bots cannot be stopped at one.
+    const expiresAt =
+      parent?.expiresAt === undefined ||
+      provider === "grok-bot" ||
+      (input.expiresAt !== undefined && Date.parse(input.expiresAt) <= Date.parse(parent.expiresAt))
+        ? input.expiresAt
+        : parent.expiresAt
+    const inheritsDeadline = expiresAt !== undefined && expiresAt !== input.expiresAt
+    if (inheritsDeadline && Date.parse(expiresAt) <= Date.now())
+      return yield* new RequestError({
+        status: 409,
+        message: "The parent task's deadline has passed",
+      })
+    const deadlineSource = inheritsDeadline ? " inherited from the parent task" : ""
+    const resolvedInput =
+      parent === undefined
+        ? input
+        : {
+            ...input,
+            threadId: parent.threadId,
+            ...(expiresAt === undefined ? {} : { expiresAt }),
+          }
     const hasAttachments = (input.attachments?.length ?? 0) > 0
     if (hasAttachments && provider === "grok-bot") {
       return yield* new RequestError({
@@ -306,12 +327,12 @@ export const resolveDelegation = (
         })
       }
       if (
-        input.expiresAt !== undefined &&
+        expiresAt !== undefined &&
         !target.capabilities.some((capability) => capability.id === "task-deadlines")
       )
         return yield* new RequestError({
           status: 409,
-          message: `${target.name} does not support task deadlines; upgrade its Cohall worker`,
+          message: `${target.name} does not support task deadlines${deadlineSource}; upgrade its Cohall worker`,
         })
       if (
         hasAttachments &&
@@ -339,7 +360,7 @@ export const resolveDelegation = (
     const providerDevices = devices.filter(
       (device) =>
         device.providers.includes(provider) &&
-        (input.expiresAt === undefined ||
+        (expiresAt === undefined ||
           device.capabilities.some((capability) => capability.id === "task-deadlines")) &&
         (input.botId === undefined || device.bots?.some((bot) => bot.id === input.botId)),
     )
@@ -377,8 +398,8 @@ export const resolveDelegation = (
             ? "No available delegation target avoids an unfinished parent's worker slot; select another device or bot"
             : hasAttachments && providerDevices.length > 0
               ? `No Cohall device advertising the ${provider} provider supports file attachments; upgrade a Cohall worker`
-              : input.expiresAt !== undefined
-                ? `No Cohall device advertising the ${provider} provider supports task deadlines; upgrade a Cohall worker`
+              : expiresAt !== undefined
+                ? `No Cohall device advertising the ${provider} provider supports task deadlines${deadlineSource}; upgrade a Cohall worker`
                 : input.botId === undefined
                   ? `No Cohall device advertises the ${provider} provider`
                   : `No Cohall device advertises bot ${input.botId}; refresh the bot list`,

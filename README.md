@@ -314,7 +314,8 @@ session. Without `--target`, a follow-up prefers that device while it is online.
 Queued follow-ups pick up the preceding turn's session when they start,
 including after a worker restart.
 
-Delegated child tasks inherit their parent's thread. Cohall routes them away
+Delegated child tasks inherit their parent's thread. Coding children also inherit
+the parent's deadline unless they set an earlier one. Cohall routes them away
 from unfinished ancestors using the same worker slot, and rejects an explicit
 target that would make them wait on an ancestor. A Bot can still delegate to
 Codex or a different Bot on its own computer.
