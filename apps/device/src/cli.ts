@@ -122,6 +122,14 @@ const aliases = new Map([
   ["-w", "workspace"],
 ])
 
+const optionName = (rawName: string): string => aliases.get(rawName) ?? rawName.replace(/^--/, "")
+
+// Values may begin with a dash, such as Markdown lists; only a known option means one is missing.
+const isKnownOption = (argument: string): boolean => {
+  const name = optionName(argument.split("=", 1)[0] ?? argument)
+  return argument.startsWith("-") && (valueOptions.has(name) || flagOptions.has(name))
+}
+
 const parseArguments = (values: ReadonlyArray<string>): Arguments => {
   const options = new Map<string, ReadonlyArray<string> | true>()
   const positionals: Array<string> = []
@@ -141,7 +149,7 @@ const parseArguments = (values: ReadonlyArray<string>): Arguments => {
     const separator = argument.indexOf("=")
     const rawName = separator === -1 ? argument : argument.slice(0, separator)
     const inline = separator === -1 ? undefined : argument.slice(separator + 1)
-    const name = aliases.get(rawName) ?? rawName.replace(/^--/, "")
+    const name = optionName(rawName)
     if (flagOptions.has(name)) {
       if (inline !== undefined) {
         throw new Error(`--${name} does not accept a value`)
@@ -153,7 +161,7 @@ const parseArguments = (values: ReadonlyArray<string>): Arguments => {
       throw new Error(`Unknown option: ${argument}`)
     }
     const value = inline ?? values[index + 1]
-    if (value === undefined || (inline === undefined && value.startsWith("-") && value !== "-")) {
+    if (value === undefined || (inline === undefined && isKnownOption(value))) {
       throw new Error(`${rawName} requires a value`)
     }
     const previous = options.get(name)
