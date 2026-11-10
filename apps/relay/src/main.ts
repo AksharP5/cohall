@@ -1105,7 +1105,8 @@ export const runRelay = async (): Promise<void> => {
                               cause.message.includes("still has outstanding tasks") ||
                               cause.message.includes("upgrade operation in progress") ||
                               cause.message === "No Cohall devices are registered" ||
-                              cause.message.startsWith("All-device operations support")
+                              cause.message.startsWith("All-device operations support") ||
+                              cause.message.startsWith("All-device upgrades require")
                             ? 409
                             : 500,
                 message: cause.message,
