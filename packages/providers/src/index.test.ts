@@ -176,7 +176,17 @@ it.skipIf(process.platform === "win32")(
 it.skipIf(process.platform === "win32").each([
   [
     "claude-code",
-    (files: string) => ({ args: ["-p", "--output-format", "json", "--add-dir", files] }),
+    (files: string) => ({
+      args: [
+        "-p",
+        "--output-format",
+        "json",
+        "--settings",
+        '{"verbose":false}',
+        "--add-dir",
+        files,
+      ],
+    }),
   ],
   [
     "opencode",
@@ -198,6 +208,27 @@ it.skipIf(process.platform === "win32").each([
   )
   expect(JSON.parse(response.result)).toMatchObject(expected(files))
 })
+
+it.skipIf(process.platform === "win32")(
+  "reads Claude Code results when verbose output is enabled in its settings",
+  async () => {
+    // Claude Code prints its whole transcript as an array unless a higher setting disables verbose.
+    const directory = await providerFixture(
+      "claude",
+      `
+    const flag = process.argv.indexOf("--settings")
+    const verbose = flag === -1 || JSON.parse(process.argv[flag + 1]).verbose !== false
+    const result = { type: "result", result: "Done.", session_id: "session" }
+    console.log(JSON.stringify(verbose ? [{ type: "system", subtype: "init" }, result] : result))
+  `,
+    )
+    await expect(
+      Effect.runPromise(
+        run({ provider: "claude-code", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).resolves.toEqual({ result: "Done.", sessionId: "session" })
+  },
+)
 
 const runWithEvents = async (provider: CliProvider, events: ReadonlyArray<unknown>) => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-provider-events-"))

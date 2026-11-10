@@ -231,6 +231,9 @@ const claudeCommand = (options: RunOptions): ReadonlyArray<string> => [
   "-p",
   "--output-format",
   "json",
+  // A user's or workspace's verbose setting turns the result object into a transcript array.
+  "--settings",
+  JSON.stringify({ verbose: false }),
   ...(options.filesDirectory === undefined ? [] : ["--add-dir", options.filesDirectory]),
   ...(options.model === undefined ? [] : ["--model", options.model]),
   ...(options.sessionId === undefined ? [] : ["--resume", options.sessionId]),
