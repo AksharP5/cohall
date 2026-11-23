@@ -271,6 +271,35 @@ it.skipIf(process.platform === "win32").each([
   },
 )
 
+it.skipIf(process.platform === "win32").each([
+  { scenario: "multibyte text", answer: "界".repeat(43_690) + "ab" },
+  // The previous character-count slice ended between the two surrogates.
+  {
+    scenario: "a split surrogate pair",
+    answer: "a".repeat(130_916) + "\u{1F30D}" + "b".repeat(152),
+  },
+])("keeps recovered Codex results within 128 KiB with $scenario", async ({ answer }) => {
+  const directory = await providerFixture(
+    "codex",
+    `
+    if (process.argv.includes("gone")) {
+      process.stderr.write("Error: no rollout found for thread id gone")
+      process.exit(1)
+    }
+    console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: ${JSON.stringify(answer)} } }))
+  `,
+  )
+  const { result } = await Effect.runPromise(
+    run({ provider: "codex", threadId: "test", prompt: "test", cwd: directory, sessionId: "gone" }),
+  )
+  const noticeStart = result.indexOf("\n\n[Started a new codex session:")
+  expect(noticeStart).toBeGreaterThan(0)
+  const prefix = result.slice(0, noticeStart)
+  expect(prefix.isWellFormed()).toBe(true)
+  expect(answer.startsWith(prefix)).toBe(true)
+  expect(Buffer.byteLength(result)).toBeLessThanOrEqual(128 * 1024)
+})
+
 it.skipIf(process.platform === "win32")(
   "resumes an OpenCode session only in the directory that created it",
   async () => {
