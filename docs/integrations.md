@@ -14,7 +14,8 @@ another device to start fresh. Targeted or not, a follow-up without a provider
 uses the provider of the thread's latest turn.
 Workspace matching uses the target device's path rules, including Windows drive
 letters and separators. The worker validates workspace access before starting
-the task.
+the task. Pass a single `--workspace` to `send` or `delegate`. During device
+setup, repeat `--workspace` to configure multiple allowed roots.
 
 CLI prompt and context files are limited to 128 KiB each. Message files allow
 512 KiB and at most 131072 characters. Cohall enforces these limits while reading,
