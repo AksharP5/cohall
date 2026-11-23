@@ -1823,6 +1823,14 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     }),
   )
 
+  const isUndispatchedTurn = (task: Task, dispatched: boolean): boolean =>
+    task.status === "queued" &&
+    !dispatched &&
+    // Answering assigns the next run ID before dispatch and keeps the task's original start time.
+    (task.provider === "grok-bot" ||
+      task.clarifications?.at(-1)?.answer !== undefined ||
+      (task.runId === undefined && task.startedAt === undefined))
+
   const expireTask = Effect.fn("RelayStore.expireTask")(function* (task: Task) {
     if (
       !taskDeadlinePassed(task) ||
@@ -1830,10 +1838,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     )
       return task
     const neverDispatched =
-      task.status === "queued" &&
-      task.runId === undefined &&
-      task.startedAt === undefined &&
-      !(yield* hasDispatchEvidence(task.id))
+      task.status === "queued" && isUndispatchedTurn(task, yield* hasDispatchEvidence(task.id))
     return yield* transition(
       task.id,
       [task.status],
@@ -2369,11 +2374,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       return current
     }
     const timestamp = now()
-    const neverDispatched =
-      current.status === "queued" &&
-      !dispatched &&
-      (current.provider === "grok-bot" ||
-        (current.runId === undefined && current.startedAt === undefined))
+    const neverDispatched = isUndispatchedTurn(current, dispatched)
     return neverDispatched || (current.status === "needs_input" && current.provider === "grok-bot")
       ? yield* transition(
           taskId,
