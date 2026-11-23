@@ -875,10 +875,16 @@ export const run = (options: RunOptions): Effect.Effect<RunResult, ProviderError
   }).pipe(
     Effect.map((turn) => {
       const notice = `\n\n[Started a new ${executables[options.provider]} session: this thread's previous session is not available for this workspace on this device, so this turn did not see earlier turns.]`
-      return {
-        ...turn,
-        result: `${turn.result.slice(0, maxResultBytes - notice.length)}${notice}`,
-      }
+      const budget = maxResultBytes - byteLength(notice)
+      const bytes = Buffer.from(turn.result)
+      // Streaming decode holds back an incomplete UTF-8 character at the cutoff.
+      const prefix =
+        bytes.length <= budget
+          ? turn.result
+          : new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes.subarray(0, budget), {
+              stream: true,
+            })
+      return { ...turn, result: prefix + notice }
     }),
   )
   const resumable =
