@@ -278,6 +278,30 @@ it("requires a device join workspace before reading its token", async () => {
   expect(open).not.toHaveBeenCalled()
 })
 
+it.each(["send", "delegate"])(
+  "rejects multiple task workspaces for %s before submitting",
+  async (command) => {
+    await temporary()
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockRejectedValue(new Error("Input reached relay"))
+    vi.stubGlobal("fetch", fetch)
+    await expect(
+      runCli(command, [
+        "--target",
+        taskId,
+        "--workspace",
+        "repo-a",
+        "--workspace",
+        "repo-b",
+        "--no-wait",
+        "Review the repository",
+      ]),
+    ).rejects.toThrow("--workspace may only be specified once")
+    expect(fetch).not.toHaveBeenCalled()
+  },
+)
+
 it.each([true, false])(
   "repairs missing workspace settings only for client-only=%s",
   async (clientOnly) => {

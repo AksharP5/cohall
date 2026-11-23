@@ -182,7 +182,7 @@ const values = (arguments_: Arguments, name: string): ReadonlyArray<string> => {
 }
 const option = (arguments_: Arguments, name: string): string | undefined => {
   const found = values(arguments_, name)
-  if (found.length > 1 && name !== "workspace") {
+  if (found.length > 1) {
     throw new Error(`--${name} may only be specified once`)
   }
   return found[0]
@@ -1075,6 +1075,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       "timeout",
       "workspace",
     ])
+    const workspace = option(arguments_, "workspace")
     const waitSeconds = timeout(arguments_)
     const positionalTarget =
       command === "send" && arguments_.positionals[0]?.startsWith("@")
@@ -1100,7 +1101,6 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const attachments = await readInputAttachments(values(arguments_, "attach"))
     const target = positionalTarget ?? option(arguments_, "target")
     const thread = option(arguments_, "thread")
-    const workspace = option(arguments_, "workspace")
     const provider = option(arguments_, "provider")
     const parent = option(arguments_, "parent")
     const deadline = option(arguments_, "deadline")
