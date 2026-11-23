@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.15](https://github.com/AksharP5/cohall/compare/v0.12.14...v0.12.15) (2026-11-23)
+
+
+### Bug Fixes
+
+* **cli:** reject repeated task workspace flags ([#314](https://github.com/AksharP5/cohall/issues/314)) ([25d9ee0](https://github.com/AksharP5/cohall/commit/25d9ee0ccc64ad85dc20acd1fe73f3440464299c))
+* **providers:** keep recovered results within the byte limit ([#315](https://github.com/AksharP5/cohall/issues/315)) ([6a5dad0](https://github.com/AksharP5/cohall/commit/6a5dad036e0a71aef6a923f97666a980a392f0fd))
+* **relay:** settle undispatched clarification turns offline ([#313](https://github.com/AksharP5/cohall/issues/313)) ([9cc59d8](https://github.com/AksharP5/cohall/commit/9cc59d880426ed9286c007c0ccaa0a98fcccf0d7))
+
 ## [0.12.14](https://github.com/AksharP5/cohall/compare/v0.12.13...v0.12.14) (2026-11-10)
 
 
