@@ -115,6 +115,9 @@ it("preserves deadlines through clarification and restart, expires queued work, 
       ),
     )
     expect(answered.expiresAt).toBe(expiresAt)
+    const resumedAssignment = await Effect.runPromise(store.assignTask(resumed.id))
+    expect(resumedAssignment.status).toBe("assigned")
+    await Effect.runPromise(store.requeueTasksFor(target.id))
     const queued = await Effect.runPromise(
       store.createDelegation({ prompt: "Still queued", expiresAt }, target.id, "owner"),
     )
