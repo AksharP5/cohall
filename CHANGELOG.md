@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.12.16](https://github.com/AksharP5/cohall/compare/v0.12.15...v0.12.16) (2026-11-27)
+
+
+### Bug Fixes
+
+* **cli:** accept positional prompts that begin with a dash ([#334](https://github.com/AksharP5/cohall/issues/334)) ([4eabba2](https://github.com/AksharP5/cohall/commit/4eabba2110212713b8d822f1339b67e5dd62ec76))
+* **cli:** clear the saved model and Grok gateway with empty values ([#326](https://github.com/AksharP5/cohall/issues/326)) ([a800203](https://github.com/AksharP5/cohall/commit/a800203e60f8bfde0e21e7998e6e90cceadadd89))
+* **cli:** show prompt, context, and answer input options in help ([#332](https://github.com/AksharP5/cohall/issues/332)) ([33b84ba](https://github.com/AksharP5/cohall/commit/33b84bacb40dd7a7c0328fc90bf6f489d62035bf))
+* **device:** keep a task's answer when its output files cannot be returned ([#343](https://github.com/AksharP5/cohall/issues/343)) ([08cdb63](https://github.com/AksharP5/cohall/commit/08cdb63a2292c07c6074a0751fc5d0205209a744))
+* **device:** reject relative task workspaces ([#324](https://github.com/AksharP5/cohall/issues/324)) ([99b6808](https://github.com/AksharP5/cohall/commit/99b68087364eda44b6d26d87da83bf1bffcc28c9))
+* **providers:** keep Claude Code results when it lists large denied writes ([#320](https://github.com/AksharP5/cohall/issues/320)) ([b5522b4](https://github.com/AksharP5/cohall/commit/b5522b4b24e0befb92259329c85a357c474d1fa2))
+* **providers:** show Claude Code's own explanation when a task fails ([#322](https://github.com/AksharP5/cohall/issues/322)) ([912083e](https://github.com/AksharP5/cohall/commit/912083ea869bfe4cf3f00de70f9657168e6966c6))
+* **relay:** explain why an unfinished task cannot be acknowledged ([#341](https://github.com/AksharP5/cohall/issues/341)) ([da7e412](https://github.com/AksharP5/cohall/commit/da7e412a974c7b666c90a407a72cd4e380770247))
+* **relay:** fail deadline tasks the worker stops a moment early ([#330](https://github.com/AksharP5/cohall/issues/330)) ([605cd77](https://github.com/AksharP5/cohall/commit/605cd77ef034c4428c915c87216d1fec5b128217))
+* **relay:** let the owner forget a lost worker with cancelled work ([#337](https://github.com/AksharP5/cohall/issues/337)) ([6178504](https://github.com/AksharP5/cohall/commit/617850456aca902315901c80c260156342cd9059))
+* **relay:** route provider-specific follow-ups to that provider's thread device ([#328](https://github.com/AksharP5/cohall/issues/328)) ([85e7670](https://github.com/AksharP5/cohall/commit/85e76707efaa69e225260c6dff2021d83838ba59))
+* **upgrade:** install newer releases after a failed service restart ([#318](https://github.com/AksharP5/cohall/issues/318)) ([4e09db3](https://github.com/AksharP5/cohall/commit/4e09db343b5da9a7acd5649d4b2d9f7a6a047374))
+
 ## [0.12.15](https://github.com/AksharP5/cohall/compare/v0.12.14...v0.12.15) (2026-11-23)
 
 
