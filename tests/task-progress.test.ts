@@ -153,7 +153,9 @@ it("reports progress through CLI and MCP only for the authenticated target worke
         body: JSON.stringify({ note }),
       })
     expect((await post(otherClient.token, "Wrong worker")).status).toBe(403)
-    expect((await post(clientCredential.token, "😀".repeat(257))).status).toBe(400)
+    const oversized = await post(clientCredential.token, "😀".repeat(257))
+    expect(oversized.status).toBe(400)
+    expect(await oversized.json()).toEqual({ error: expect.not.stringMatching(/^SchemaError/) })
     expect((await Effect.runPromise(owner.getTask(task.id))).progress).toEqual(latest)
     socket.send(JSON.stringify({ _tag: "TaskFinished", taskId: task.id, result: "Done" }))
     await vi.waitFor(
