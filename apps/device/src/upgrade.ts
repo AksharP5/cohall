@@ -949,13 +949,16 @@ export const upgrade = async (options: UpgradeOptions): Promise<UpgradeResult> =
     ...(options.resolveExecutable === undefined ? {} : { resolveExecutable }),
   })
 
-  if (
+  const resumable =
     previous?.version === options.currentVersion &&
     (target === previous.version || (target === "latest" && options.restart)) &&
     (await installedVersion(installation.entrypoint).catch(() => undefined)) === previous.version
-  ) {
-    const pending = candidates.filter((service) => previous.pendingServices.includes(service.id))
-    const active = await activeServices(runner, pending)
+  const pending = resumable
+    ? candidates.filter((service) => previous.pendingServices.includes(service.id))
+    : []
+  const active = await activeServices(runner, pending)
+  // A latest upgrade resumes only an unfinished restart; otherwise it must check for a newer release.
+  if (resumable && (target === previous.version || active.length > 0)) {
     await assertServiceInstallations(runner, active, installation)
     if (options.dryRun || !options.restart) {
       return {

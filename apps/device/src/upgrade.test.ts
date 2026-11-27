@@ -290,6 +290,51 @@ describe("latest upgrades", () => {
     expect(invocations.some((invocation) => invocation.includes(" restart "))).toBe(false)
   })
 
+  it("installs a newer latest when the pending service never came back", async () => {
+    const { root, entrypoint, metadata } = await installation("1.2.3", "npm", "linux")
+    const statePath = join(root, "receipt.json")
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        version: "1.2.3",
+        fromVersion: "1.2.2",
+        packageManager: "npm",
+        pendingServices: ["systemd-user:cohall-device.service"],
+        restartedServices: [],
+      }),
+    )
+    const installedTargets: Array<string | undefined> = []
+    const result = await upgrade({
+      currentVersion: "1.2.3",
+      restart: true,
+      dryRun: false,
+      entrypoint,
+      platform: "linux",
+      uid: 1000,
+      statePath,
+      resolveExecutable,
+      runner: {
+        run: async (command, arguments_) => {
+          if (arguments_.includes("is-active")) return { exitCode: 3, stdout: "", stderr: "" }
+          if (arguments_[0] === "view") return { ...success(), stdout: JSON.stringify("1.2.4") }
+          if (command === "npm" && arguments_[0] === "install") {
+            installedTargets.push(arguments_.at(-1))
+            await writeFile(metadata, JSON.stringify({ name: packageName, version: "1.2.4" }))
+          }
+          return success()
+        },
+      },
+    })
+
+    expect(installedTargets).toEqual([`${packageName}@1.2.4`])
+    expect(result).toMatchObject({
+      upgraded: true,
+      from_version: "1.2.3",
+      installed_version: "1.2.4",
+      resumed_after_restart: false,
+    })
+  })
+
   it.each([
     { target: "1.2.3", latest: "1.2.4", installed: "1.2.3", installs: 1, restarts: 1 },
     { target: "latest", latest: "1.2.4", installed: "1.2.4", installs: 0, restarts: 1 },
