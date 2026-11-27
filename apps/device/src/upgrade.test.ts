@@ -49,7 +49,7 @@ it("runs pnpm discovery independently of project dispatch, including Windows cmd
 })
 
 const temporaryDirectory = async (): Promise<string> => {
-  const path = await mkdtemp(join(tmpdir(), "cohall-upgrade-"))
+  const path = await realpath(await mkdtemp(join(tmpdir(), "cohall-upgrade-")))
   temporaryDirectories.push(path)
   return path
 }
@@ -1504,6 +1504,7 @@ describe("managed service upgrades", () => {
         uid: 1000,
         statePath: join(root, "upgrade-restart.json"),
         runner,
+        resolveExecutable,
       }),
     ).rejects.toThrow("uses")
     expect(invocations.some((invocation) => invocation.startsWith("npm install"))).toBe(false)
@@ -1614,6 +1615,7 @@ describe("managed service upgrades", () => {
         uid: 1000,
         statePath,
         runner,
+        resolveExecutable,
       })
 
       expect(preview.services_pending_restart).toEqual(["systemd-user:cohall-device.service"])
@@ -1630,6 +1632,7 @@ describe("managed service upgrades", () => {
         uid: 1000,
         statePath,
         runner,
+        resolveExecutable,
       })
 
       expect(result.resumed_after_restart).toBe(true)
