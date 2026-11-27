@@ -90,6 +90,14 @@ export const listBots = (devices: ReadonlyArray<Device>) =>
     })),
   )
 
+export const gatewayWarnings = (devices: ReadonlyArray<Device>): ReadonlyArray<string> =>
+  devices
+    .filter((device) => device.botsUnavailable === true)
+    .map(
+      (device) =>
+        `Grok Bot gateway unavailable on ${device.name}; its bots cannot be listed or messaged until that computer can read its gateway`,
+    )
+
 const selectTarget = Effect.fn("Cohall.selectTarget")(function* (
   devices: ReadonlyArray<Device>,
   target: string,
@@ -119,7 +127,10 @@ const selectTarget = Effect.fn("Cohall.selectTarget")(function* (
   return yield* new DeviceSelectionError({
     message:
       matches.length === 0
-        ? `No Cohall device or bot matches ${target}; use cohall devices or cohall bots`
+        ? [
+            `No Cohall device or bot matches ${target}; use cohall devices or cohall bots`,
+            ...gatewayWarnings(devices),
+          ].join(". ")
         : `${target} is ambiguous; use a device ID or @device-id/bot-id from cohall bots`,
     devices: [
       ...deviceMatches.map((device) => `${device.name} (@${device.id})`),

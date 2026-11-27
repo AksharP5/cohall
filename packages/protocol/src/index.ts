@@ -181,6 +181,8 @@ export const Device = Schema.Struct({
   status: DeviceStatus,
   providers: boundedArray(Provider, Provider.literals.length),
   bots: Schema.optionalKey(boundedArray(Bot, 256)),
+  // The device could not read its Grok Bot gateway, so an empty roster does not mean it has no bots.
+  botsUnavailable: Schema.optionalKey(Schema.Boolean),
   capabilities: boundedArray(Capability, 64),
   workspaces: boundedArray(Workspace, 64),
   version: bounded(32),
@@ -618,6 +620,7 @@ export const SocketEvent = Schema.TaggedUnion({
     deviceId: DeviceId,
     status: DeviceStatus,
     bots: Schema.optionalKey(boundedArray(Bot, 256)),
+    botsUnavailable: Schema.optionalKey(Schema.Boolean),
   },
   TaskAssigned: { task: Task },
   TaskAccepted: { taskId: TaskId, runId: Schema.optionalKey(TaskRunId) },

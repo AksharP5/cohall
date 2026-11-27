@@ -257,6 +257,13 @@ the relay is unreachable or no client credential is configured.
 provider mode or when `grok-bot` is explicitly selected. An explicit provider
 list that excludes `grok-bot` skips this warning.
 
+A worker that cannot read its gateway reports that to the relay. Other devices
+then see `"botsUnavailable": true` on that computer in `cohall devices`, a
+`Grok Bot gateway unavailable on <device>` line on stderr from `cohall bots`
+and in `list_bots`, and the same reason when `cohall send @BotName` finds no
+match. Fix it on the Bot computer with `doctor` there. The relay and that
+worker must both run a version that reports it.
+
 Any other harness with shell access can invoke the CLI directly. No Cohall UI
 extension is required.
 

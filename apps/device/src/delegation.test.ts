@@ -508,6 +508,17 @@ describe("bot delegation", () => {
     }
   })
 
+  it("says a Grok Bot gateway is unavailable when its bot cannot be found", async () => {
+    const locked = Device.make({ ...device, name: "grokbot", bots: [], botsUnavailable: true })
+    await expect(
+      Effect.runPromise(
+        createDelegation(client([locked]), configuration, { prompt: "Hello", target: "@Research" }),
+      ),
+    ).rejects.toThrow(
+      /No Cohall device or bot matches @Research.*Grok Bot gateway unavailable on grokbot/,
+    )
+  })
+
   it("rejects name collisions and accepts an unambiguous bot or device ID", async () => {
     const other = Device.make({
       ...device,

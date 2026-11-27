@@ -42,6 +42,7 @@ import {
   acknowledgedTaskResult,
   createDelegation,
   followTaskTrace,
+  gatewayWarnings,
   listBots,
   taskResult,
   threadContext,
@@ -1057,7 +1058,10 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   if (command === "bots") {
     allowOptions(arguments_, [])
     noPositionals(arguments_, command)
-    print(listBots(await Effect.runPromise(relay.devices())))
+    const devices = await Effect.runPromise(relay.devices())
+    print(listBots(devices))
+    // Stdout stays the bot list that scripts parse; the reason it is short goes to stderr.
+    for (const warning of gatewayWarnings(devices)) console.error(warning)
     return
   }
   if (command === "delegate" || command === "send") {

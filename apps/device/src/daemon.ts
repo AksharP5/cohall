@@ -121,10 +121,12 @@ export const selectProviders = (
     ? installed
     : configured.filter((provider) => installed.includes(provider))
 
+type BotRoster = Pick<Device, "botsUnavailable"> & { readonly bots: ReadonlyArray<Bot> }
+
 const describeDevice = (
   configuration: DeviceConfiguration,
   status: "online" | "busy" = "online",
-  bots: ReadonlyArray<Bot> = [],
+  roster: BotRoster = { bots: [] },
 ): Device => {
   const operatingSystem = platform()
   const platformName =
@@ -147,7 +149,7 @@ const describeDevice = (
     architecture: arch(),
     status,
     providers,
-    ...(providers.includes("grok-bot") ? { bots } : {}),
+    ...(providers.includes("grok-bot") ? roster : {}),
     capabilities: capabilities(providers),
     workspaces: configuration.workspaces.map((path) => ({
       path,
@@ -716,7 +718,7 @@ const connect = (
         }
         socket.on("ping", resetConnectionDeadline)
         const discovery = new AbortController()
-        let bots: ReadonlyArray<Bot> = []
+        let roster: BotRoster = { bots: [] }
         let refreshing = false
         const refreshBots = async (): Promise<void> => {
           if (
@@ -727,7 +729,10 @@ const connect = (
             return
           }
           refreshing = true
-          bots = await discoverGrokBots(configuration.grokGateway, discovery.signal).catch(() => [])
+          roster = await discoverGrokBots(configuration.grokGateway, discovery.signal).then(
+            (bots) => ({ bots }),
+            () => ({ bots: [], botsUnavailable: true }),
+          )
           refreshing = false
           if (!closed) {
             send(
@@ -736,7 +741,7 @@ const connect = (
                 _tag: "DeviceHeartbeat",
                 deviceId: configuration.id,
                 status: state.tasks.size > 0 || state.operation !== undefined ? "busy" : "online",
-                bots,
+                ...roster,
               }),
             )
           }
@@ -756,7 +761,7 @@ const connect = (
               _tag: "DeviceHeartbeat",
               deviceId: configuration.id,
               status: state.tasks.size > 0 || state.operation !== undefined ? "busy" : "online",
-              ...(configuration.grokGateway === undefined ? {} : { bots }),
+              ...(configuration.grokGateway === undefined ? {} : roster),
             }),
           )
           void refreshBots()
@@ -825,7 +830,7 @@ const connect = (
                       device: describeDevice(
                         configuration,
                         state.tasks.size > 0 || state.operation !== undefined ? "busy" : "online",
-                        bots,
+                        roster,
                       ),
                     }),
                   ),

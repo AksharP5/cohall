@@ -122,6 +122,7 @@ interface DeviceRow {
   readonly status: string
   readonly providers_json: string
   readonly bots_json: string | null
+  readonly bots_unavailable: number | null
   readonly capabilities_json: string
   readonly workspaces_json: string
   readonly version: string
@@ -243,6 +244,7 @@ export interface Interface {
     deviceId: DeviceId,
     status: "online" | "busy",
     bots?: Device["bots"],
+    botsUnavailable?: boolean,
   ) => Effect.Effect<Device, PersistenceError>
   readonly markDeviceOffline: (deviceId: DeviceId) => Effect.Effect<Device, PersistenceError>
   readonly createDelegation: (
@@ -442,6 +444,7 @@ const deviceFromRow = (row: DeviceRow): Effect.Effect<Device, PersistenceError> 
     status: row.status,
     providers: JSON.parse(row.providers_json) as unknown,
     ...(row.bots_json === null ? {} : { bots: JSON.parse(row.bots_json) as unknown }),
+    ...(row.bots_unavailable === 1 ? { botsUnavailable: true } : {}),
     capabilities: JSON.parse(row.capabilities_json) as unknown,
     workspaces: JSON.parse(row.workspaces_json) as unknown,
     version: row.version,
@@ -1520,13 +1523,15 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           .query(
             `INSERT INTO devices (
             id, name, hostname, platform, architecture, status, providers_json,
-            capabilities_json, workspaces_json, version, last_seen_at, connected_at, bots_json, description
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            capabilities_json, workspaces_json, version, last_seen_at, connected_at, bots_json, description,
+            bots_unavailable
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             name = excluded.name, description = excluded.description,
             hostname = excluded.hostname, platform = excluded.platform,
             architecture = excluded.architecture, status = excluded.status,
             providers_json = excluded.providers_json, bots_json = excluded.bots_json,
+            bots_unavailable = excluded.bots_unavailable,
             capabilities_json = excluded.capabilities_json,
             workspaces_json = excluded.workspaces_json, version = excluded.version,
             last_seen_at = excluded.last_seen_at, connected_at = excluded.connected_at,
@@ -1547,6 +1552,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             device.connectedAt ?? null,
             device.bots === undefined ? null : JSON.stringify(device.bots),
             device.description ?? null,
+            device.botsUnavailable === true ? 1 : 0,
           ),
       catch: operationError("RelayStore.upsertDevice"),
     })
@@ -1557,15 +1563,24 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     deviceId: DeviceId,
     status: "online" | "busy" | "offline",
     bots?: Device["bots"],
+    botsUnavailable?: boolean,
   ) {
     const timestamp = now()
     const result = yield* Effect.try({
       try: () =>
         db
           .query(
-            "UPDATE devices SET status = ?, last_seen_at = ?, bots_json = COALESCE(?, bots_json) WHERE id = ?",
+            `UPDATE devices SET status = ?, last_seen_at = ?, bots_json = COALESCE(?, bots_json),
+             bots_unavailable = COALESCE(?, bots_unavailable) WHERE id = ?`,
           )
-          .run(status, timestamp, bots === undefined ? null : JSON.stringify(bots), deviceId),
+          .run(
+            status,
+            timestamp,
+            bots === undefined ? null : JSON.stringify(bots),
+            // A heartbeat without a roster says nothing about the gateway.
+            bots === undefined ? null : botsUnavailable === true ? 1 : 0,
+            deviceId,
+          ),
       catch: operationError("RelayStore.updateDeviceStatus"),
     })
     if (result.changes !== 1) {
@@ -2758,7 +2773,8 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     usage,
     forgetDevice,
     upsertDevice,
-    heartbeat: (deviceId, status, bots) => updateDeviceStatus(deviceId, status, bots),
+    heartbeat: (deviceId, status, bots, botsUnavailable) =>
+      updateDeviceStatus(deviceId, status, bots, botsUnavailable),
     markDeviceOffline: (deviceId) => updateDeviceStatus(deviceId, "offline"),
     createDelegation,
     expireTasks,
@@ -2862,7 +2878,7 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
           platform TEXT NOT NULL, architecture TEXT NOT NULL, status TEXT NOT NULL,
           providers_json TEXT NOT NULL, bots_json TEXT, capabilities_json TEXT NOT NULL,
           workspaces_json TEXT NOT NULL, version TEXT NOT NULL, last_seen_at TEXT NOT NULL,
-          connected_at TEXT, forgotten_at TEXT, description TEXT
+          connected_at TEXT, forgotten_at TEXT, description TEXT, bots_unavailable INTEGER
         );
         CREATE TABLE IF NOT EXISTS threads (
           id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -2947,6 +2963,9 @@ const migrate = (db: Database): Effect.Effect<void, PersistenceError> =>
       }
       if (!deviceColumns.some((column) => column.name === "bots_json")) {
         db.exec("ALTER TABLE devices ADD COLUMN bots_json TEXT")
+      }
+      if (!deviceColumns.some((column) => column.name === "bots_unavailable")) {
+        db.exec("ALTER TABLE devices ADD COLUMN bots_unavailable INTEGER")
       }
       if (!deviceColumns.some((column) => column.name === "description")) {
         db.exec("ALTER TABLE devices ADD COLUMN description TEXT")
