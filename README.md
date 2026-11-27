@@ -490,7 +490,9 @@ when `latest` is older; an exact `--to` version can intentionally roll back.
 `cohall upgrades` returns the 50 newest results.
 Abandonment is an owner recovery action for a permanently unreachable target;
 it does not interrupt an upgrade that is already executing. Forgetting an
-offline device also closes its outstanding maintenance operation.
+offline device also closes its outstanding maintenance operation and finishes
+tasks waiting for it to confirm a cancellation. Cancel its other unfinished tasks
+first; the error lists them.
 
 ## Optional MCP
 

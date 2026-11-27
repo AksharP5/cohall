@@ -341,7 +341,8 @@ relay rejects work that their daemons cannot understand. If a device is permanen
 lost, the owner can abandon its operation so later all-device upgrades are not
 blocked. Abandonment records a failed terminal result; it does not stop an upgrade
 already executing on a reachable device. Forgetting an offline device also closes
-its outstanding maintenance operation. The operation accepts only `latest` or an
+its outstanding maintenance operation and finishes tasks waiting for it to confirm
+a cancellation. Cancel its other unfinished tasks first; the error lists them. The operation accepts only `latest` or an
 exact semantic version and invokes Cohall's existing package upgrade path; it
 cannot transport arbitrary commands. Devices running from a temporary package
 runner report a failure until Cohall is installed globally on that device.

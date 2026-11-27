@@ -1810,3 +1810,47 @@ it("rejects all-device operations before every daemon supports them", async () =
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+it("settles cancellations only a forgotten worker could confirm", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "lost-worker",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["codex"],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const task = await Effect.runPromise(
+      store.createDelegation({ prompt: "Run the tests" }, device.id, "owner"),
+    )
+    const assigned = await Effect.runPromise(store.assignTask(task.id))
+    await Effect.runPromise(store.acceptTask(task.id, device.id, assigned.runId))
+    await Effect.runPromise(store.markDeviceOffline(device.id))
+    await Effect.runPromise(store.requeueTasksFor(device.id))
+    const queued = await Effect.runPromise(
+      store.createDelegation({ prompt: "Not cancelled yet" }, device.id, "owner"),
+    )
+    await expect(Effect.runPromise(store.forgetDevice(device.id))).rejects.toMatchObject({
+      message: expect.stringContaining(queued.id),
+    })
+
+    await Effect.runPromise(store.requestCancellation(queued.id))
+    expect(await Effect.runPromise(store.requestCancellation(task.id))).toMatchObject({
+      status: "cancelling",
+    })
+    await Effect.runPromise(store.forgetDevice(device.id))
+    expect(await Effect.runPromise(store.getTask(task.id))).toMatchObject({ status: "cancelled" })
+    expect(await Effect.runPromise(store.listDevices())).toEqual([])
+  } finally {
+    await runtime.dispose()
+  }
+})
