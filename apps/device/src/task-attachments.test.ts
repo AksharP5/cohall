@@ -160,6 +160,41 @@ it.skipIf(process.platform === "win32").each(["input", "output"] as const)(
   },
 )
 
+it("waits out a relay restart while downloading input files, but not a rejected request", async () => {
+  const requests: Array<string> = []
+  const server = createServer((request, response) => {
+    requests.push(request.url ?? "")
+    if (request.url?.includes("missing.txt")) return void response.writeHead(404).end()
+    response.writeHead(requests.length === 1 ? 503 : 200).end("notes")
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const configuration = DeviceConfiguration.make({
+    relayUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    token: "device-token",
+    id: makeDeviceId(),
+    name: "worker",
+    workspaces: [process.cwd()],
+  })
+  const stage = (name: string) =>
+    Effect.runPromise(
+      Effect.scoped(
+        prepareTaskFiles(configuration, makeTaskId(), [AttachmentName.make(name)]).pipe(
+          Effect.flatMap((files) =>
+            Effect.promise(() => readFile(join(files.input, name), "utf8")),
+          ),
+        ),
+      ),
+    )
+  try {
+    await expect(stage("notes.txt")).resolves.toBe("notes")
+    expect(requests).toHaveLength(2)
+    await expect(stage("missing.txt")).rejects.toMatchObject({ status: 404 })
+    expect(requests).toHaveLength(3)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
 it("stages input bytes and collects selected output before removing temporary files", async () => {
   const server = createServer(async (request, response) => {
     if (request.headers.authorization !== "Bearer device-token") {

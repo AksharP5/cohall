@@ -49,6 +49,11 @@ export class RelayRequestError extends Schema.TaggedErrorClass<RelayRequestError
   },
 ) {}
 
+// A restarting relay or its proxy, not a rejected request.
+export const isRelayOutage = (cause: unknown): boolean =>
+  cause instanceof RelayRequestError &&
+  (cause.status === undefined || [502, 503, 504].includes(cause.status))
+
 export class RelayDecodeError extends Schema.TaggedErrorClass<RelayDecodeError>()(
   "RelayClient.DecodeError",
   { operation: Schema.String, message: Schema.String },
