@@ -642,6 +642,17 @@ const derivedTraceEvents = (task: Task): ReadonlyArray<TaskTraceEvent> => {
   return events
 }
 
+// Once a Bot request may have reached Grok Bot, only its gateway can finish it; Cohall cannot cancel it.
+const botRequestInFlight = (
+  provider: string,
+  status: string,
+  started: boolean,
+  dispatched: boolean,
+): boolean =>
+  provider === "grok-bot" &&
+  status !== "needs_input" &&
+  (status !== "queued" || started || dispatched)
+
 // A coding provider may still be running after its connection drops.
 const interruptedTaskStatus = `CASE
   WHEN provider = 'grok-bot' AND json_array_length(clarifications_json) > 0
@@ -1392,35 +1403,58 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
           }
           const outstanding = db
             .query<
-              { readonly id: TaskId; readonly status: string; readonly error: string | null },
+              {
+                readonly id: TaskId
+                readonly status: string
+                readonly error: string | null
+                readonly provider: string
+                readonly started: number
+                readonly dispatched: number
+              },
               [string]
             >(
-              `SELECT id, status, error FROM tasks
+              `SELECT id, status, error, provider, started_at IS NOT NULL AS started,
+                 dispatched_at IS NOT NULL AS dispatched FROM tasks
                WHERE target_device_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
             )
             .all(deviceId)
-          const unsettled = outstanding.filter((task) => task.status !== "cancelling")
+          // Only the forgotten worker could have confirmed these cancellations or answered these Bot requests.
+          const unanswerable = outstanding.filter(
+            (task) =>
+              task.status === "cancelling" ||
+              botRequestInFlight(
+                task.provider,
+                task.status,
+                task.started === 1,
+                task.dispatched === 1,
+              ),
+          )
+          const unsettled = outstanding.filter((task) => !unanswerable.includes(task))
           if (unsettled.length > 0) {
             throw new Error(
               `Device ${deviceId} still has outstanding tasks; cancel them first: ${unsettled.map((task) => task.id).join(", ")}`,
             )
           }
           const timestamp = now()
-          // Only the forgotten worker could have confirmed these cancellations.
-          for (const task of outstanding) {
-            const status = task.error === taskDeadlineError ? "failed" : "cancelled"
+          const forgotten = "Target device was forgotten by the relay owner"
+          for (const task of unanswerable) {
+            const status =
+              task.status !== "cancelling" || task.error === taskDeadlineError
+                ? "failed"
+                : "cancelled"
             db.query(
-              `UPDATE tasks SET status = ?, completed_at = ?, updated_at = ?,
+              `UPDATE tasks SET status = ?, error = ?, completed_at = ?, updated_at = ?,
                progress_note = NULL, progress_at = NULL WHERE id = ?`,
-            ).run(status, timestamp, timestamp, task.id)
-            recordTaskTraceEvent(
-              task.id,
+            ).run(
               status,
-              "Target device was forgotten by the relay owner",
+              task.status === "cancelling" ? task.error : forgotten,
               timestamp,
+              timestamp,
+              task.id,
             )
+            recordTaskTraceEvent(task.id, status, forgotten, timestamp)
           }
-          if (outstanding.length > 0) pruneTerminalHistory()
+          if (unanswerable.length > 0) pruneTerminalHistory()
           db.query(
             `UPDATE device_operations
              SET status = 'failed', error = ?, updated_at = ?, completed_at = ?
@@ -2395,9 +2429,12 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     }
     const dispatched = yield* hasDispatchEvidence(taskId)
     if (
-      current.provider === "grok-bot" &&
-      current.status !== "needs_input" &&
-      (current.status !== "queued" || current.startedAt !== undefined || dispatched)
+      botRequestInFlight(
+        current.provider,
+        current.status,
+        current.startedAt !== undefined,
+        dispatched,
+      )
     ) {
       return yield* new PersistenceError({
         operation: "RelayStore.requestCancellation",
