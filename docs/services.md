@@ -140,9 +140,10 @@ cohall relay backup ./cohall-relay-backup
 ```
 
 Run that command with the same `COHALL_DATA_DIR` and `COHALL_TOKEN` as the
-relay service. The destination must be new and its parent must be
-operator-owned or a sticky shared directory. Copy the resulting directory to
-the new host over a private channel.
+relay service. The destination must be new. None of its parent directories
+may be group- or world-writable unless it has the sticky bit, as `/tmp` does;
+with a umask of `002`, run `chmod g-w` on the parent first. Copy the resulting
+directory to the new host over a private channel.
 
 The packaged Linux relay reads its owner token from `/etc/cohall/relay.env`,
 which only root can read. Back it up as root with that environment loaded, then
