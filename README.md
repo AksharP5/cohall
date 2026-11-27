@@ -286,8 +286,10 @@ share a name, downloads select the output by default; pass `--direction input`
 relay until the task is removed by its configured history limit. Upgrade the
 relay and target worker before sending attachments; older workers do not
 advertise attachment support. Named Grok Bots do not support file attachments.
-If a long result and output files exceed the 1 MiB transfer limit, the task
-completes with its text result and a notice that the files were omitted.
+If a long result and output files exceed the 1 MiB transfer limit, or the output
+directory holds files Cohall cannot return (more than two, empty, oversized, or
+not regular files), the task completes with its text result and a notice that
+the files were omitted.
 Provider text results must fit 128 KiB. Codex and OpenCode JSON events are capped
 at 1 MiB each; retained OpenCode message parts use the same bound. If an event
 is discarded at that limit, the provider must return

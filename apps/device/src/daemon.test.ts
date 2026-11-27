@@ -1058,6 +1058,54 @@ describe("device relay connection", () => {
     expect(finished[0]?.bytes).toBeLessThan(maxSocketPayloadBytes)
   })
 
+  it("keeps the answer and session when the provider leaves too many output files", async () => {
+    const { server, relayUrl } = await startServer()
+    const task = Task.make({
+      id: makeTaskId(),
+      threadId: makeThreadId(),
+      targetDeviceId: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+      prompt: "Return files",
+      provider: "codex",
+      status: "assigned",
+      createdAt: now(),
+      updatedAt: now(),
+    })
+    vi.spyOn(Providers, "run").mockImplementation((options) =>
+      Effect.promise(async () => {
+        const output = options.prompt.match(/^Output directory: (.+)$/m)?.[1]
+        if (output === undefined) throw new Error("Missing output directory")
+        for (const name of ["a.txt", "b.txt", "c.txt"]) await writeFile(join(output, name), name)
+        return { result: "Done", sessionId: "provider-session" }
+      }),
+    )
+    const terminal: Array<Record<string, unknown>> = []
+    server.once("connection", (socket) => {
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({
+            _tag: "Connected",
+            serverVersion: "test",
+            connectedAt: now(),
+            taskAttachments: true,
+          }),
+        ),
+      )
+      socket.on("message", (message) => {
+        const event = JSON.parse(message.toString()) as Record<string, unknown>
+        if (event._tag === "DeviceHello")
+          socket.send(JSON.stringify({ _tag: "TaskAssigned", task }))
+        if (event._tag === "TaskFinished" || event._tag === "TaskFailed") terminal.push(event)
+      })
+    })
+    void run(relayUrl)
+    await vi.waitFor(() => expect(terminal).toHaveLength(1), { timeout: 8_000 })
+    expect(terminal[0]).toMatchObject({
+      _tag: "TaskFinished",
+      result: "Done\n\n[Output files omitted: A task can return at most 2 files]",
+      providerSessionId: "provider-session",
+    })
+  })
+
   it("does not invite file output when an older relay omits attachment support", async () => {
     const { server, relayUrl } = await startServer()
     const task = Task.make({
