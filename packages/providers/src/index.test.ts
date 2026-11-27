@@ -60,6 +60,13 @@ it.skipIf(process.platform === "win32").each([
   ["claude-code", '{"is_error":true,"result":"Not logged in."}', 1, "", "Not logged in."],
   [
     "claude-code",
+    '{"is_error":true,"result":"There is an issue with the selected model."}',
+    1,
+    '[claude-code:unrecognized_model] {"model":"missing"}',
+    "There is an issue with the selected model.",
+  ],
+  [
+    "claude-code",
     '{"is_error":true,"errors":["First error","Second error"]}',
     2,
     "",
