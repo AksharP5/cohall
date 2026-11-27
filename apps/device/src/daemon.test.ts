@@ -165,6 +165,29 @@ describe("device relay connection", () => {
     }
   })
 
+  it("rejects a relative workspace instead of resolving it from the worker's directory", async () => {
+    const root = await Filesystem.realpath(
+      await Filesystem.mkdtemp(join(tmpdir(), "cohall-workspace-relative-")),
+    )
+    const original = process.cwd()
+    try {
+      process.chdir(root)
+      const configuration = DeviceConfiguration.make({
+        relayUrl: "http://127.0.0.1:1",
+        token: "unused-test-token",
+        id: DeviceId.make("11111111-1111-4111-8111-111111111111"),
+        name: "worker",
+        workspaces: [root],
+      })
+      await expect(allowedWorkspace(configuration, ".")).rejects.toThrow(
+        "Workspace . must be an absolute path on this device",
+      )
+    } finally {
+      process.chdir(original)
+      await Filesystem.rm(root, { recursive: true, force: true })
+    }
+  })
+
   it.skipIf(process.platform === "win32")(
     "rejects an intermediate workspace parent replaced between resolution and opening",
     async () => {

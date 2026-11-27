@@ -166,6 +166,10 @@ export const allowedWorkspace = async (
   if (selected === undefined) {
     throw new Error("No workspace is configured on this device")
   }
+  // A relative path would resolve against the worker's own working directory.
+  if (!isAbsolute(selected)) {
+    throw new Error(`Workspace ${selected} must be an absolute path on this device`)
+  }
   const candidate = await realpath(selected)
   const allowed = configuration.workspaces.some((root) => {
     const child = relative(root, candidate)
