@@ -737,16 +737,20 @@ const runOnce = (options: RunOptions): Effect.Effect<RunResult, ProviderError> =
           }
           const exitCode = exit._tag === "Success" ? exit.value : undefined
           if (exitCode !== 0 || input._tag === "Failure") {
-            let diagnostic = stderr
-            if (stderr.text.trim().length === 0) {
+            // Claude Code's JSON explains the failure; its stderr holds an internal error code.
+            const claudeMessage =
+              output._tag === "Success" && typeof output.value === "string"
+                ? claudeFailureMessage(output.value)
+                : undefined
+            let diagnostic: CapturedText =
+              claudeMessage === undefined ? stderr : { text: claudeMessage, truncated: false }
+            if (diagnostic.text.trim().length === 0) {
               let message =
                 output._tag === "Failure"
                   ? output.error instanceof Error
                     ? output.error.message
                     : String(output.error)
-                  : typeof output.value === "string"
-                    ? claudeFailureMessage(output.value)
-                    : undefined
+                  : undefined
               if (message === undefined && input._tag === "Failure") {
                 message = input.error instanceof Error ? input.error.message : String(input.error)
               }
