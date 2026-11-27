@@ -68,7 +68,7 @@ describe("local bot replies", () => {
     await cleanupBotReply(task.id, oldRun)
     expect(await readBotReply(task.id, newRun)).toEqual({ result: "Released" })
     await expect(writeBotReply(task.id, { result: "Stale result" }, oldRun)).rejects.toThrow(
-      "No pending",
+      "already finished with a different reply",
     )
   })
 
@@ -164,7 +164,23 @@ describe("local bot replies", () => {
     await writeFile(join(records, "keep.txt"), "unrelated")
     await cleanupBotReply(task.id)
     await cleanupBotReply(task.id)
-    expect(await readdir(records)).toEqual(["keep.txt"])
+    expect((await readdir(records)).sort()).toEqual([`${task.id}.delivered.json`, "keep.txt"])
+  })
+
+  it("lets a Bot repeat its delivered reply after the task settles, until the reply lifetime ends", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000)
+    await prepareBotReply(task)
+    await writeBotReply(task.id, { result: "Three projects" })
+    await cleanupBotReply(task.id)
+    await expect(writeBotReply(task.id, { result: "Three projects" })).resolves.toBeUndefined()
+    await expect(writeBotReply(task.id, { result: "Four projects" })).rejects.toThrow(
+      "This task already finished with a different reply",
+    )
+    const other = TaskId.make("44444444-4444-4444-8444-444444444444")
+    await prepareBotReply(Task.make({ ...task, id: other }))
+    clock.mockReturnValue(1_000 + 6 * 60 * 60 * 1_000)
+    await cleanupBotReply(other)
+    await expect(writeBotReply(task.id, { result: "Three projects" })).rejects.toThrow("No pending")
   })
 
   it("quotes callback commands and lets the CLI reply without relay credentials", async () => {

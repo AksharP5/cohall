@@ -1,7 +1,7 @@
 import { BotId, TaskId, TaskRunId, RequestTaskInput, ThreadId, type Task } from "@cohall/protocol"
 import { Schema } from "effect"
-import { randomUUID } from "node:crypto"
-import { chmod, link, mkdir, open, unlink } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { chmod, link, mkdir, open, readdir, unlink } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { platform } from "node:os"
 import { configurationPath } from "./config.ts"
@@ -37,6 +37,14 @@ const Receipt = Schema.Struct({
   submittedAt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   reply: Reply,
 })
+// A settled task keeps its reply's digest so a Bot that repeats the same callback still succeeds.
+const Delivered = Schema.Struct({
+  taskId: TaskId,
+  digest: Schema.String,
+  settledAt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+})
+const replyDigest = (reply: BotReply) =>
+  createHash("sha256").update(JSON.stringify(reply)).digest("hex")
 
 const isMissing = (cause: unknown) =>
   cause instanceof Error && "code" in cause && cause.code === "ENOENT"
@@ -52,6 +60,7 @@ const paths = (taskId: TaskId, runId?: TaskRunId) => {
     pending: join(directory, `${key}.pending.json`),
     receipt: join(directory, `${key}.reply.json`),
     dispatch: join(directory, `${key}.dispatch.json`),
+    delivered: join(directory, `${key}.delivered.json`),
   }
 }
 
@@ -189,7 +198,15 @@ export const writeBotReply = async (
     )
   }
   const pending = await pendingReply(taskId, runId)
-  if (pending === undefined) throw new Error("No pending bot reply for this task")
+  if (pending === undefined) {
+    const value = await readJson(paths(taskId, runId).delivered, 4096)
+    const delivered = value === undefined ? undefined : Schema.decodeUnknownOption(Delivered)(value)
+    if (delivered?._tag === "Some" && delivered.value.taskId === taskId) {
+      if (delivered.value.digest === replyDigest(decoded.success)) return
+      throw new Error("This task already finished with a different reply")
+    }
+    throw new Error("No pending bot reply for this task")
+  }
   const existing = await readBotReply(taskId, runId)
   if (existing !== undefined) {
     if (JSON.stringify(existing) === JSON.stringify(decoded.success)) return
@@ -207,9 +224,23 @@ export const writeBotReply = async (
 
 export const cleanupBotReply = async (taskId: TaskId, runId?: TaskRunId): Promise<void> => {
   const files = paths(taskId, runId)
+  const reply = await readBotReply(taskId, runId).catch(() => undefined)
+  if (reply !== undefined) {
+    await publish(files.delivered, { taskId, digest: replyDigest(reply), settledAt: Date.now() })
+  }
   for (const path of [files.pending, files.receipt, files.dispatch]) {
     await unlink(path).catch((cause: unknown) => {
       if (!isMissing(cause)) throw cause
     })
+  }
+  const names = await readdir(files.directory).catch(() => [])
+  for (const name of names.filter((entry) => entry.endsWith(".delivered.json"))) {
+    const path = join(files.directory, name)
+    const delivered = Schema.decodeUnknownOption(Delivered)(
+      await readJson(path, 4096).catch(() => undefined),
+    )
+    if (delivered._tag === "Some" && Date.now() - delivered.value.settledAt < replyLifetimeMs)
+      continue
+    await unlink(path).catch(() => undefined)
   }
 }
