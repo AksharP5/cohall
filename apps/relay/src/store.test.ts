@@ -1811,6 +1811,52 @@ it("rejects all-device operations before every daemon supports them", async () =
   }
 })
 
+it("forgets a lost Grok Bot host that still held an uncancellable request", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const device = Device.make({
+      id: makeDeviceId(),
+      name: "lost-bot-host",
+      hostname: "localhost",
+      platform: "linux",
+      architecture: "x64",
+      status: "online",
+      providers: ["grok-bot"],
+      bots: [Bot.make({ id: BotId.make("research"), name: "Research" })],
+      capabilities: [],
+      workspaces: [],
+      version,
+      lastSeenAt: now(),
+    })
+    await Effect.runPromise(store.upsertDevice(device))
+    const task = await Effect.runPromise(
+      store.createDelegation(
+        { prompt: "Summarize", provider: "grok-bot", botId: BotId.make("research") },
+        device.id,
+        "owner",
+      ),
+    )
+    const assigned = await Effect.runPromise(store.assignTask(task.id))
+    await Effect.runPromise(store.markTaskDispatched(task.id))
+    await Effect.runPromise(store.acceptTask(task.id, device.id, assigned.runId))
+    await Effect.runPromise(store.markDeviceOffline(device.id))
+    await Effect.runPromise(store.requeueTasksFor(device.id))
+    await expect(Effect.runPromise(store.requestCancellation(task.id))).rejects.toMatchObject({
+      message: expect.stringContaining("Stop this bot in Grok Bot"),
+    })
+
+    await Effect.runPromise(store.forgetDevice(device.id))
+    expect(await Effect.runPromise(store.getTask(task.id))).toMatchObject({
+      status: "failed",
+      error: "Target device was forgotten by the relay owner",
+    })
+    expect(await Effect.runPromise(store.listDevices())).toEqual([])
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("settles cancellations only a forgotten worker could confirm", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {
