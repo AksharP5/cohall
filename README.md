@@ -240,8 +240,8 @@ npx -y @akshar5/cohall inbox ack <task-id>
 ```
 
 The inbox shows short previews; `status` returns the full result. Acknowledge a
-completed task after handling it. Synchronous `delegate` calls acknowledge their
-completed results automatically. Questions require an answer or cancellation.
+completed task after handling it. Synchronous `delegate` calls and `wait`
+acknowledge the completed results they return automatically. Questions require an answer or cancellation.
 The inbox shows up to 20 oldest entries and sets `hasMore` when more are waiting;
 handle entries to reveal the rest.
 Each client credential has its own inbox, including

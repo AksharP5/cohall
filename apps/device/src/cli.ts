@@ -1197,7 +1197,12 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
   if (command === "wait") {
     allowOptions(arguments_, ["timeout"])
     const id = Schema.decodeUnknownSync(TaskId)(identifier(arguments_, "task id"))
-    print(taskResult(await Effect.runPromise(waitForTask(relay, id, timeout(arguments_)))))
+    print(
+      await acknowledgedTaskResult(
+        relay,
+        await Effect.runPromise(waitForTask(relay, id, timeout(arguments_))),
+      ),
+    )
     return
   }
   if (command === "cancel") {
