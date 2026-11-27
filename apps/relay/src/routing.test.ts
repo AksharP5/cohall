@@ -205,6 +205,47 @@ it("keeps thread follow-ups on the thread's provider unless they name another", 
   }
 })
 
+it("sends a follow-up naming a provider to that provider's device in the thread", async () => {
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const providers = ["codex", "claude-code"] as const
+    const codexDevice = Device.make({ ...device("a-codex"), providers })
+    const claudeDevice = Device.make({ ...device("b-claude"), providers })
+    await Effect.runPromise(store.upsertDevice(codexDevice))
+    await Effect.runPromise(store.upsertDevice(claudeDevice))
+    const first = await Effect.runPromise(
+      store.createDelegation(
+        { prompt: "Start", provider: "claude-code" },
+        claudeDevice.id,
+        "owner",
+      ),
+    )
+    await Effect.runPromise(
+      store.createDelegation(
+        { prompt: "Check with Codex", provider: "codex", threadId: first.threadId },
+        codexDevice.id,
+        "owner",
+      ),
+    )
+    const followUp = {
+      prompt: "Continue",
+      provider: "claude-code" as const,
+      threadId: first.threadId,
+    }
+    expect(await runtime.runPromise(resolveDelegation(followUp))).toMatchObject({
+      targetDeviceId: claudeDevice.id,
+    })
+    // The Codex device holds no Claude Code session, so its absence blocks nothing.
+    await Effect.runPromise(store.upsertDevice({ ...codexDevice, status: "offline" }))
+    expect(await runtime.runPromise(resolveDelegation(followUp))).toMatchObject({
+      targetDeviceId: claudeDevice.id,
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("routes child tasks away from their parent and inherits only that parent's thread", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {

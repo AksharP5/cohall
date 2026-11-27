@@ -367,8 +367,10 @@ export interface Interface {
     provider: Provider,
   ) => Effect.Effect<string | undefined, PersistenceError>
   /** The device and provider that ran the thread's latest top-level coding turn. */
+  /** The thread's latest top-level coding turn, limited to `provider` when given. */
   readonly threadTurn: (
     threadId: ThreadId,
+    provider?: Provider,
   ) => Effect.Effect<
     { readonly deviceId: DeviceId; readonly provider: Provider } | undefined,
     PersistenceError
@@ -2472,16 +2474,23 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
     return row?.session_id
   })
 
-  const threadTurn = Effect.fn("RelayStore.threadTurn")(function* (threadId: ThreadId) {
+  const threadTurn = Effect.fn("RelayStore.threadTurn")(function* (
+    threadId: ThreadId,
+    provider?: Provider,
+  ) {
     return yield* Effect.try({
       try: () => {
         const row = db
-          .query<{ readonly target_device_id: DeviceId; readonly provider: string }, [string]>(
+          .query<
+            { readonly target_device_id: DeviceId; readonly provider: string },
+            [string, string | null]
+          >(
             `SELECT target_device_id, provider FROM tasks
-             WHERE thread_id = ? AND parent_task_id IS NULL AND provider <> 'grok-bot'
+             WHERE thread_id = ?1 AND parent_task_id IS NULL AND provider <> 'grok-bot'
+               AND (?2 IS NULL OR provider = ?2)
              ORDER BY created_at DESC, rowid DESC LIMIT 1`,
           )
-          .get(threadId)
+          .get(threadId, provider ?? null)
         return row === null
           ? undefined
           : {

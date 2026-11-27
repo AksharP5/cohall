@@ -277,12 +277,12 @@ export const resolveDelegation = (
     const devices = yield* store
       .listDevices()
       .pipe(Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })))
-    // A follow-up resumes the thread's latest coding turn: its device and, unless it names
-    // another, its provider. Another provider has no session for the thread.
+    // A follow-up resumes the thread's latest coding turn with its provider, or with the
+    // provider it names: only that provider's device holds a session for the thread.
     const threadTurn =
       parent === undefined && input.threadId !== undefined && input.botId === undefined
         ? yield* store
-            .threadTurn(input.threadId)
+            .threadTurn(input.threadId, input.provider)
             .pipe(
               Effect.mapError((cause) => new RequestError({ status: 500, message: cause.message })),
             )
