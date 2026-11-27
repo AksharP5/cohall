@@ -14,11 +14,13 @@ Usage:
   cohall devices [--watch [--interval seconds]]
   cohall progress [task-id] --message <note>
   cohall request-input [task-id] --question <text> [--run-id uuid]
-  cohall answer <task-id> --request-id uuid --message <text>
+  cohall answer <task-id> --request-id uuid (--message <text|-> | --message-file <path>)
   cohall bots
   cohall send [@device-or-bot] [prompt] [delegate options]
-  cohall delegate [prompt] [--target @device-or-bot] [--provider provider]
-                  [--context text] [--thread uuid] [--parent task-id] [--workspace path]
+  cohall delegate [prompt | --prompt text|- | --prompt-file path]
+                  [--target @device-or-bot] [--provider provider]
+                  [--context text|- | --context-file path]
+                  [--thread uuid] [--parent task-id] [--workspace path]
                   [--attach path] [--request-id uuid] [--timeout seconds] [--deadline UTC-timestamp] [--no-wait]
   cohall status <task-id>
   cohall inbox [ack <task-id>]

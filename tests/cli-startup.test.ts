@@ -59,6 +59,10 @@ it("prints version and help without loading runtime dependencies", async () => {
     // Client-only setup is how requesters without a worker join; help must show it.
     expect(help.stdout).toContain("[--client-only | --service]")
     expect(help.stdout).toContain("(--workspace <path> | --client-only)")
+    // The README and skill pass prompts and answers through these options.
+    expect(help.stdout).toContain("--prompt-file path")
+    expect(help.stdout).toContain("--context-file path")
+    expect(help.stdout).toContain("--message-file <path>")
     for (const args of [[], ["help"], ["-h"], ["device", "--help"], ["mcp", "help"]]) {
       const result = await execute(process.execPath, [entrypoint, ...args])
       expect(result.stdout).toBe(help.stdout)
