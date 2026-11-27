@@ -154,6 +154,45 @@ it("lets Codex wait out a default Cohall MCP wait", async () => {
   expect(Number(codex_mcp.match(/^tool_timeout_sec = (\d+)$/m)?.[1])).toBeGreaterThan(900)
 })
 
+it("warns in doctor when a worker cannot run tasks", async () => {
+  const directory = await temporary()
+  vi.stubEnv("COHALL_CLIENT_TOKEN", undefined)
+  vi.stubEnv("COHALL_RELAY_URL", undefined)
+  vi.stubEnv("PATH", directory)
+  const workspace = join(directory, "removed-workspace")
+  await writeStoredConfiguration(
+    StoredConfiguration.make({
+      version: 1,
+      relayUrl: "https://relay.example",
+      deviceId: DeviceId.make(taskId),
+      deviceName: "workstation",
+      workspaces: [workspace],
+      deviceToken: "revoked-device-secret",
+    }),
+  )
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = String(input)
+      if (url.endsWith("/api/health")) return Response.json({ ok: true, version: "0.12.17" })
+      if (url.endsWith("/api/device/credential"))
+        return Response.json({ error: "Unauthorized" }, { status: 401 })
+      return new Response(null, { status: 404 })
+    }),
+  )
+  const output = vi.spyOn(console, "log").mockImplementation(() => undefined)
+  await runCli("doctor", [])
+  const report = String(output.mock.calls[0]?.[0])
+  expect(JSON.parse(report)).toMatchObject({
+    warnings: expect.arrayContaining([
+      "Device credential was rejected by the relay; pair this device again with a new pairing token",
+      "No provider executable is installed or on PATH",
+      `Workspace root ${workspace} does not exist`,
+    ]),
+  })
+  expect(report).not.toContain("Device status cannot be checked")
+})
+
 it("prints one compact JSON snapshot when a device watch is redirected", async () => {
   await temporary()
   const overview = [{ name: "worker" }]

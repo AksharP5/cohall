@@ -187,7 +187,7 @@ determine what work it can accept.
 Non-loopback HTTP is refused unless `--allow-http` explicitly confirms that an
 independent private network such as Tailscale encrypts the connection.
 `cohall doctor` checks the effective configuration, relay connection, provider
-executables, authentication readiness, and versions. With a client credential,
+executables, workspace roots, client and device credentials, and versions. With a client credential,
 it also runs a local MCP server self-test and separately reports observed agent
 host connections. The self-test lists tools without calling one or requiring
 the relay. To verify your harness, ask it to call `list_devices` and inspect
