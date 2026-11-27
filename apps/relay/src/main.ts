@@ -175,7 +175,10 @@ const body = <A, E, R>(
     Effect.mapError((cause) =>
       cause instanceof RequestError
         ? cause
-        : new RequestError({ status: 400, message: String(cause).slice(0, 2_048) }),
+        : new RequestError({
+            status: 400,
+            message: (cause instanceof Error ? cause.message : String(cause)).slice(0, 2_048),
+          }),
     ),
   )
 
