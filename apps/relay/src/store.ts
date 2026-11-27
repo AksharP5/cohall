@@ -2174,9 +2174,13 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       return current
     }
     if (taskDeadlinePassed(current) && status !== "cancelled") return yield* expireTask(current)
+    // A worker stops a task unasked only at its deadline; its clock may run ahead of the relay's.
+    const workerDeadline =
+      status === "cancelled" && current.status !== "cancelling" && current.expiresAt !== undefined
     const deadlineExpired =
-      taskDeadlinePassed(current) &&
-      (current.status !== "cancelling" || current.error === taskDeadlineError)
+      workerDeadline ||
+      (taskDeadlinePassed(current) &&
+        (current.status !== "cancelling" || current.error === taskDeadlineError))
     const finalStatus = status === "cancelled" && deadlineExpired ? "failed" : status
     const finalError = finalStatus === "failed" && deadlineExpired ? taskDeadlineError : error
     const timestamp = now()
