@@ -240,6 +240,20 @@ describe("Grok Bot gateway", () => {
     expect(fixture.calls.some((call) => call.method.includes("Transcript"))).toBe(false)
   })
 
+  it("fails at once when the gateway refuses the prompt, without resending it", async () => {
+    const task = makeTask()
+    const fixture = await gateway(({ method }, response) => {
+      if (method === "promptAcceptanceStatus") return { outcome: "not-found" }
+      if (method === "listAgents") return [bot]
+      response.statusCode = 404
+      return { error: "No such agent" }
+    })
+    await expect(runGrokBot(fixture.path, task, new AbortController().signal)).rejects.toThrow(
+      "Grok Bot refused this task (HTTP 404); the prompt was not delivered",
+    )
+    expect(fixture.calls.filter((call) => call.method === "sendPrompt")).toHaveLength(1)
+  })
+
   it("recovers a durable receipt without needing the gateway, even after its original deadline", async () => {
     const task = makeTask()
     replies.deadlines.set(task.id, Date.now() - 1000)

@@ -331,11 +331,23 @@ export const runGrokBot = async (
           SendResult,
           signal,
         )
-      } catch {
+      } catch (cause) {
         if (signal.aborted)
           throw new Error("Stopped waiting for Grok Bot; its run may still be active")
         const receipt = await readBotReply(task.id, task.runId)
         if (receipt !== undefined) return finishReply(receipt)
+        // A refusal means the bot never received the prompt; timeouts, conflicts and
+        // rate limits leave acceptance unknown, so those reconcile instead.
+        if (
+          cause instanceof GatewayError &&
+          cause.status !== undefined &&
+          cause.status >= 400 &&
+          cause.status < 500 &&
+          ![408, 409, 429].includes(cause.status)
+        )
+          throw new Error(
+            `Grok Bot refused this task (HTTP ${cause.status}); the prompt was not delivered`,
+          )
         return waitForReply(true)
       }
       return waitForReply()

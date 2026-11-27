@@ -142,8 +142,10 @@ and is capped at five seconds so the gateway can recover after a multi-minute VM
 freeze. Gateway discovery is reread on each attempt. Cancellation and explicit task
 deadlines still stop the wait.
 Other pre-dispatch HTTP errors, invalid responses, and unknown acceptance durability
-still fail without sending the prompt. Post-dispatch reconciliation continues to
-await the existing receipt without resending. This recovery does not keep a
+still fail without sending the prompt. If the gateway refuses the prompt itself
+with an HTTP 4xx other than 408, 409, or 429, the task fails at once. After other
+send failures, reconciliation continues to await the existing receipt without
+resending. This recovery does not keep a
 suspended VM awake.
 
 The relay requeues work interrupted by a device disconnect and redelivers it when
