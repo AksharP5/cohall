@@ -678,9 +678,10 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
     const deviceDescription = (
       option(arguments_, "description") ?? existing?.deviceDescription
     )?.trim()
-    const model = option(arguments_, "model") ?? existing?.model
-    const gatewayInput = option(arguments_, "grok-gateway") ?? existing?.grokGateway
-    const grokGateway = gatewayInput === undefined ? undefined : resolve(gatewayInput)
+    // An empty value clears the setting, like --description ''.
+    const model = (option(arguments_, "model") ?? existing?.model)?.trim() || undefined
+    const gatewayInput = (option(arguments_, "grok-gateway") ?? existing?.grokGateway)?.trim()
+    const grokGateway = gatewayInput ? resolve(gatewayInput) : undefined
     const providerInput = option(arguments_, "providers")
     const providers =
       providerInput === undefined

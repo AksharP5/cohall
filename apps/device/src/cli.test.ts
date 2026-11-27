@@ -98,6 +98,17 @@ it("sets, reports, retains, and clears device specialties without changing other
   expect(await readStoredConfiguration()).toEqual({ ...original, model: "another-model" })
 })
 
+it("clears a saved model and Grok gateway path with empty values", async () => {
+  const directory = await temporary()
+  const {
+    model: _model,
+    grokGateway: _gateway,
+    ...original
+  } = await storeWorkerConfiguration(directory)
+  await runCli("configure", ["--model", "", "--grok-gateway", ""])
+  expect(await readStoredConfiguration()).toEqual(original)
+})
+
 it("lets a Codex-launched MCP server inherit the delegated task", async () => {
   const directory = await temporary()
   await storeWorkerConfiguration(directory)

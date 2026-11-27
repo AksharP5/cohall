@@ -178,7 +178,9 @@ changes the device name, description, workspace roots, providers, Grok gateway p
 for a fresh pairing. Use `cohall relay use <url>` when moving an existing relay;
 it preserves credentials only after verifying them at the restored address.
 Use `cohall configure --description 'iOS builds and simulator testing'` to
-advertise a device's specialties, or `--description ''` to clear them. Descriptions
+advertise a device's specialties, or `--description ''` to clear them. Clear a
+saved model or Grok gateway path the same way with `--model ''` or
+`--grok-gateway ''`. Descriptions
 allow up to 512 characters and appear after restarting the worker on an updated
 relay. They describe the device; advertised providers and workspace roots still
 determine what work it can accept.
