@@ -1,4 +1,4 @@
-import { RelayClient } from "@cohall/client"
+import { isRelayOutage, RelayClient } from "@cohall/client"
 import {
   AttachmentName,
   maxAttachmentBytes,
@@ -6,7 +6,7 @@ import {
   type InputAttachment,
   type TaskId,
 } from "@cohall/protocol"
-import { Effect, Schema } from "effect"
+import { Effect, Schedule, Schema } from "effect"
 import { constants } from "node:fs"
 import { lstat, mkdtemp, mkdir, open, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -94,7 +94,14 @@ export const prepareTaskFiles = Effect.fn("TaskFiles.prepare")(function* (
     Effect.uninterruptible,
   )
   for (const name of inputNames) {
-    const data = yield* client.readAttachment(taskId, name)
+    // A relay restarting during dispatch re-sends this run; failing here would end it for good.
+    const data = yield* client.readAttachment(taskId, name).pipe(
+      Effect.retry({
+        while: isRelayOutage,
+        schedule: Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("5 seconds")]),
+        times: 24,
+      }),
+    )
     yield* Effect.tryPromise({
       try: () => writeFile(join(input, name), data, { flag: "wx", mode: 0o600 }),
       catch: (cause) => cause,

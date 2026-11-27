@@ -1,4 +1,4 @@
-import { RelayRequestError, type Interface as RelayClient } from "@cohall/client"
+import { isRelayOutage, RelayRequestError, type Interface as RelayClient } from "@cohall/client"
 import {
   BotId,
   DeviceId,
@@ -332,11 +332,6 @@ export const createDelegation = Effect.fn("Cohall.createDelegation")(function* (
   )
 })
 
-// Known tasks survive relay restarts and proxy outages, so polls keep their last state.
-const isRelayOutage = (cause: unknown): boolean =>
-  cause instanceof RelayRequestError &&
-  (cause.status === undefined || [502, 503, 504].includes(cause.status))
-
 export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
   client: RelayClient,
   initial: Task | TaskId,
@@ -345,6 +340,7 @@ export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
   const id = typeof initial === "string" ? initial : initial.id
   let task = typeof initial === "string" ? undefined : initial
   let unreachableSince: string | undefined
+  // Known tasks survive relay restarts and proxy outages, so polls keep their last state.
   return yield* Effect.gen(function* () {
     if (task === undefined) task = yield* client.getTask(id)
     while (!isTerminalTask(task) && task.status !== "needs_input") {
