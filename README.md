@@ -313,7 +313,8 @@ See [task deadlines](docs/integrations.md#task-deadlines) for details.
 
 Reuse the returned `thread_id` for follow-ups so the target resumes its provider
 session. A follow-up uses the provider of the thread's latest turn unless you
-pass `--provider`. Without `--target`, it also prefers that turn's device. If it is offline,
+pass `--provider`. Without `--target`, it also prefers the device that last ran
+that provider in the thread. If it is offline,
 Cohall rejects the follow-up instead of starting over on another device; pass
 `--target` to queue it for that device or to start a new session on another.
 Queued follow-ups pick up the preceding turn's session when they start,
