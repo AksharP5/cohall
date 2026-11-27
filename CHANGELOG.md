@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.17](https://github.com/AksharP5/cohall/compare/v0.12.16...v0.12.17) (2026-11-27)
+
+
+### Bug Fixes
+
+* **bots:** say when a Grok Bot gateway is unavailable instead of listing no bots ([#356](https://github.com/AksharP5/cohall/issues/356)) ([e1fd17a](https://github.com/AksharP5/cohall/commit/e1fd17a2bcafbbc1db84d8ed664812c1978a76d5))
+* **cli:** clear the inbox entry of a result that wait returns ([#351](https://github.com/AksharP5/cohall/issues/351)) ([6b7e183](https://github.com/AksharP5/cohall/commit/6b7e183e43bcad98d4931f441b14613457f7e051))
+* **cli:** say the relay is unreachable when a wait times out during an outage ([#353](https://github.com/AksharP5/cohall/issues/353)) ([0de7a2e](https://github.com/AksharP5/cohall/commit/0de7a2ee04d086c4ad843fdf0165149ada4a72a5))
+* **device:** keep tasks with attachments alive when the relay restarts at dispatch ([#358](https://github.com/AksharP5/cohall/issues/358)) ([c0d9c7a](https://github.com/AksharP5/cohall/commit/c0d9c7ab08602610f3e86cc522772da46f93b5e6))
+* **mcp:** keep thread context small enough for agent hosts to read inline ([#355](https://github.com/AksharP5/cohall/issues/355)) ([25971a8](https://github.com/AksharP5/cohall/commit/25971a8709c43f29ae7a3f8b261f9f884b019bd2))
+* **relay:** let the owner forget a lost Grok Bot host with an unfinished request ([#347](https://github.com/AksharP5/cohall/issues/347)) ([fcb1e81](https://github.com/AksharP5/cohall/commit/fcb1e815956334a1b995d3461b1dfd711036cdcd))
+
 ## [0.12.16](https://github.com/AksharP5/cohall/compare/v0.12.15...v0.12.16) (2026-11-27)
 
 
