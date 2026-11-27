@@ -27,6 +27,7 @@ import type { ClientConfiguration } from "./config.ts"
 import {
   acknowledgedTaskResult,
   createDelegation,
+  gatewayWarnings,
   listBots,
   taskResult,
   threadContext,
@@ -163,7 +164,17 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
         "List named Grok Bots on paired devices, their host availability, and unambiguous targets for delegate. Bot names can also be used when unique.",
       inputSchema: {},
     },
-    async () => output(listBots(await Effect.runPromise(client.devices()))),
+    async () => {
+      const devices = await Effect.runPromise(client.devices())
+      const result = await output(listBots(devices))
+      return {
+        ...result,
+        content: [
+          ...result.content,
+          ...gatewayWarnings(devices).map((text) => ({ type: "text" as const, text })),
+        ],
+      }
+    },
   )
 
   server.registerTool(

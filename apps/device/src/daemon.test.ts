@@ -1184,6 +1184,29 @@ describe("device relay connection", () => {
     )
   })
 
+  it("tells the relay when its Grok Bot gateway cannot be read", async () => {
+    const { server, relayUrl } = await startServer()
+    vi.spyOn(Grok, "discoverGrokBots").mockRejectedValue(new Error("Cannot read gateway"))
+    const events: Array<{ _tag: string; bots?: unknown; botsUnavailable?: unknown }> = []
+    server.once("connection", (socket) => {
+      socket.once("message", () =>
+        socket.send(
+          JSON.stringify({ _tag: "Connected", serverVersion: "test", connectedAt: now() }),
+        ),
+      )
+      socket.on("message", (message) => {
+        events.push(JSON.parse(message.toString()))
+      })
+    })
+    void run(relayUrl, "/fake/gateway.json")
+    await vi.waitFor(() =>
+      expect(events.find((event) => event._tag === "DeviceHeartbeat")).toMatchObject({
+        bots: [],
+        botsUnavailable: true,
+      }),
+    )
+  })
+
   it("lets bots delegate to the CLI while serializing each bot and waiting to upgrade", async () => {
     const { server, relayUrl } = await startServer()
     const started: Array<string> = []

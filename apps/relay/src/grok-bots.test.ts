@@ -74,6 +74,14 @@ it("routes only advertised bots and refreshes a roster without reconnecting the 
       updated.bots,
     )
     expect((await Effect.runPromise(store.heartbeat(device.id, "online", []))).bots).toEqual([])
+    const unreadable = await Effect.runPromise(store.heartbeat(device.id, "online", [], true))
+    expect(unreadable).toMatchObject({ bots: [], botsUnavailable: true })
+    expect((await Effect.runPromise(store.heartbeat(device.id, "online"))).botsUnavailable).toBe(
+      true,
+    )
+    expect(
+      (await Effect.runPromise(store.heartbeat(device.id, "online", []))).botsUnavailable,
+    ).toBeUndefined()
     await expect(
       Effect.runPromise(
         resolveDelegation({
@@ -213,6 +221,7 @@ it("adds bot discovery and task columns without changing CLI sessions or history
     database.exec(`
       DROP INDEX tasks_unseen_inbox;
       ALTER TABLE devices DROP COLUMN bots_json;
+      ALTER TABLE devices DROP COLUMN bots_unavailable;
       ALTER TABLE tasks DROP COLUMN bot_id;
       ALTER TABLE tasks DROP COLUMN requester_id;
       ALTER TABLE tasks DROP COLUMN completion_seen_at;

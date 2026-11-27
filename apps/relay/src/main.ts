@@ -806,6 +806,7 @@ export const runRelay = async (): Promise<void> => {
                 deviceId,
                 event.status === "busy" ? "busy" : "online",
                 event.bots,
+                event.botsUnavailable,
               )
             }
             return
