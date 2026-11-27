@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.12.18](https://github.com/AksharP5/cohall/compare/v0.12.17...v0.12.18) (2026-11-27)
+
+
+### Bug Fixes
+
+* **bots:** fail a Bot task at once when Grok Bot refuses its prompt ([#364](https://github.com/AksharP5/cohall/issues/364)) ([d3faa00](https://github.com/AksharP5/cohall/commit/d3faa0070b633819ade376959a5c62017ab1d49b))
+* **bots:** let a Bot repeat its delivered reply without a false failure ([#367](https://github.com/AksharP5/cohall/issues/367)) ([c3b4382](https://github.com/AksharP5/cohall/commit/c3b4382d2fe169383f4e7770864985441dcda195))
+* **cli:** let the relay owner answer and cancel tasks from the relay host ([#362](https://github.com/AksharP5/cohall/issues/362)) ([91a843c](https://github.com/AksharP5/cohall/commit/91a843c66c3271b471da21979b0ea1dae231221c))
+* **cli:** make doctor report a worker that cannot run tasks ([#360](https://github.com/AksharP5/cohall/issues/360)) ([7b16db2](https://github.com/AksharP5/cohall/commit/7b16db26762674fcb93affe378fc6c0bf5b436ba))
+* **relay:** show invalid-request errors without the SchemaError wrapper ([#369](https://github.com/AksharP5/cohall/issues/369)) ([baab482](https://github.com/AksharP5/cohall/commit/baab482e5f5d9ea157935934a221b043f8b393ee))
+
 ## [0.12.17](https://github.com/AksharP5/cohall/compare/v0.12.16...v0.12.17) (2026-11-27)
 
 
