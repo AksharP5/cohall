@@ -39,8 +39,8 @@ import { createMcpHostDiagnostics } from "./mcp-host-diagnostics.ts"
 
 export const runMcp = async (configuration: ClientConfiguration): Promise<void> => {
   const buildNotice = await createMcpBuildNotice(process.argv[1], version)
-  const output = (value: unknown) =>
-    buildNotice({ content: [{ type: "text", text: JSON.stringify(value, null, 2) }] })
+  const output = (value: unknown, indent = 2) =>
+    buildNotice({ content: [{ type: "text", text: JSON.stringify(value, null, indent) }] })
   const client = RelayClient.make({
     baseUrl: configuration.relayUrl,
     token: configuration.token,
@@ -393,11 +393,13 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
     "thread_context",
     {
       title: "Read a Cohall thread",
-      description: "Read shared task prompts and final results for a cross-device thread.",
+      description:
+        "Read a cross-device thread: recent prompts and results as messages, plus task status. Use task_status for a task's full context and result.",
       inputSchema: { thread_id: z.string().uuid() },
     },
     async ({ thread_id }) =>
-      output(await Effect.runPromise(threadContext(client, ThreadId.make(thread_id)))),
+      // Long threads can exceed host tool-output limits.
+      output(await Effect.runPromise(threadContext(client, ThreadId.make(thread_id))), 0),
   )
 
   const disconnected = once(process.stdin, "end")

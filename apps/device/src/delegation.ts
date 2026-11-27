@@ -395,9 +395,16 @@ export const followTaskTrace = Effect.fn("Cohall.followTaskTrace")(function* (
   return trace
 })
 
+// Messages already carry each prompt and result; full tasks, including context, come from status.
 export const threadContext = Effect.fn("Cohall.threadContext")(function* (
   client: RelayClient,
   threadId: ThreadIdType,
 ) {
-  return yield* client.threadContext(threadId)
+  const context = yield* client.threadContext(threadId)
+  return {
+    ...context,
+    tasks: context.tasks.map(
+      ({ prompt: _prompt, context: _context, result: _result, ...task }) => task,
+    ),
+  }
 })
