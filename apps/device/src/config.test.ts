@@ -15,7 +15,16 @@ import { DeviceId } from "@cohall/protocol"
 import { Effect } from "effect"
 import { execFile } from "node:child_process"
 import { syncBuiltinESMExports } from "node:module"
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import { homedir, platform, tmpdir } from "node:os"
 import OperatingSystem from "node:os"
 import { join } from "node:path"
@@ -26,7 +35,7 @@ import { parseProviders, parseWorkspaces } from "./config.ts"
 const directories: Array<string> = []
 
 const temporary = async (): Promise<string> => {
-  const directory = await mkdtemp(join(tmpdir(), "cohall-config-"))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "cohall-config-")))
   directories.push(directory)
   return directory
 }

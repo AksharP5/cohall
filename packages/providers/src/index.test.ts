@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join, relative } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
@@ -37,7 +37,7 @@ const isRunning = (pid: number): boolean => {
 }
 
 const providerFixture = async (command: string, script: string): Promise<string> => {
-  const directory = await mkdtemp(join(tmpdir(), "cohall-provider-"))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "cohall-provider-")))
   directories.push(directory)
   await writeFile(
     join(directory, command),
