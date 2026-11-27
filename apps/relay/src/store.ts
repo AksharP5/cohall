@@ -263,7 +263,7 @@ export interface Interface {
   readonly acknowledgeCompletion: (
     taskId: TaskId,
     principal: AuthSession | "owner",
-  ) => Effect.Effect<TaskInboxItem, PersistenceError>
+  ) => Effect.Effect<TaskInboxItem, PersistenceError | TaskInputError>
   readonly getTask: (taskId: TaskId) => Effect.Effect<Task, PersistenceError>
   readonly reportTaskProgress: (
     taskId: TaskId,
@@ -873,8 +873,7 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       try: () =>
         db
           .query<InboxRow, [string, string]>(
-            `SELECT ${inboxColumns} FROM tasks WHERE id = ? AND requester_id = ?
-             AND status IN ('completed', 'failed', 'cancelled')`,
+            `SELECT ${inboxColumns} FROM tasks WHERE id = ? AND requester_id = ?`,
           )
           .get(taskId, requesterId),
       catch: operationError("RelayStore.acknowledgeCompletion.read"),
@@ -883,6 +882,15 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
       return yield* new PersistenceError({
         operation: "RelayStore.acknowledgeCompletion",
         message: `Unknown inbox task ${taskId}`,
+      })
+    }
+    if (!["completed", "failed", "cancelled"].includes(row.status)) {
+      return yield* new TaskInputError({
+        status: 409,
+        message:
+          row.status === "needs_input"
+            ? `Task ${taskId} is waiting for an answer; answer or cancel it instead of acknowledging it`
+            : `Task ${taskId} has not finished; acknowledge it after it completes`,
       })
     }
     yield* Effect.try({

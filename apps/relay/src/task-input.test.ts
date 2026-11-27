@@ -442,7 +442,10 @@ it("pauses, frees the worker, and resumes only the current question for its requ
     })
     await expect(
       Effect.runPromise(store.acknowledgeCompletion(task.id, sender)),
-    ).rejects.toMatchObject({ message: `Unknown inbox task ${task.id}` })
+    ).rejects.toMatchObject({
+      status: 409,
+      message: `Task ${task.id} is waiting for an answer; answer or cancel it instead of acknowledging it`,
+    })
     const another = await Effect.runPromise(
       store.createDelegation({ prompt: "Other work" }, target.id, other),
     )
