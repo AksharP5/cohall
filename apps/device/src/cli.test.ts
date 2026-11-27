@@ -521,6 +521,39 @@ it("accepts option values that begin with a dash but not a missing value", async
   )
 })
 
+it("sends a positional prompt that begins with a dash", async () => {
+  await temporary()
+  const fetch = vi.fn<typeof globalThis.fetch>(async (url) =>
+    String(url).endsWith("/api/devices/page")
+      ? Response.json({
+          devices: [
+            {
+              id: taskId,
+              name: "worker",
+              hostname: "worker",
+              platform: "linux",
+              architecture: "x64",
+              status: "online",
+              providers: ["codex"],
+              capabilities: [],
+              workspaces: [],
+              version: "test",
+              lastSeenAt: "2026-10-08T00:00:00Z",
+            },
+          ],
+        })
+      : Promise.reject(new Error("Task submitted")),
+  )
+  vi.stubGlobal("fetch", fetch)
+  await expect(runCli("delegate", ["- check the failing test", "--no-wait"])).rejects.toThrow(
+    "Task submitted",
+  )
+  expect(JSON.parse(String(fetch.mock.lastCall?.[1]?.body))).toMatchObject({
+    prompt: "- check the failing test",
+  })
+  await expect(runCli("delegate", ["--promtp", "text"])).rejects.toThrow("Unknown option: --promtp")
+})
+
 it("preserves UTF-8 short reads and closes the input file on Windows and Unix", async () => {
   const directory = await temporary()
   const path = join(directory, "message.txt")

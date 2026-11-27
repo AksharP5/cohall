@@ -142,12 +142,13 @@ const parseArguments = (values: ReadonlyArray<string>): Arguments => {
       positionals.push(...values.slice(index + 1))
       break
     }
-    if (!argument.startsWith("-")) {
+    const separator = argument.indexOf("=")
+    const rawName = separator === -1 ? argument : argument.slice(0, separator)
+    // Option names never contain whitespace, so "- check the tests" is prompt text.
+    if (!argument.startsWith("-") || /\s/.test(rawName)) {
       positionals.push(argument)
       continue
     }
-    const separator = argument.indexOf("=")
-    const rawName = separator === -1 ? argument : argument.slice(0, separator)
     const inline = separator === -1 ? undefined : argument.slice(separator + 1)
     const name = optionName(rawName)
     if (flagOptions.has(name)) {
