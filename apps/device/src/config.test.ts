@@ -219,11 +219,15 @@ describe("device workspace configuration", () => {
       relay: process.env.COHALL_RELAY_URL,
       clientToken: process.env.COHALL_CLIENT_TOKEN,
       deviceToken: process.env.COHALL_DEVICE_TOKEN,
+      dataDirectory: process.env.COHALL_DATA_DIR,
+      ownerToken: process.env.COHALL_TOKEN,
     }
     process.env.COHALL_CONFIG = join(directory, "config.json")
     process.env.COHALL_RELAY_URL = "https://new-relay.example"
+    process.env.COHALL_DATA_DIR = join(directory, "relay")
     delete process.env.COHALL_CLIENT_TOKEN
     delete process.env.COHALL_DEVICE_TOKEN
+    delete process.env.COHALL_TOKEN
 
     try {
       await writeStoredConfiguration(
@@ -267,6 +271,8 @@ describe("device workspace configuration", () => {
       restore("COHALL_RELAY_URL", previous.relay)
       restore("COHALL_CLIENT_TOKEN", previous.clientToken)
       restore("COHALL_DEVICE_TOKEN", previous.deviceToken)
+      restore("COHALL_DATA_DIR", previous.dataDirectory)
+      restore("COHALL_TOKEN", previous.ownerToken)
     }
   })
 
@@ -280,15 +286,28 @@ describe("device workspace configuration", () => {
       config: process.env.COHALL_CONFIG,
       dataDirectory: process.env.COHALL_DATA_DIR,
       ownerToken: process.env.COHALL_TOKEN,
+      clientToken: process.env.COHALL_CLIENT_TOKEN,
+      relay: process.env.COHALL_RELAY_URL,
     }
     process.env.COHALL_CONFIG = join(directory, "config.json")
     process.env.COHALL_DATA_DIR = dataDirectory
     delete process.env.COHALL_TOKEN
+    delete process.env.COHALL_CLIENT_TOKEN
+    delete process.env.COHALL_RELAY_URL
 
     try {
       await expect(Effect.runPromise(loadOwnerConfiguration)).resolves.toMatchObject({
         token: ownerToken,
       })
+      // Without a client pairing, the relay host's client commands act for the owner.
+      await expect(Effect.runPromise(loadClientConfiguration)).resolves.toMatchObject({
+        token: ownerToken,
+      })
+      process.env.COHALL_CLIENT_TOKEN = "client-secret"
+      await expect(Effect.runPromise(loadClientConfiguration)).resolves.toMatchObject({
+        token: "client-secret",
+      })
+      delete process.env.COHALL_CLIENT_TOKEN
       process.env.COHALL_TOKEN = "x".repeat(513)
       await expect(Effect.runPromise(loadOwnerConfiguration)).rejects.toThrow("owner token")
     } finally {
@@ -302,6 +321,8 @@ describe("device workspace configuration", () => {
       restore("COHALL_CONFIG", previous.config)
       restore("COHALL_DATA_DIR", previous.dataDirectory)
       restore("COHALL_TOKEN", previous.ownerToken)
+      restore("COHALL_CLIENT_TOKEN", previous.clientToken)
+      restore("COHALL_RELAY_URL", previous.relay)
     }
   })
 
