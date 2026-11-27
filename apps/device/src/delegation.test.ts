@@ -168,6 +168,26 @@ it("keeps waiting through a relay restart but stops on a rejected credential", a
   await expect(waitThrough(rejected)).rejects.toMatchObject({ status: 401 })
 })
 
+it("says the relay is unreachable when a wait times out during an outage", async () => {
+  const outage = new RelayRequestError({ operation: "getTask", message: "fetch failed" })
+  const relay = { ...client(), getTask: () => Effect.fail(outage) }
+  const failure = await Effect.runPromise(
+    Effect.gen(function* () {
+      const waiting = yield* waitForTask(relay, Task.make({ ...task, status: "running" }), 5).pipe(
+        Effect.flip,
+        Effect.forkChild,
+      )
+      yield* TestClock.adjust("5 seconds")
+      return yield* Fiber.join(waiting)
+    }).pipe(Effect.provide(TestClock.layer())),
+  )
+  expect(failure).toMatchObject({
+    _tag: "Cohall.TaskWaitTimeoutError",
+    status: "running",
+    message: expect.stringMatching(/relay has been unreachable since .*last running/),
+  })
+})
+
 it("follows a trace through a relay restart but stops on a rejected credential", async () => {
   const trace = (status: Task["status"]) =>
     TaskTrace.make({
