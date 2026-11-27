@@ -333,15 +333,22 @@ export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
 ) {
   const id = typeof initial === "string" ? initial : initial.id
   let task = typeof initial === "string" ? undefined : initial
+  let unreachableSince: string | undefined
   return yield* Effect.gen(function* () {
     if (task === undefined) task = yield* client.getTask(id)
     while (!isTerminalTask(task) && task.status !== "needs_input") {
       yield* Effect.sleep("1 second")
       const known: Task = task
       // The wait timeout bounds polling through an outage.
-      task = yield* client
-        .getTask(id)
-        .pipe(Effect.catchIf(isRelayOutage, () => Effect.succeed(known)))
+      task = yield* client.getTask(id).pipe(
+        Effect.tap(() => Effect.sync(() => (unreachableSince = undefined))),
+        Effect.catchIf(isRelayOutage, () =>
+          Effect.sync(() => {
+            unreachableSince ??= new Date().toISOString()
+            return known
+          }),
+        ),
+      )
     }
     return task
   }).pipe(
@@ -352,7 +359,9 @@ export const waitForTask = Effect.fn("Cohall.waitForTask")(function* (
           message:
             task === undefined
               ? `Task ${id} did not return its status after ${timeoutSeconds} seconds`
-              : `Task ${id} is still ${task.status} after ${timeoutSeconds} seconds`,
+              : unreachableSince === undefined
+                ? `Task ${id} is still ${task.status} after ${timeoutSeconds} seconds`
+                : `Stopped waiting for task ${id} after ${timeoutSeconds} seconds: the relay has been unreachable since ${unreachableSince}, and the task was last ${task.status}`,
           taskId: id,
           ...(task === undefined ? {} : { status: task.status }),
         }),
