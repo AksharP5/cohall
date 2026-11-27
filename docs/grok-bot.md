@@ -139,8 +139,9 @@ After a large forward wall-clock jump, the worker reconnects on its next
 pre-dispatch acceptance and bot-roster checks retry network failures and HTTP 502,
 503, and 504 until the saved six-hour reply deadline. Backoff starts at one second
 and is capped at five seconds so the gateway can recover after a multi-minute VM
-freeze. Gateway discovery is reread on each attempt. Cancellation and explicit task
-deadlines still stop the wait.
+freeze. Gateway discovery is reread on each attempt. The task has already reached
+the worker, so Cohall cannot cancel it during this wait, and the prompt is sent
+once the gateway recovers.
 Other pre-dispatch HTTP errors, invalid responses, and unknown acceptance durability
 still fail without sending the prompt. If the gateway refuses the prompt itself
 with an HTTP 4xx other than 408, 409, or 429, the task fails at once. After other
