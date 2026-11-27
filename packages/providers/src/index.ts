@@ -48,6 +48,8 @@ export interface RunResult {
 type JsonRecord = Readonly<Record<string, unknown>>
 const maxResultBytes = 131_072
 const maxJsonBytes = 1024 * 1024
+// Claude Code prints one JSON document that repeats the full input of every denied tool call.
+const maxClaudeDocumentBytes = 32 * 1024 * 1024
 
 const executables = {
   codex: "codex",
@@ -546,7 +548,7 @@ const readOutput = async (
       case "codex":
         return await parseCodex(stdout, options.sessionId)
       case "claude-code":
-        return await boundedText(stdout, maxJsonBytes, onFailure)
+        return await boundedText(stdout, maxClaudeDocumentBytes, onFailure)
       case "opencode":
         return await parseOpenCode(stdout, options.sessionId)
     }

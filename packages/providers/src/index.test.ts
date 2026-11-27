@@ -89,6 +89,28 @@ it.skipIf(process.platform === "win32").each([
 )
 
 it.skipIf(process.platform === "win32")(
+  "accepts a Claude Code result that lists large denied file writes",
+  async () => {
+    const directory = await providerFixture(
+      "claude",
+      `
+    const denial = { tool_name: "Write", tool_input: { file_path: "out.txt", content: "x".repeat(400_000) } }
+    process.stdout.write(JSON.stringify({
+      result: "Could not write the reports.",
+      session_id: "session",
+      permission_denials: [denial, denial, denial],
+    }))
+  `,
+    )
+    await expect(
+      Effect.runPromise(
+        run({ provider: "claude-code", threadId: "test", prompt: "test", cwd: directory }),
+      ),
+    ).resolves.toEqual({ result: "Could not write the reports.", sessionId: "session" })
+  },
+)
+
+it.skipIf(process.platform === "win32")(
   "preserves stderr when malformed Codex output forces termination",
   async () => {
     const directory = await providerFixture(
