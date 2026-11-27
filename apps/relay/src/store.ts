@@ -1391,15 +1391,36 @@ const makeService = (db: Database, retainedTerminalTasks = 1_000): Interface => 
             throw new Error(`Device ${deviceId} must be offline before it can be forgotten`)
           }
           const outstanding = db
-            .query<{ readonly count: number }, [string]>(
-              `SELECT COUNT(*) AS count FROM tasks
+            .query<
+              { readonly id: TaskId; readonly status: string; readonly error: string | null },
+              [string]
+            >(
+              `SELECT id, status, error FROM tasks
                WHERE target_device_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
             )
-            .get(deviceId)
-          if ((outstanding?.count ?? 0) > 0) {
-            throw new Error(`Device ${deviceId} still has outstanding tasks`)
+            .all(deviceId)
+          const unsettled = outstanding.filter((task) => task.status !== "cancelling")
+          if (unsettled.length > 0) {
+            throw new Error(
+              `Device ${deviceId} still has outstanding tasks; cancel them first: ${unsettled.map((task) => task.id).join(", ")}`,
+            )
           }
           const timestamp = now()
+          // Only the forgotten worker could have confirmed these cancellations.
+          for (const task of outstanding) {
+            const status = task.error === taskDeadlineError ? "failed" : "cancelled"
+            db.query(
+              `UPDATE tasks SET status = ?, completed_at = ?, updated_at = ?,
+               progress_note = NULL, progress_at = NULL WHERE id = ?`,
+            ).run(status, timestamp, timestamp, task.id)
+            recordTaskTraceEvent(
+              task.id,
+              status,
+              "Target device was forgotten by the relay owner",
+              timestamp,
+            )
+          }
+          if (outstanding.length > 0) pruneTerminalHistory()
           db.query(
             `UPDATE device_operations
              SET status = 'failed', error = ?, updated_at = ?, completed_at = ?
