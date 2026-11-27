@@ -241,6 +241,33 @@ it.each(["queued", "running"] as const)(
   },
 )
 
+it("records a worker's own deadline stop as a deadline failure when its clock runs ahead", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] })
+  vi.setSystemTime("2030-01-01T00:00:00Z")
+  const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
+  try {
+    const store = await runtime.runPromise(RelayStore.Service)
+    const target = worker()
+    await Effect.runPromise(store.upsertDevice(target))
+    const task = await Effect.runPromise(
+      store.createDelegation(
+        { prompt: "Work", expiresAt: Timestamp.make("2030-01-01T00:00:03.000Z") },
+        target.id,
+        "owner",
+      ),
+    )
+    const assigned = await Effect.runPromise(store.assignTask(task.id))
+    await Effect.runPromise(store.acceptTask(task.id, target.id, assigned.runId))
+    // Nobody asked to cancel; the worker's deadline timer fired a second early by the relay's clock.
+    vi.setSystemTime("2030-01-01T00:00:02.000Z")
+    expect(
+      await Effect.runPromise(store.acknowledgeCancellation(task.id, target.id, assigned.runId)),
+    ).toMatchObject({ status: "failed", error: taskDeadlineError })
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it("rejects past deadlines and Bot deadlines before creating work", async () => {
   const runtime = ManagedRuntime.make(RelayStore.layer(":memory:"))
   try {
