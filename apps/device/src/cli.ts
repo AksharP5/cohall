@@ -19,7 +19,7 @@ import {
   version,
 } from "@cohall/protocol"
 import * as Providers from "@cohall/providers"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { access, mkdir, open, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -61,7 +61,12 @@ import {
 } from "./setup.ts"
 import { backupRelay, restoreRelay, switchRelay } from "./relay-migration.ts"
 import { installDeviceService } from "./service.ts"
-import { deviceVersionWarning, normalizeUpgradeTarget, upgrade } from "./upgrade.ts"
+import {
+  compareVersions,
+  deviceVersionWarning,
+  normalizeUpgradeTarget,
+  upgrade,
+} from "./upgrade.ts"
 import { readInputAttachments } from "./task-attachments.ts"
 import { readBoundedFile } from "./bounded-file.ts"
 import { renderDeviceWatch, watchDevices } from "./device-watch.ts"
@@ -802,8 +807,41 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       clientToken === undefined
         ? { status: "not configured" as const }
         : await checkMcp(process.argv[1] ?? "", relayUrl, clientToken)
-    const hasDeviceCredential =
-      process.env.COHALL_DEVICE_TOKEN !== undefined || storedCredentials.deviceToken !== undefined
+    const deviceToken = process.env.COHALL_DEVICE_TOKEN ?? storedCredentials.deviceToken
+    const hasDeviceCredential = deviceToken !== undefined
+    const relayVersion = Option.getOrUndefined(
+      Schema.decodeUnknownOption(Schema.Struct({ version: Schema.String }))(
+        response?.ok === true ? await response.json().catch(() => undefined) : undefined,
+      ),
+    )?.version
+    // Relays before 0.10.2 reject device tokens on HTTP routes they do not have.
+    let relayChecksDeviceCredentials = false
+    try {
+      relayChecksDeviceCredentials =
+        relayVersion !== undefined && compareVersions(relayVersion, "0.10.2") >= 0
+    } catch {
+      // An unrecognized relay version leaves the credential unchecked.
+    }
+    const deviceCredentialRejected =
+      deviceToken !== undefined && relayChecksDeviceCredentials
+        ? await Effect.runPromise(
+            RelayClient.make({ baseUrl: relayUrl, token: deviceToken }).verifyDeviceCredential(),
+          ).then(
+            () => false,
+            (cause: unknown) =>
+              cause instanceof RelayRequestError && (cause.status === 401 || cause.status === 403),
+          )
+        : false
+    const workspaces = configuration?.workspaces ?? []
+    const missingWorkspaces = (
+      await Promise.all(
+        workspaces.map(async (workspace) =>
+          (await stat(workspace).catch(() => undefined))?.isDirectory() === true
+            ? undefined
+            : workspace,
+        ),
+      )
+    ).filter((workspace) => workspace !== undefined)
     const deviceId = process.env.COHALL_DEVICE_ID ?? configuration?.deviceId
     const clientAuthentication =
       clientToken === undefined
@@ -846,7 +884,13 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
         ? [`MCP host diagnostics unavailable: ${mcpHost.error}`]
         : []),
       ...(clientAuthentication.status === "error" ? [clientAuthentication.error] : []),
+      ...(deviceCredentialRejected
+        ? [
+            "Device credential was rejected by the relay; pair this device again with a new pairing token",
+          ]
+        : []),
       ...(hasDeviceCredential &&
+      !deviceCredentialRejected &&
       response?.ok === true &&
       clientAuthentication.status !== "error" &&
       currentDevice?.status !== "online" &&
@@ -869,6 +913,13 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
               ? [`Configured provider ${provider} is not installed or not on PATH`]
               : [],
       ),
+      ...(hasDeviceCredential &&
+      selectedProviders === undefined &&
+      grokGateway === undefined &&
+      Object.values(providerExecutables).every((path) => path === "not found")
+        ? ["No provider executable is installed or on PATH"]
+        : []),
+      ...missingWorkspaces.map((workspace) => `Workspace root ${workspace} does not exist`),
     ]
     print({
       version,
@@ -883,7 +934,7 @@ export const runCli = async (command: string, raw: ReadonlyArray<string>): Promi
       mcp: { ...mcp, scope: "server self-test" },
       mcp_host: mcpHost,
       device_credential: hasDeviceCredential,
-      workspaces: configuration?.workspaces ?? [],
+      workspaces,
       providers: providerExecutables,
       ...(grokGateway === undefined
         ? {}

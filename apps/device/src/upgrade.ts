@@ -33,7 +33,7 @@ const parseVersion = (value: string) => {
   }
 }
 
-const compareVersions = (left: string, right: string): number => {
+export const compareVersions = (left: string, right: string): number => {
   const a = parseVersion(left)
   const b = parseVersion(right)
   if (a === undefined || b === undefined) {
