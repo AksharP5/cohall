@@ -224,8 +224,9 @@ cannot safely cancel an individual Cohall request.
 cohall thread <thread-id>
 ```
 
-This returns a byte-bounded recent window of prompts, final responses, and task
-states. Check `truncated`; older entries may be outside the returned window or
+This returns a byte-bounded recent window of prompts and final responses as
+messages, plus task states. Run `cohall status <task-id>` for a task's full
+context and result. Check `truncated`; older entries may be outside the returned window or
 pruned by the relay's terminal-task retention limit.
 
 ## Input forms

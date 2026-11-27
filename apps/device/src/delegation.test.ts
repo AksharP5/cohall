@@ -23,6 +23,7 @@ import {
   followTaskTrace,
   listBots,
   taskResult,
+  threadContext,
   waitForTask,
 } from "./delegation.ts"
 
@@ -89,6 +90,18 @@ const client = (devices: ReadonlyArray<Device> = [device], tasks: ReadonlyArray<
       }),
     ),
   ),
+})
+
+it("keeps thread context small by leaving task text to messages and status", async () => {
+  const relay = client(
+    [device],
+    [Task.make({ ...task, context: "Background", result: "Three projects" })],
+  )
+  const [summary] = (await Effect.runPromise(threadContext(relay, task.threadId))).tasks
+  expect(summary).toMatchObject({ id: task.id, status: "completed", botId: task.botId })
+  expect(summary).not.toHaveProperty("prompt")
+  expect(summary).not.toHaveProperty("context")
+  expect(summary).not.toHaveProperty("result")
 })
 
 it.each(["initial lookup", "poll"] as const)(
