@@ -279,16 +279,20 @@ const send = (state: State, event: SocketEvent): void => {
 const taskRunKey = (taskId: TaskId, runId: TaskRunId | undefined): string =>
   `${taskId}:${runId ?? ""}`
 
+const withOmittedFilesNote = (result: string, note: string): string => {
+  const message = `\n\n[Output files omitted: ${note}]`
+  return `${result.slice(0, 131_072 - message.length)}${message}`
+}
+
 const omitOutputFiles = (event: TaskTerminalEvent, note: string): TaskTerminalEvent => {
   if (event._tag !== "TaskFinished" || (event.attachments?.length ?? 0) === 0) {
     return event
   }
-  const message = `\n\n[Output files omitted: ${note}]`
   return SocketEvent.cases.TaskFinished.make({
     _tag: "TaskFinished",
     taskId: event.taskId,
     ...(event.runId === undefined ? {} : { runId: event.runId }),
-    result: `${event.result.slice(0, 131_072 - message.length)}${message}`,
+    result: withOmittedFilesNote(event.result, note),
     ...(event.providerSessionId === undefined
       ? {}
       : { providerSessionId: event.providerSessionId }),
@@ -469,14 +473,19 @@ const execute = (configuration: DeviceConfiguration, state: State, task: Task): 
         Effect.flatMap((result) =>
           files === undefined
             ? Effect.succeed(result)
-            : Effect.tryPromise({
-                try: async () => ({ ...result, attachments: await files.collectOutputs() }),
-                catch: (cause) =>
-                  new Providers.ProviderRunError({
-                    provider,
-                    message: cause instanceof Error ? cause.message : String(cause),
+            : // Unusable output files must not discard the provider's finished answer or session.
+              Effect.promise(() =>
+                files.collectOutputs().then(
+                  (attachments) => ({ ...result, attachments }),
+                  (cause: unknown) => ({
+                    ...result,
+                    result: withOmittedFilesNote(
+                      result.result,
+                      cause instanceof Error ? cause.message : String(cause),
+                    ),
                   }),
-              }).pipe(Effect.uninterruptible),
+                ),
+              ).pipe(Effect.uninterruptible),
         ),
       )
     }),
