@@ -368,7 +368,13 @@ export const runMcp = async (configuration: ClientConfiguration): Promise<void> 
       },
     },
     async ({ task_id, timeout_seconds }, extra) =>
-      output(taskResult(await waitReportingProgress(TaskId.make(task_id), timeout_seconds, extra))),
+      output(
+        await acknowledgedTaskResult(
+          client,
+          await waitReportingProgress(TaskId.make(task_id), timeout_seconds, extra),
+          extra.signal,
+        ),
+      ),
   )
 
   server.registerTool(

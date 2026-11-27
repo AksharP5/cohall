@@ -25,7 +25,7 @@ For queued work, `cohall inbox` or the MCP `completion_inbox` tool lists questio
 awaiting answers and results the sending client has not handled. Fetch a full
 result with `cohall status <task-id>` or `task_status`, then use
 `cohall inbox ack <task-id>` or `acknowledge_completion` to remove it from the inbox. A synchronous `delegate`
-call acknowledges its result automatically.
+and a `wait` or `wait_task` that returns a finished result acknowledge it automatically.
 
 While MCP `delegate` or `wait_task` waits, Cohall sends a progress notification
 every 20 seconds when the host requests progress. Hosts that reset their request

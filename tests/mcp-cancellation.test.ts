@@ -183,20 +183,26 @@ it("reports progress during an MCP wait so SDK host timeouts can reset", async (
   })
 })
 
-it("still acknowledges a completed synchronous MCP delegation", async () => {
-  await withRelay("delegate", async ({ client, task, poll, complete, acknowledged }) => {
-    const call = client.callTool({
-      name: "delegate",
-      arguments: { target: "@cancel-worker", prompt: task.prompt, timeout_seconds: 5 },
+it.each(["delegate", "wait_task"] as const)(
+  "clears the inbox entry of a result %s returns",
+  async (tool) => {
+    await withRelay(tool, async ({ client, task, poll, complete, acknowledged }) => {
+      const call = client.callTool({
+        name: tool,
+        arguments:
+          tool === "delegate"
+            ? { target: "@cancel-worker", prompt: task.prompt, timeout_seconds: 5 }
+            : { task_id: task.id, timeout_seconds: 5 },
+      })
+      await poll
+      complete()
+      expect(await call).toMatchObject({
+        content: [{ type: "text", text: expect.stringContaining("Finished") }],
+      })
+      expect(acknowledged()).toBe(true)
     })
-    await poll
-    complete()
-    expect(await call).toMatchObject({
-      content: [{ type: "text", text: expect.stringContaining("Finished") }],
-    })
-    expect(acknowledged()).toBe(true)
-  })
-})
+  },
+)
 
 it("cancels an MCP attachment download before creating its output file", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cohall-mcp-download-cancel-"))
