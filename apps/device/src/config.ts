@@ -291,11 +291,17 @@ export const loadClientConfiguration = Effect.tryPromise({
   try: async () => {
     const stored = await storedOrDefaults()
     const relayUrl = normalizeRelayUrl(process.env.COHALL_RELAY_URL ?? stored.relayUrl)
+    // A relay host without a client pairing acts for the owner, who may answer and cancel any task.
     const token =
-      process.env.COHALL_CLIENT_TOKEN ?? credentialsForRelay(stored, relayUrl).clientToken
+      process.env.COHALL_CLIENT_TOKEN ??
+      credentialsForRelay(stored, relayUrl).clientToken ??
+      (await Effect.runPromise(loadOwnerConfiguration).then(
+        (owner) => owner.token,
+        () => undefined,
+      ))
     if (token === undefined) {
       throw new Error(
-        `No client credential. Run cohall join with a pairing token on stdin or set COHALL_CLIENT_TOKEN.`,
+        `No client credential. Run cohall join with a pairing token on stdin, set COHALL_CLIENT_TOKEN, or run this command on the relay host.`,
       )
     }
     return ClientConfiguration.make({

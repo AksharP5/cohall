@@ -105,7 +105,8 @@ A disconnected coding worker may still be running. The relay queues the original
 turn for replay and waits for the worker to confirm that it ended. Answer the
 question once the task reaches `needs_input`.
 
-The original requester credential or relay owner answers the current question:
+The original requester credential or relay owner answers the current question.
+On a relay host without a client pairing, client commands use the owner credential:
 
 ```bash
 cohall answer <task-id> --request-id <question-id> --message 'Use main.'
