@@ -1,10 +1,10 @@
 import { checkMcp } from "./mcp-diagnostics.ts"
 import { execa } from "execa"
 import { randomUUID } from "node:crypto"
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
 import * as z from "zod/v4"
@@ -74,12 +74,20 @@ describe("MCP doctor check", () => {
       response.writeHead(404).end()
     })
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    // A provider on PATH keeps the report independent of what the host has installed.
+    const providers = await mkdtemp(join(tmpdir(), "cohall-doctor-providers-"))
+    const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH"
+    const provider = join(providers, process.platform === "win32" ? "codex.cmd" : "codex")
+    await writeFile(provider, "")
+    await chmod(provider, 0o755)
     try {
       const address = server.address()
       if (address === null || typeof address === "string") throw new Error("Missing test port")
       const { stdout } = await execa(process.execPath, [entrypoint, "doctor"], {
         env: {
           ...process.env,
+          // Windows spells it Path; a second PATH key would be ambiguous there.
+          [pathKey]: `${providers}${delimiter}${process.env[pathKey] ?? ""}`,
           COHALL_CONFIG: join(tmpdir(), `cohall-doctor-${randomUUID()}.json`),
           COHALL_CLIENT_TOKEN: "test-token",
           COHALL_RELAY_URL: `http://127.0.0.1:${address.port}`,
@@ -120,6 +128,7 @@ describe("MCP doctor check", () => {
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error === undefined ? resolve() : reject(error))),
       )
+      await rm(providers, { recursive: true, force: true })
     }
   })
 
